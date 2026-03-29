@@ -206,7 +206,9 @@ SYSTEM_PROMPT = """You are an autonomous software build agent working on the Sea
 
 Each night you receive program.md (current build state), the technical spec, and the current task.
 
-Your job is to execute exactly one task. Output ONLY a valid JSON object — no preamble, no markdown fences:
+Your job is to execute exactly one task. Output ONLY a valid JSON object — no preamble, no markdown fences.
+
+CRITICAL: File contents must be base64-encoded to avoid JSON parsing errors. Use standard base64 encoding.
 
 {
     "status": "pass" | "fail",
@@ -215,7 +217,7 @@ Your job is to execute exactly one task. Output ONLY a valid JSON object — no 
     "files": [
         {
             "path": "relative/path/from/repo/root",
-            "content": "complete file content — never truncated"
+            "content_b64": "<base64-encoded file content>"
         }
     ],
     "commit_message": "concise git commit message",
@@ -225,7 +227,8 @@ Your job is to execute exactly one task. Output ONLY a valid JSON object — no 
 
 Rules:
 - Output ONLY valid JSON. Nothing else.
-- File content must be complete and production-quality.
+- ALL file content MUST be base64-encoded in content_b64. Never use a plain "content" field.
+- File content must be complete and production-quality before encoding.
 - Follow the spec exactly for function signatures, schemas, file locations.
 - Include proper error handling in all code.
 - If you cannot complete the full task, fail gracefully and suggest a smaller scope.
@@ -250,6 +253,7 @@ Technical spec (first 50k chars):
 {spec[:50000]}
 </spec>
 
+IMPORTANT: Encode ALL file contents as base64 in the content_b64 field.
 Output only valid JSON."""
 
     response = anthropic.messages.create(
@@ -270,7 +274,34 @@ Output only valid JSON."""
     if raw.endswith("```"):
         raw = raw[:-3]
 
-    return json.loads(raw.strip())
+    raw = raw.strip()
+
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as e:
+        # Try to extract just the JSON object if there's surrounding text
+        import re
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            result = json.loads(match.group())
+        else:
+            raise e
+
+    # Decode base64 file contents
+    import base64
+    for file_obj in result.get("files", []):
+        if "content_b64" in file_obj:
+            try:
+                file_obj["content"] = base64.b64decode(
+                    file_obj["content_b64"]
+                ).decode("utf-8")
+            except Exception:
+                # If decode fails, use raw value as fallback
+                file_obj["content"] = file_obj["content_b64"]
+        elif "content" not in file_obj:
+            file_obj["content"] = ""
+
+    return result
 
 # ── Entry Point ─────────────────────────────────────────────────────────────────
 
@@ -315,6 +346,13 @@ def main():
         if status == "pass" and result.get("files"):
             print("Committing files...")
             commit_url = commit_files(result, commit_msg)
+            updated = mark_task_complete(program, day)
+            completed_count = count_completed_tasks(updated)
+            updated = update_current_state(updated, day, task_summary, "✅ Pass")
+            update_program_md(updated, f"DAY {day:02d} complete: {task_summary[:50]}")
+            print(f"Tasks complete: {completed_count}/28")
+        elif status == "pass":
+            # Pass but no files (e.g. config-only task)
             updated = mark_task_complete(program, day)
             completed_count = count_completed_tasks(updated)
             updated = update_current_state(updated, day, task_summary, "✅ Pass")
