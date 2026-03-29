@@ -1,7 +1,27 @@
-anthropic
-supabase
-slack-sdk
-httpx
-python-dotenv
-PyGithub
-python-dateutil
+# Cron job dependencies
+# For periodic tasks: algorithm update scraping, cache cleanup, etc.
+
+# Core dependencies
+fastapi==0.109.0
+uvicorn==0.27.0
+httpx==0.26.0
+python-dotenv==1.0.0
+
+# Database
+supabase==2.3.4
+
+# Data processing
+pandas==2.2.0
+numpy==1.26.3
+
+# Web scraping for algorithm updates
+beautifulsoup4==4.12.3
+lxml==5.1.0
+requests==2.31.0
+
+# Scheduling (if using APScheduler instead of Railway cron)
+apscheduler==3.10.4
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2024.1
