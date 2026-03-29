@@ -4,3 +4,4 @@ slack-sdk
 httpx
 python-dotenv
 PyGithub
+python-dateutil
