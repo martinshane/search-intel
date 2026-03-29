@@ -151,7 +151,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 01** — Supabase schema: create all tables from spec (users, reports, api_cache, algorithm_updates, query_intents, serp_snapshots) plus build_log table. Verify all tables exist with correct columns.
 
-- [ ] **DAY 02** — Repository structure: scaffold all directories and empty placeholder files. FastAPI skeleton in `/api/main.py` with a `/health` endpoint that returns `{"status": "ok"}`. Deploy `search-intel-api` to Railway. Verify health endpoint responds at Railway URL.
+- [x] **DAY 02** — Repository structure: scaffold all directories and empty placeholder files. FastAPI skeleton in `/api/main.py` with a `/health` endpoint that returns `{"status": "ok"}`. Deploy `search-intel-api` to Railway. Verify health endpoint responds at Railway URL.
 
 - [ ] **DAY 03** — Progress dashboard: build `/web/pages/progress.tsx` — a single-page Next.js app that reads the `build_log` Supabase table and renders a table of nightly runs (date, task, status, notes). Deploy `search-intel-web`. This is what Shane checks each morning.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 1
-**Last Task:** Created complete Supabase schema with all 7 required tables and verified structu
+**Current Day:** 2
+**Last Task:** Scaffolded complete repository structure with all directories and placeholder fi
 **Last Run:** 2026-03-29 — ✅ Pass
-**Next Task:** DAY 02 — Repository structure: scaffold all directories and empty pla
+**Next Task:** DAY 03 — Progress dashboard: build `/web/pages/progress.tsx` — a sing
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
