@@ -149,7 +149,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 ### Foundation (Days 1-7)
 
-- [ ] **DAY 01** — Supabase schema: create all tables from spec (users, reports, api_cache, algorithm_updates, query_intents, serp_snapshots) plus build_log table. Verify all tables exist with correct columns.
+- [x] **DAY 01** — Supabase schema: create all tables from spec (users, reports, api_cache, algorithm_updates, query_intents, serp_snapshots) plus build_log table. Verify all tables exist with correct columns.
 
 - [ ] **DAY 02** — Repository structure: scaffold all directories and empty placeholder files. FastAPI skeleton in `/api/main.py` with a `/health` endpoint that returns `{"status": "ok"}`. Deploy `search-intel-api` to Railway. Verify health endpoint responds at Railway URL.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 0 (not started)  
-**Last Task:** None  
-**Last Run:** Not yet run  
-**Next Task:** DAY 01 — Supabase schema  
+**Current Day:** 1
+**Last Task:** Created complete Supabase schema with all 7 required tables and verified structu
+**Last Run:** 2026-03-29 — ✅ Pass
+**Next Task:** DAY 02 — Repository structure: scaffold all directories and empty pla
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
