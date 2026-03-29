@@ -1,5 +1,5 @@
 {
-  "name": "search-intelligence-web",
+  "name": "search-intel-web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -10,33 +10,22 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "next": "14.2.3",
+    "next": "^14.2.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "@tanstack/react-query": "^5.28.4",
-    "axios": "^1.6.8",
-    "recharts": "^2.12.3",
-    "d3": "^7.9.0",
-    "clsx": "^2.1.0",
-    "tailwind-merge": "^2.2.2",
+    "@supabase/supabase-js": "^2.43.4",
     "date-fns": "^3.6.0",
-    "lucide-react": "^0.363.0",
-    "zustand": "^4.5.2"
+    "clsx": "^2.1.1"
   },
   "devDependencies": {
-    "@types/node": "^20.12.7",
-    "@types/react": "^18.3.1",
+    "@types/node": "^20.12.12",
+    "@types/react": "^18.3.2",
     "@types/react-dom": "^18.3.0",
-    "@types/d3": "^7.4.3",
     "typescript": "^5.4.5",
     "autoprefixer": "^10.4.19",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.3",
     "eslint": "^8.57.0",
-    "eslint-config-next": "14.2.3"
-  },
-  "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.0.0"
+    "eslint-config-next": "^14.2.3"
   }
 }
