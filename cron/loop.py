@@ -200,46 +200,58 @@ def commit_files(result: dict, commit_message: str) -> str:
         pass
     return None
 
-# ── System Prompt ───────────────────────────────────────────────────────────────
+# ── System Prompts ──────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are an autonomous software build agent working on the Search Intelligence Report project.
+PLAN_PROMPT = """You are an autonomous software build agent working on the Search Intelligence Report project.
 
 Each night you receive program.md (current build state), the technical spec, and the current task.
 
-Your job is to execute exactly one task. Output ONLY a valid JSON object — no preamble, no markdown fences.
+Your job is to plan and execute exactly one task.
 
-CRITICAL: File contents must be base64-encoded to avoid JSON parsing errors. Use standard base64 encoding.
+First, output a JSON plan with NO file contents — only metadata:
 
 {
     "status": "pass" | "fail",
     "task_summary": "one line description of what was done",
-    "notes": "detailed notes on what was built, decisions made, anything Shane should know",
-    "files": [
+    "notes": "detailed notes on decisions made, anything Shane should know",
+    "commit_message": "concise git commit message",
+    "failure_reason": "if status=fail, exactly why it cannot be done",
+    "shrunk_task": "if status=fail, smaller scope to attempt tomorrow",
+    "files_to_write": [
         {
             "path": "relative/path/from/repo/root",
-            "content_b64": "<base64-encoded file content>"
+            "description": "what this file contains"
         }
-    ],
-    "commit_message": "concise git commit message",
-    "failure_reason": "if status=fail, exactly why",
-    "shrunk_task": "if status=fail, smaller scope to attempt tomorrow"
+    ]
 }
 
 Rules:
-- Output ONLY valid JSON. Nothing else.
-- ALL file content MUST be base64-encoded in content_b64. Never use a plain "content" field.
-- File content must be complete and production-quality before encoding.
-- Follow the spec exactly for function signatures, schemas, file locations.
-- Include proper error handling in all code.
-- If you cannot complete the full task, fail gracefully and suggest a smaller scope.
-- Tests must pass on synthetic data before marking pass.
+- Output ONLY valid JSON. No file contents in this response.
+- Keep notes, task_summary, commit_message as plain strings with no special characters.
+- If the task genuinely cannot be completed, set status=fail.
+"""
+
+FILE_PROMPT = """You are writing the content for a specific file as part of the Search Intelligence Report project.
+
+Write ONLY the raw file content — no JSON wrapper, no markdown fences, no explanation.
+Start with the first character of the file and end with the last character.
+The file content will be committed directly to the repository.
+
+Write production-quality code with proper error handling.
+Follow the spec exactly for function signatures and output schemas.
 """
 
 # ── Main Agent ──────────────────────────────────────────────────────────────────
 
 def run_agent(program: str, spec: str, day: int, task: str) -> dict:
-    """Call Claude API to execute the current task."""
-    user_message = f"""Execute this task:
+    """
+    Two-pass agent:
+    Pass 1 — Get JSON plan (no file contents, JSON-safe)
+    Pass 2 — Get each file's content as raw text (no JSON parsing needed)
+    """
+
+    # ── Pass 1: Plan ──────────────────────────────────────────────────────────
+    plan_message = f"""Execute this build task:
 
 DAY {day:02d}: {task}
 
@@ -248,24 +260,23 @@ Current program.md:
 {program}
 </program>
 
-Technical spec (first 50k chars):
+Technical spec (first 40k chars):
 <spec>
-{spec[:50000]}
+{spec[:40000]}
 </spec>
 
-IMPORTANT: Encode ALL file contents as base64 in the content_b64 field.
-Output only valid JSON."""
+Output your JSON plan now. Do NOT include any file contents in this response."""
 
-    response = anthropic.messages.create(
+    plan_response = anthropic.messages.create(
         model="claude-sonnet-4-5",
-        max_tokens=8000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}]
+        max_tokens=2000,
+        system=PLAN_PROMPT,
+        messages=[{"role": "user", "content": plan_message}]
     )
 
-    raw = response.content[0].text.strip()
+    raw = plan_response.content[0].text.strip()
 
-    # Strip markdown fences if present
+    # Strip markdown fences
     if raw.startswith("```"):
         parts = raw.split("```")
         raw = parts[1] if len(parts) > 1 else raw
@@ -273,35 +284,69 @@ Output only valid JSON."""
             raw = raw[4:]
     if raw.endswith("```"):
         raw = raw[:-3]
-
     raw = raw.strip()
 
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError as e:
-        # Try to extract just the JSON object if there's surrounding text
-        import re
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if match:
-            result = json.loads(match.group())
-        else:
-            raise e
+    plan = json.loads(raw)
+    print(f"Plan status: {plan.get('status')}")
+    print(f"Files to write: {[f['path'] for f in plan.get('files_to_write', [])]}")
 
-    # Decode base64 file contents
-    import base64
-    for file_obj in result.get("files", []):
-        if "content_b64" in file_obj:
-            try:
-                file_obj["content"] = base64.b64decode(
-                    file_obj["content_b64"]
-                ).decode("utf-8")
-            except Exception:
-                # If decode fails, use raw value as fallback
-                file_obj["content"] = file_obj["content_b64"]
-        elif "content" not in file_obj:
-            file_obj["content"] = ""
+    # If plan says fail, return early
+    if plan.get("status") == "fail":
+        return {
+            "status": "fail",
+            "task_summary": plan.get("task_summary", task[:60]),
+            "notes": plan.get("notes", ""),
+            "failure_reason": plan.get("failure_reason", "Agent could not complete task"),
+            "shrunk_task": plan.get("shrunk_task", "Retry with smaller scope"),
+            "files": []
+        }
 
-    return result
+    # ── Pass 2: Write each file individually ─────────────────────────────────
+    files = []
+    for file_info in plan.get("files_to_write", []):
+        path = file_info["path"]
+        description = file_info.get("description", "")
+
+        print(f"  Writing: {path}")
+
+        file_message = f"""Write the complete content for this file:
+
+File path: {path}
+Description: {description}
+
+Task context: DAY {day:02d} — {task}
+
+Technical spec (relevant section):
+<spec>
+{spec[:40000]}
+</spec>
+
+Write ONLY the raw file content. Start immediately with the first line of the file."""
+
+        file_response = anthropic.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=6000,
+            system=FILE_PROMPT,
+            messages=[{"role": "user", "content": file_message}]
+        )
+
+        content = file_response.content[0].text
+        # Strip any accidental markdown fences
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:])
+            if content.endswith("```"):
+                content = content[:-3]
+
+        files.append({"path": path, "content": content})
+
+    return {
+        "status": "pass",
+        "task_summary": plan.get("task_summary", task[:60]),
+        "notes": plan.get("notes", ""),
+        "commit_message": plan.get("commit_message", f"DAY {day:02d}: {task[:50]}"),
+        "files": files
+    }
 
 # ── Entry Point ─────────────────────────────────────────────────────────────────
 
