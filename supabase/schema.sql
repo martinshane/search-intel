@@ -1,0 +1,2 @@
+-- Full schema to be created on DAY 01
+-- See spec.md for complete table definitions

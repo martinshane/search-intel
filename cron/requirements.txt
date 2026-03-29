@@ -1,0 +1,6 @@
+anthropic
+supabase
+slack-sdk
+httpx
+python-dotenv
+PyGithub
