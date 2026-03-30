@@ -1,0 +1,364 @@
+"""
+FastAPI dependencies for authentication.
+
+Provides reusable dependencies for:
+- Extracting current user from JWT tokens
+- Verifying OAuth tokens
+- Requiring authentication on protected routes
+"""
+
+from typing import Optional
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthCredential
+from jose import JWTError, jwt
+from datetime import datetime, timezone
+import os
+
+from ..database import get_supabase_client
+
+# JWT configuration
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+ALGORITHM = "HS256"
+
+# Security scheme for bearer token
+security = HTTPBearer()
+
+
+async def get_current_user(
+    credentials: HTTPAuthCredential = Depends(security),
+) -> dict:
+    """
+    Extract and validate current user from JWT token.
+    
+    Args:
+        credentials: HTTP Bearer token from request header
+        
+    Returns:
+        dict: User data including id, email, etc.
+        
+    Raises:
+        HTTPException: 401 if token is invalid or expired
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        # Decode JWT token
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+            
+        # Check token expiration
+        exp = payload.get("exp")
+        if exp is None:
+            raise credentials_exception
+            
+        if datetime.fromtimestamp(exp, tz=timezone.utc) < datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has expired",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+    except JWTError:
+        raise credentials_exception
+    
+    # Fetch user from database
+    supabase = get_supabase_client()
+    
+    try:
+        response = supabase.table("users").select("*").eq("id", user_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise credentials_exception
+            
+        user = response.data[0]
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error: {str(e)}"
+        )
+    
+    return user
+
+
+async def get_current_user_optional(
+    credentials: Optional[HTTPAuthCredential] = Depends(HTTPBearer(auto_error=False)),
+) -> Optional[dict]:
+    """
+    Extract current user from JWT token, but don't require authentication.
+    
+    Useful for endpoints that have optional authentication (different behavior
+    for authenticated vs anonymous users).
+    
+    Args:
+        credentials: Optional HTTP Bearer token from request header
+        
+    Returns:
+        dict: User data if authenticated, None otherwise
+    """
+    if credentials is None:
+        return None
+    
+    try:
+        return await get_current_user(credentials)
+    except HTTPException:
+        return None
+
+
+async def verify_gsc_token(user: dict = Depends(get_current_user)) -> dict:
+    """
+    Verify that the user has a valid Google Search Console OAuth token.
+    
+    Args:
+        user: Current authenticated user
+        
+    Returns:
+        dict: User data (same as input)
+        
+    Raises:
+        HTTPException: 403 if user hasn't connected GSC or token is invalid
+    """
+    if not user.get("gsc_token"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Google Search Console not connected. Please complete OAuth flow."
+        )
+    
+    gsc_token = user.get("gsc_token")
+    
+    # Check if token has required fields
+    if not isinstance(gsc_token, dict):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid GSC token format. Please reconnect."
+        )
+    
+    required_fields = ["access_token", "refresh_token", "token_uri"]
+    missing_fields = [field for field in required_fields if field not in gsc_token]
+    
+    if missing_fields:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"GSC token missing required fields: {', '.join(missing_fields)}. Please reconnect."
+        )
+    
+    # TODO: When implementing token refresh, check expiry here and refresh if needed
+    # For now, we'll let the Google API calls handle expired tokens
+    
+    return user
+
+
+async def verify_ga4_token(user: dict = Depends(get_current_user)) -> dict:
+    """
+    Verify that the user has a valid Google Analytics 4 OAuth token.
+    
+    Args:
+        user: Current authenticated user
+        
+    Returns:
+        dict: User data (same as input)
+        
+    Raises:
+        HTTPException: 403 if user hasn't connected GA4 or token is invalid
+    """
+    if not user.get("ga4_token"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Google Analytics 4 not connected. Please complete OAuth flow."
+        )
+    
+    ga4_token = user.get("ga4_token")
+    
+    # Check if token has required fields
+    if not isinstance(ga4_token, dict):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid GA4 token format. Please reconnect."
+        )
+    
+    required_fields = ["access_token", "refresh_token", "token_uri"]
+    missing_fields = [field for field in required_fields if field not in ga4_token]
+    
+    if missing_fields:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"GA4 token missing required fields: {', '.join(missing_fields)}. Please reconnect."
+        )
+    
+    # TODO: When implementing token refresh, check expiry here and refresh if needed
+    # For now, we'll let the Google API calls handle expired tokens
+    
+    return user
+
+
+async def verify_both_tokens(
+    user: dict = Depends(get_current_user)
+) -> dict:
+    """
+    Verify that the user has both valid GSC and GA4 OAuth tokens.
+    
+    This is a convenience dependency for endpoints that require both services.
+    
+    Args:
+        user: Current authenticated user
+        
+    Returns:
+        dict: User data (same as input)
+        
+    Raises:
+        HTTPException: 403 if user hasn't connected both services or tokens are invalid
+    """
+    # Verify GSC token
+    await verify_gsc_token(user)
+    
+    # Verify GA4 token
+    await verify_ga4_token(user)
+    
+    return user
+
+
+def create_access_token(data: dict, expires_delta: Optional[int] = None) -> str:
+    """
+    Create a new JWT access token.
+    
+    Args:
+        data: Payload to encode in the token (should include 'sub' for user_id)
+        expires_delta: Token expiration time in seconds (default: 30 days)
+        
+    Returns:
+        str: Encoded JWT token
+    """
+    from datetime import timedelta
+    
+    to_encode = data.copy()
+    
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + timedelta(seconds=expires_delta)
+    else:
+        # Default: 30 days
+        expire = datetime.now(timezone.utc) + timedelta(days=30)
+    
+    to_encode.update({"exp": expire})
+    
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+async def get_user_by_email(email: str) -> Optional[dict]:
+    """
+    Fetch user from database by email.
+    
+    Helper function used during OAuth callback to find or create users.
+    
+    Args:
+        email: User email address
+        
+    Returns:
+        dict: User data if found, None otherwise
+        
+    Raises:
+        Exception: If database query fails
+    """
+    supabase = get_supabase_client()
+    
+    try:
+        response = supabase.table("users").select("*").eq("email", email).execute()
+        
+        if response.data and len(response.data) > 0:
+            return response.data[0]
+        
+        return None
+        
+    except Exception as e:
+        raise Exception(f"Database error while fetching user: {str(e)}")
+
+
+async def create_user(email: str, gsc_token: Optional[dict] = None, ga4_token: Optional[dict] = None) -> dict:
+    """
+    Create a new user in the database.
+    
+    Args:
+        email: User email address
+        gsc_token: Optional GSC OAuth token to store
+        ga4_token: Optional GA4 OAuth token to store
+        
+    Returns:
+        dict: Created user data including generated id
+        
+    Raises:
+        Exception: If database insert fails
+    """
+    supabase = get_supabase_client()
+    
+    user_data = {
+        "email": email,
+    }
+    
+    if gsc_token:
+        user_data["gsc_token"] = gsc_token
+    
+    if ga4_token:
+        user_data["ga4_token"] = ga4_token
+    
+    try:
+        response = supabase.table("users").insert(user_data).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise Exception("Failed to create user - no data returned")
+        
+        return response.data[0]
+        
+    except Exception as e:
+        raise Exception(f"Database error while creating user: {str(e)}")
+
+
+async def update_user_tokens(
+    user_id: str,
+    gsc_token: Optional[dict] = None,
+    ga4_token: Optional[dict] = None
+) -> dict:
+    """
+    Update OAuth tokens for an existing user.
+    
+    Args:
+        user_id: User ID to update
+        gsc_token: Optional GSC OAuth token to update
+        ga4_token: Optional GA4 OAuth token to update
+        
+    Returns:
+        dict: Updated user data
+        
+    Raises:
+        Exception: If database update fails
+    """
+    supabase = get_supabase_client()
+    
+    update_data = {}
+    
+    if gsc_token is not None:
+        update_data["gsc_token"] = gsc_token
+    
+    if ga4_token is not None:
+        update_data["ga4_token"] = ga4_token
+    
+    if not update_data:
+        raise ValueError("At least one token must be provided")
+    
+    try:
+        response = supabase.table("users").update(update_data).eq("id", user_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise Exception("Failed to update user tokens - no data returned")
+        
+        return response.data[0]
+        
+    except Exception as e:
+        raise Exception(f"Database error while updating user tokens: {str(e)}")
