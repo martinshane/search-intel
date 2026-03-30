@@ -157,7 +157,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 04** — Google OAuth flow (backend): implement `/auth/google` and `/auth/callback` endpoints in FastAPI. Request GSC + GA4 read-only scopes. Store encrypted tokens in Supabase `users` table. Test with a real Google account.
 
-- [ ] **DAY 05** — Google OAuth flow (frontend): build the connect screen on the Next.js index page. "Connect Google Search Console" button → triggers OAuth flow → on success shows connected property list. Basic styling only.
+- [x] **DAY 05** — Google OAuth flow (frontend): build the connect screen on the Next.js index page. "Connect Google Search Console" button → triggers OAuth flow → on success shows connected property list. Basic styling only.
 
 - [ ] **DAY 06** — GSC data ingestion: implement `ingestion/gsc.py`. Pull performance data by query, by page, by date. Handle 25K row pagination with monthly chunking. Cache responses in `api_cache` table with 24h TTL. Test against a real GSC property (use tradeify.co or kixie.com for dev testing).
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 4
-**Last Task:** Implemented Google OAuth flow with /auth/google and /auth/callback endpoints, to
+**Current Day:** 5
+**Last Task:** Built Google OAuth frontend connect flow on Next.js index page with Connect butt
 **Last Run:** 2026-03-30 — ✅ Pass
-**Next Task:** DAY 05 — Google OAuth flow (frontend): build the connect screen on th
+**Next Task:** DAY 06 — GSC data ingestion: implement `ingestion/gsc.py`. Pull perfo
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
