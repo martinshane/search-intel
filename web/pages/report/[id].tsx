@@ -1,288 +1,493 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
-import { Box, Container, Typography, CircularProgress, Alert, Paper } from '@mui/material';
-import HealthTrajectoryChart from '../../components/HealthTrajectoryChart';
+import {
+  Container,
+  Box,
+  Typography,
+  CircularProgress,
+  Alert,
+  Paper,
+  Collapse,
+  IconButton,
+  LinearProgress,
+  Chip,
+} from '@mui/material';
+import {
+  ExpandMore as ExpandMoreIcon,
+  TrendingUp,
+  TrendingDown,
+  RemoveCircleOutline,
+} from '@mui/icons-material';
+import { styled } from '@mui/material/styles';
+import {
+  LineChart,
+  Line,
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  ReferenceLine,
+  Area,
+  AreaChart,
+} from 'recharts';
 
-interface Module1Data {
+// API client
+import { getReport } from '../../lib/api';
+
+// Section components
+import HealthSection from '../../components/report/HealthSection';
+import PageTriageSection from '../../components/report/PageTriageSection';
+
+// Types
+interface Report {
+  id: string;
+  status: 'pending' | 'ingesting' | 'analyzing' | 'generating' | 'complete' | 'failed';
+  progress: Record<string, string>;
+  report_data?: ReportData;
+  gsc_property: string;
+  ga4_property?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+interface ReportData {
+  health?: HealthData;
+  page_triage?: PageTriageData;
+  serp_landscape?: any;
+  content_intelligence?: any;
+  gameplan?: any;
+  algorithm_impacts?: any;
+  intent_migration?: any;
+  ctr_modeling?: any;
+  site_architecture?: any;
+  branded_split?: any;
+  competitive_threats?: any;
+  revenue_attribution?: any;
+}
+
+interface HealthData {
   overall_direction: string;
   trend_slope_pct_per_month: number;
-  change_points: Array<{
-    date: string;
-    magnitude: number;
-    direction: string;
-  }>;
+  change_points: ChangePoint[];
   seasonality: {
     best_day: string;
     worst_day: string;
     monthly_cycle: boolean;
     cycle_description: string;
   };
-  anomalies: Array<{
-    date: string;
-    type: string;
-    magnitude: number;
-  }>;
+  anomalies: Anomaly[];
   forecast: {
-    "30d": { clicks: number; ci_low: number; ci_high: number };
-    "60d": { clicks: number; ci_low: number; ci_high: number };
-    "90d": { clicks: number; ci_low: number; ci_high: number };
+    '30d': ForecastPoint;
+    '60d': ForecastPoint;
+    '90d': ForecastPoint;
   };
 }
 
-interface DailyDataPoint {
+interface ChangePoint {
   date: string;
-  clicks: number;
-  impressions: number;
-  ctr: number;
-  position: number;
-  trend?: number;
-  forecast?: number;
-  ci_low?: number;
-  ci_high?: number;
+  magnitude: number;
+  direction: string;
 }
 
-interface Report {
-  id: string;
-  status: string;
-  gsc_property: string;
-  ga4_property: string | null;
-  created_at: string;
-  completed_at: string | null;
-  report_data: {
-    module_1?: Module1Data;
-    daily_data?: DailyDataPoint[];
-  } | null;
+interface Anomaly {
+  date: string;
+  type: string;
+  magnitude: number;
 }
+
+interface ForecastPoint {
+  clicks: number;
+  ci_low: number;
+  ci_high: number;
+}
+
+interface PageTriageData {
+  pages: PageTriageItem[];
+  summary: {
+    total_pages_analyzed: number;
+    growing: number;
+    stable: number;
+    decaying: number;
+    critical: number;
+    total_recoverable_clicks_monthly: number;
+  };
+}
+
+interface PageTriageItem {
+  url: string;
+  bucket: 'growing' | 'stable' | 'decaying' | 'critical';
+  current_monthly_clicks: number;
+  trend_slope: number;
+  projected_page1_loss_date?: string;
+  ctr_anomaly: boolean;
+  ctr_expected?: number;
+  ctr_actual?: number;
+  engagement_flag?: string;
+  priority_score: number;
+  recommended_action: string;
+}
+
+// Styled components
+const SectionCard = styled(Paper)(({ theme }) => ({
+  marginBottom: theme.spacing(3),
+  overflow: 'hidden',
+}));
+
+const SectionHeader = styled(Box)(({ theme }) => ({
+  padding: theme.spacing(2, 3),
+  background: theme.palette.mode === 'dark' ? theme.palette.grey[800] : theme.palette.grey[50],
+  borderBottom: `1px solid ${theme.palette.divider}`,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  cursor: 'pointer',
+  '&:hover': {
+    background: theme.palette.mode === 'dark' ? theme.palette.grey[700] : theme.palette.grey[100],
+  },
+}));
+
+const SectionContent = styled(Box)(({ theme }) => ({
+  padding: theme.spacing(3),
+}));
+
+const TldrBox = styled(Box)(({ theme }) => ({
+  padding: theme.spacing(2),
+  marginBottom: theme.spacing(3),
+  background: theme.palette.mode === 'dark' ? theme.palette.grey[900] : theme.palette.primary.light,
+  borderRadius: theme.shape.borderRadius,
+  borderLeft: `4px solid ${theme.palette.primary.main}`,
+}));
+
+const ExpandIcon = styled(ExpandMoreIcon, {
+  shouldForwardProp: (prop) => prop !== 'expanded',
+})<{ expanded: boolean }>(({ theme, expanded }) => ({
+  transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+  transition: theme.transitions.create('transform', {
+    duration: theme.transitions.duration.shortest,
+  }),
+}));
 
 export default function ReportPage() {
   const router = useRouter();
   const { id } = router.query;
+
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(
+    new Set(['health', 'page_triage'])
+  );
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || typeof id !== 'string') return;
+
+    let pollInterval: NodeJS.Timeout;
 
     const fetchReport = async () => {
       try {
-        setLoading(true);
-        setError(null);
-
-        const response = await fetch(`/api/reports/${id}`);
-        
-        if (!response.ok) {
-          if (response.status === 404) {
-            throw new Error('Report not found');
-          }
-          throw new Error(`Failed to fetch report: ${response.statusText}`);
-        }
-
-        const data = await response.json();
+        const data = await getReport(id);
         setReport(data);
 
-        // Poll for updates if report is still processing
-        if (data.status === 'pending' || data.status === 'ingesting' || data.status === 'analyzing' || data.status === 'generating') {
-          setTimeout(fetchReport, 5000); // Poll every 5 seconds
+        // If report is still processing, continue polling
+        if (['pending', 'ingesting', 'analyzing', 'generating'].includes(data.status)) {
+          pollInterval = setTimeout(fetchReport, 3000);
+        } else {
+          setLoading(false);
         }
       } catch (err) {
-        console.error('Error fetching report:', err);
-        setError(err instanceof Error ? err.message : 'An unknown error occurred');
-      } finally {
+        setError(err instanceof Error ? err.message : 'Failed to load report');
         setLoading(false);
       }
     };
 
     fetchReport();
+
+    return () => {
+      if (pollInterval) clearTimeout(pollInterval);
+    };
   }, [id]);
 
-  if (loading && !report) {
-    return (
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4, display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
-        <Box sx={{ textAlign: 'center' }}>
-          <CircularProgress size={60} />
-          <Typography variant="h6" sx={{ mt: 2 }}>
-            Loading report...
-          </Typography>
-        </Box>
-      </Container>
-    );
-  }
+  const toggleSection = (section: string) => {
+    setExpandedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(section)) {
+        next.delete(section);
+      } else {
+        next.add(section);
+      }
+      return next;
+    });
+  };
+
+  const getProgressValue = () => {
+    if (!report) return 0;
+    if (report.status === 'complete') return 100;
+    if (report.status === 'failed') return 0;
+
+    const modules = [
+      'health',
+      'page_triage',
+      'serp_landscape',
+      'content_intelligence',
+      'gameplan',
+      'algorithm_impacts',
+      'intent_migration',
+      'ctr_modeling',
+      'site_architecture',
+      'branded_split',
+      'competitive_threats',
+      'revenue_attribution',
+    ];
+
+    const completed = modules.filter((m) => report.progress[m] === 'complete').length;
+    return (completed / modules.length) * 100;
+  };
+
+  const getStatusLabel = () => {
+    if (!report) return 'Loading...';
+    switch (report.status) {
+      case 'pending':
+        return 'Queued for processing';
+      case 'ingesting':
+        return 'Fetching data from Google Search Console and Analytics';
+      case 'analyzing':
+        return 'Running analysis modules';
+      case 'generating':
+        return 'Generating report';
+      case 'complete':
+        return 'Report complete';
+      case 'failed':
+        return 'Report generation failed';
+      default:
+        return 'Processing';
+    }
+  };
+
+  const getTrendIcon = (direction: string) => {
+    if (direction.includes('growth')) return <TrendingUp color="success" />;
+    if (direction.includes('decline')) return <TrendingDown color="error" />;
+    return <RemoveCircleOutline color="action" />;
+  };
 
   if (error) {
     return (
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
-        </Alert>
+      <Container maxWidth="lg" sx={{ py: 4 }}>
+        <Alert severity="error">{error}</Alert>
       </Container>
     );
   }
 
-  if (!report) {
+  if (loading || !report) {
     return (
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-        <Alert severity="info">
-          No report data available
-        </Alert>
+      <Container maxWidth="lg" sx={{ py: 4 }}>
+        <Box display="flex" flexDirection="column" alignItems="center" gap={3}>
+          <CircularProgress />
+          <Typography variant="h6">Loading report...</Typography>
+        </Box>
       </Container>
     );
   }
 
-  const isProcessing = ['pending', 'ingesting', 'analyzing', 'generating'].includes(report.status);
-  const module1Data = report.report_data?.module_1;
-  const dailyData = report.report_data?.daily_data;
+  if (report.status !== 'complete' || !report.report_data) {
+    return (
+      <Container maxWidth="lg" sx={{ py: 4 }}>
+        <Head>
+          <title>Generating Report | Search Intelligence</title>
+        </Head>
+        <Paper sx={{ p: 4 }}>
+          <Box display="flex" alignItems="center" gap={2} mb={3}>
+            <CircularProgress size={24} />
+            <Typography variant="h5">{getStatusLabel()}</Typography>
+          </Box>
+          <LinearProgress variant="determinate" value={getProgressValue()} sx={{ mb: 2 }} />
+          <Typography variant="body2" color="text.secondary">
+            {Math.round(getProgressValue())}% complete
+          </Typography>
+          {report.status === 'failed' && (
+            <Alert severity="error" sx={{ mt: 3 }}>
+              Report generation failed. Please try again or contact support.
+            </Alert>
+          )}
+        </Paper>
+      </Container>
+    );
+  }
+
+  const { report_data } = report;
 
   return (
-    <>
+    <Container maxWidth="lg" sx={{ py: 4 }}>
       <Head>
-        <title>Search Intelligence Report - {report.gsc_property}</title>
-        <meta name="description" content={`Comprehensive search intelligence report for ${report.gsc_property}`} />
+        <title>Search Intelligence Report | {report.gsc_property}</title>
       </Head>
 
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-        <Box sx={{ mb: 4 }}>
-          <Typography variant="h3" component="h1" gutterBottom>
-            Search Intelligence Report
-          </Typography>
-          <Typography variant="subtitle1" color="text.secondary" gutterBottom>
-            {report.gsc_property}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Generated: {new Date(report.created_at).toLocaleDateString()}
-            {report.completed_at && ` • Completed: ${new Date(report.completed_at).toLocaleDateString()}`}
-          </Typography>
+      {/* Report Header */}
+      <Box mb={4}>
+        <Typography variant="h3" gutterBottom>
+          Search Intelligence Report
+        </Typography>
+        <Typography variant="h6" color="text.secondary" gutterBottom>
+          {report.gsc_property}
+        </Typography>
+        <Box display="flex" gap={2} alignItems="center">
+          <Chip
+            label={`Generated ${new Date(report.completed_at!).toLocaleDateString()}`}
+            size="small"
+          />
+          {report.ga4_property && (
+            <Chip label={`GA4: ${report.ga4_property}`} size="small" variant="outlined" />
+          )}
         </Box>
+      </Box>
 
-        {isProcessing && (
-          <Alert severity="info" sx={{ mb: 3 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              <CircularProgress size={20} />
+      {/* Section 1: Health & Trajectory */}
+      {report_data.health && (
+        <SectionCard elevation={2}>
+          <SectionHeader onClick={() => toggleSection('health')}>
+            <Box display="flex" alignItems="center" gap={2}>
+              {getTrendIcon(report_data.health.overall_direction)}
               <Box>
-                <Typography variant="body1" fontWeight="bold">
-                  Report Generation In Progress
-                </Typography>
-                <Typography variant="body2">
-                  Status: {report.status}
-                  {report.status === 'analyzing' && ' - Running analysis modules...'}
-                  {report.status === 'ingesting' && ' - Fetching data from Google Search Console and Analytics...'}
-                  {report.status === 'generating' && ' - Generating final report...'}
+                <Typography variant="h6">Health & Trajectory</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {report_data.health.overall_direction.replace(/_/g, ' ')} at{' '}
+                  {Math.abs(report_data.health.trend_slope_pct_per_month).toFixed(1)}% per month
                 </Typography>
               </Box>
             </Box>
-          </Alert>
-        )}
+            <IconButton>
+              <ExpandIcon expanded={expandedSections.has('health')} />
+            </IconButton>
+          </SectionHeader>
+          <Collapse in={expandedSections.has('health')} timeout="auto" unmountOnExit>
+            <SectionContent>
+              <HealthSection data={report_data.health} />
+            </SectionContent>
+          </Collapse>
+        </SectionCard>
+      )}
 
-        {report.status === 'failed' && (
-          <Alert severity="error" sx={{ mb: 3 }}>
-            Report generation failed. Please try again or contact support.
-          </Alert>
-        )}
+      {/* Section 2: Page-Level Triage */}
+      {report_data.page_triage && (
+        <SectionCard elevation={2}>
+          <SectionHeader onClick={() => toggleSection('page_triage')}>
+            <Box display="flex" alignItems="center" gap={2}>
+              <Box>
+                <Typography variant="h6">Page Triage</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {report_data.page_triage.summary.critical} critical,{' '}
+                  {report_data.page_triage.summary.decaying} decaying —{' '}
+                  {report_data.page_triage.summary.total_recoverable_clicks_monthly.toLocaleString()}{' '}
+                  clicks/month recoverable
+                </Typography>
+              </Box>
+            </Box>
+            <IconButton>
+              <ExpandIcon expanded={expandedSections.has('page_triage')} />
+            </IconButton>
+          </SectionHeader>
+          <Collapse in={expandedSections.has('page_triage')} timeout="auto" unmountOnExit>
+            <SectionContent>
+              <PageTriageSection data={report_data.page_triage} />
+            </SectionContent>
+          </Collapse>
+        </SectionCard>
+      )}
 
-        {module1Data && dailyData && (
-          <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
-            <Typography variant="h5" gutterBottom>
-              Health & Trajectory Analysis
-            </Typography>
-            <Typography variant="body2" color="text.secondary" gutterBottom sx={{ mb: 3 }}>
-              Your site is currently <strong>{module1Data.overall_direction}</strong> at{' '}
-              <strong>{module1Data.trend_slope_pct_per_month > 0 ? '+' : ''}{module1Data.trend_slope_pct_per_month.toFixed(1)}%</strong>{' '}
-              per month
-            </Typography>
-
-            <HealthTrajectoryChart
-              data={dailyData}
-              changePoints={module1Data.change_points}
-              forecast={module1Data.forecast}
-            />
-
-            <Box sx={{ mt: 3 }}>
-              <Typography variant="h6" gutterBottom>
-                Key Insights
+      {/* Section 3: SERP Landscape (placeholder) */}
+      {report_data.serp_landscape && (
+        <SectionCard elevation={2}>
+          <SectionHeader onClick={() => toggleSection('serp')}>
+            <Box>
+              <Typography variant="h6">SERP Landscape Analysis</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Competitor mapping and SERP feature opportunities
               </Typography>
-              
-              {module1Data.change_points.length > 0 && (
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Change Points Detected:
-                  </Typography>
-                  {module1Data.change_points.map((cp, idx) => (
-                    <Typography key={idx} variant="body2" sx={{ ml: 2 }}>
-                      • {new Date(cp.date).toLocaleDateString()}: {cp.direction} ({(cp.magnitude * 100).toFixed(1)}%)
-                    </Typography>
-                  ))}
-                </Box>
-              )}
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" gutterBottom>
-                  Seasonality:
-                </Typography>
-                <Typography variant="body2" sx={{ ml: 2 }}>
-                  • Best performing day: {module1Data.seasonality.best_day}
-                </Typography>
-                <Typography variant="body2" sx={{ ml: 2 }}>
-                  • Worst performing day: {module1Data.seasonality.worst_day}
-                </Typography>
-                {module1Data.seasonality.monthly_cycle && (
-                  <Typography variant="body2" sx={{ ml: 2 }}>
-                    • Monthly pattern: {module1Data.seasonality.cycle_description}
-                  </Typography>
-                )}
-              </Box>
-
-              {module1Data.anomalies.length > 0 && (
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Anomalies Detected:
-                  </Typography>
-                  {module1Data.anomalies.slice(0, 5).map((anomaly, idx) => (
-                    <Typography key={idx} variant="body2" sx={{ ml: 2 }}>
-                      • {new Date(anomaly.date).toLocaleDateString()}: {anomaly.type} ({(anomaly.magnitude * 100).toFixed(1)}%)
-                    </Typography>
-                  ))}
-                </Box>
-              )}
-
-              <Box>
-                <Typography variant="subtitle2" gutterBottom>
-                  Forecast:
-                </Typography>
-                <Typography variant="body2" sx={{ ml: 2 }}>
-                  • 30 days: {module1Data.forecast["30d"].clicks.toLocaleString()} clicks 
-                  ({module1Data.forecast["30d"].ci_low.toLocaleString()} - {module1Data.forecast["30d"].ci_high.toLocaleString()})
-                </Typography>
-                <Typography variant="body2" sx={{ ml: 2 }}>
-                  • 60 days: {module1Data.forecast["60d"].clicks.toLocaleString()} clicks 
-                  ({module1Data.forecast["60d"].ci_low.toLocaleString()} - {module1Data.forecast["60d"].ci_high.toLocaleString()})
-                </Typography>
-                <Typography variant="body2" sx={{ ml: 2 }}>
-                  • 90 days: {module1Data.forecast["90d"].clicks.toLocaleString()} clicks 
-                  ({module1Data.forecast["90d"].ci_low.toLocaleString()} - {module1Data.forecast["90d"].ci_high.toLocaleString()})
-                </Typography>
-              </Box>
             </Box>
-          </Paper>
-        )}
+            <IconButton>
+              <ExpandIcon expanded={expandedSections.has('serp')} />
+            </IconButton>
+          </SectionHeader>
+          <Collapse in={expandedSections.has('serp')} timeout="auto" unmountOnExit>
+            <SectionContent>
+              <Typography>SERP analysis coming soon...</Typography>
+            </SectionContent>
+          </Collapse>
+        </SectionCard>
+      )}
 
-        {report.status === 'complete' && !module1Data && (
-          <Alert severity="warning" sx={{ mb: 3 }}>
-            Report completed but no analysis data available. This may indicate an issue with data processing.
-          </Alert>
-        )}
+      {/* Section 4: Content Intelligence (placeholder) */}
+      {report_data.content_intelligence && (
+        <SectionCard elevation={2}>
+          <SectionHeader onClick={() => toggleSection('content')}>
+            <Box>
+              <Typography variant="h6">Content Intelligence</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Cannibalization, striking distance, and content gaps
+              </Typography>
+            </Box>
+            <IconButton>
+              <ExpandIcon expanded={expandedSections.has('content')} />
+            </IconButton>
+          </SectionHeader>
+          <Collapse in={expandedSections.has('content')} timeout="auto" unmountOnExit>
+            <SectionContent>
+              <Typography>Content analysis coming soon...</Typography>
+            </SectionContent>
+          </Collapse>
+        </SectionCard>
+      )}
 
-        {!isProcessing && !module1Data && report.status !== 'failed' && (
-          <Paper elevation={1} sx={{ p: 4, textAlign: 'center' }}>
-            <Typography variant="h6" color="text.secondary">
-              Additional report sections coming soon...
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              This report is being actively generated. Check back in a few minutes.
-            </Typography>
-          </Paper>
-        )}
-      </Container>
-    </>
+      {/* Section 5: The Gameplan (placeholder) */}
+      {report_data.gameplan && (
+        <SectionCard elevation={2}>
+          <SectionHeader onClick={() => toggleSection('gameplan')}>
+            <Box>
+              <Typography variant="h6">The Gameplan</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Prioritized action plan with impact estimates
+              </Typography>
+            </Box>
+            <IconButton>
+              <ExpandIcon expanded={expandedSections.has('gameplan')} />
+            </IconButton>
+          </SectionHeader>
+          <Collapse in={expandedSections.has('gameplan')} timeout="auto" unmountOnExit>
+            <SectionContent>
+              <Typography>Action plan coming soon...</Typography>
+            </SectionContent>
+          </Collapse>
+        </SectionCard>
+      )}
+
+      {/* Consulting CTA */}
+      <Paper sx={{ p: 4, mt: 4, textAlign: 'center', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', color: 'white' }}>
+        <Typography variant="h5" gutterBottom>
+          Want help executing this plan?
+        </Typography>
+        <Typography variant="body1" sx={{ mb: 3 }}>
+          Our search intelligence consulting team can implement these recommendations and drive measurable traffic growth.
+        </Typography>
+        <Box component="a" href="/contact" sx={{ 
+          display: 'inline-block',
+          px: 4,
+          py: 1.5,
+          background: 'white',
+          color: '#667eea',
+          borderRadius: 2,
+          textDecoration: 'none',
+          fontWeight: 600,
+          '&:hover': {
+            background: '#f0f0f0',
+          }
+        }}>
+          Book a Call
+        </Box>
+      </Paper>
+    </Container>
   );
 }
