@@ -181,7 +181,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 ### Frontend Report UI (Days 15-21)
 
-- [ ] **DAY 15** — Report page scaffold: `/web/pages/report/[id].tsx`. Collapsible card component. TL;DR + visualization placeholder + detail table + actions layout per section. No real data yet — use hardcoded mock report JSON.
+- [x] **DAY 15** — Report page scaffold: `/web/pages/report/[id].tsx`. Collapsible card component. TL;DR + visualization placeholder + detail table + actions layout per section. No real data yet — use hardcoded mock report JSON.
 
 - [ ] **DAY 16** — Health & Trajectory visualization: line chart with trend + forecast + confidence interval bands + change point markers. Use Recharts. Wire to real Module 1 output.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 14
-**Last Task:** End-to-end Phase 1 pipeline test with real GSC+GA4 property, verifying all 3 mod
+**Current Day:** 15
+**Last Task:** Created report page scaffold with collapsible card component, mock report viewer
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 15 — Report page scaffold: `/web/pages/report/[id].tsx`. Collapsi
+**Next Task:** DAY 16 — Health & Trajectory visualization: line chart with trend + f
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
