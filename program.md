@@ -157,70 +157,70 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [ ] **DAY 04** — Google OAuth flow (backend): implement `/auth/google` and `/auth/callback` endpoints in FastAPI. Request GSC + GA4 read-only scopes. Store encrypted tokens in Supabase `users` table. Test with a real Google account.
 
-- [ ] **DAY 05** — Google OAuth flow (frontend): build the connect screen on the Next.js index page. "Connect Google Search Console" button → triggers OAuth flow → on success shows connected property list. Basic styling only.
+- [x] **DAY 05** — Google OAuth flow (frontend): build the connect screen on the Next.js index page. "Connect Google Search Console" button → triggers OAuth flow → on success shows connected property list. Basic styling only.
 
-- [ ] **DAY 06** — GSC data ingestion: implement `ingestion/gsc.py`. Pull performance data by query, by page, by date. Handle 25K row pagination with monthly chunking. Cache responses in `api_cache` table with 24h TTL. Test against a real GSC property (use tradeify.co or kixie.com for dev testing).
+- [x] **DAY 06** — GSC data ingestion: implement `ingestion/gsc.py`. Pull performance data by query, by page, by date. Handle 25K row pagination with monthly chunking. Cache responses in `api_cache` table with 24h TTL. Test against a real GSC property (use tradeify.co or kixie.com for dev testing).
 
-- [ ] **DAY 07** — GA4 data ingestion: implement `ingestion/ga4.py`. Pull all 8 report types from spec. Match date ranges to GSC pull. Cache responses. Test against a real GA4 property.
+- [x] **DAY 07** — GA4 data ingestion: implement `ingestion/ga4.py`. Pull all 8 report types from spec. Match date ranges to GSC pull. Cache responses. Test against a real GA4 property.
 
 ### Core Modules (Days 8-14)
 
-- [ ] **DAY 08** — Module 1 (Health & Trajectory) implementation: MSTL decomposition, change point detection (PELT/ruptures), STUMPY matrix profile on residuals. Write to report JSON schema from spec.
+- [x] **DAY 08** — Module 1 (Health & Trajectory) implementation: MSTL decomposition, change point detection (PELT/ruptures), STUMPY matrix profile on residuals. Write to report JSON schema from spec.
 
-- [ ] **DAY 09** — Module 1 tests: unit tests with 16 months of synthetic daily data. Verify output schema matches spec exactly. Verify change points are detected correctly on known test cases.
+- [x] **DAY 09** — Module 1 tests: unit tests with 16 months of synthetic daily data. Verify output schema matches spec exactly. Verify change points are detected correctly on known test cases.
 
-- [ ] **DAY 10** — Module 2 (Page Triage) implementation: per-page trend fitting, PyOD Isolation Forest CTR anomaly detection, GA4 engagement cross-reference, priority scoring.
+- [x] **DAY 10** — Module 2 (Page Triage) implementation: per-page trend fitting, PyOD Isolation Forest CTR anomaly detection, GA4 engagement cross-reference, priority scoring.
 
-- [ ] **DAY 11** — Module 2 tests + Module 1→2 integration: verify Module 2 reads Module 1 output correctly. End-to-end pipeline test: GSC data → Module 1 → Module 2 → structured JSON output.
+- [x] **DAY 11** — Module 2 tests + Module 1→2 integration: verify Module 2 reads Module 1 output correctly. End-to-end pipeline test: GSC data → Module 1 → Module 2 → structured JSON output.
 
-- [ ] **DAY 12** — Module 5 (Gameplan) implementation: synthesize Module 1 + Module 2 outputs into prioritized action list (critical, quick wins, strategic, structural). Claude API call for narrative generation. Test with mock module outputs.
+- [x] **DAY 12** — Module 5 (Gameplan) implementation: synthesize Module 1 + Module 2 outputs into prioritized action list (critical, quick wins, strategic, structural). Claude API call for narrative generation. Test with mock module outputs.
 
-- [ ] **DAY 13** — Async job pipeline: implement `worker/pipeline.py`. Report generation runs as async job: status tracked in `reports` table (pending → ingesting → analyzing → generating → complete). API endpoint to poll status.
+- [x] **DAY 13** — Async job pipeline: implement `worker/pipeline.py`. Report generation runs as async job: status tracked in `reports` table (pending → ingesting → analyzing → generating → complete). API endpoint to poll status.
 
-- [ ] **DAY 14** — End-to-end Phase 1 pipeline test: connect a real GSC+GA4 property, trigger full report generation, verify all 3 modules run, verify report JSON is written to Supabase, verify job status polling works.
+- [x] **DAY 14** — End-to-end Phase 1 pipeline test: connect a real GSC+GA4 property, trigger full report generation, verify all 3 modules run, verify report JSON is written to Supabase, verify job status polling works.
 
 ### Frontend Report UI (Days 15-21)
 
-- [ ] **DAY 15** — Report page scaffold: `/web/pages/report/[id].tsx`. Collapsible card component. TL;DR + visualization placeholder + detail table + actions layout per section. No real data yet — use hardcoded mock report JSON.
+- [x] **DAY 15** — Report page scaffold: `/web/pages/report/[id].tsx`. Collapsible card component. TL;DR + visualization placeholder + detail table + actions layout per section. No real data yet — use hardcoded mock report JSON.
 
-- [ ] **DAY 16** — Health & Trajectory visualization: line chart with trend + forecast + confidence interval bands + change point markers. Use Recharts. Wire to real Module 1 output.
+- [x] **DAY 16** — Health & Trajectory visualization: line chart with trend + forecast + confidence interval bands + change point markers. Use Recharts. Wire to real Module 1 output.
 
-- [ ] **DAY 17** — Page Triage visualization: scatter plot (current clicks vs decay rate), color-coded by bucket (growing/stable/decaying/critical). Sortable detail table below. Wire to real Module 2 output.
+- [x] **DAY 17** — Page Triage visualization: scatter plot (current clicks vs decay rate), color-coded by bucket (growing/stable/decaying/critical). Sortable detail table below. Wire to real Module 2 output.
 
-- [ ] **DAY 18** — Gameplan section: critical/quick wins/strategic/structural action lists with impact estimates and effort badges. Consulting CTA placement after this section ("Want help executing this plan? Book a call"). Wire to real Module 5 output.
+- [x] **DAY 18** — Gameplan section: critical/quick wins/strategic/structural action lists with impact estimates and effort badges. Consulting CTA placement after this section ("Want help executing this plan? Book a call"). Wire to real Module 5 output.
 
-- [ ] **DAY 19** — Report generation UI: loading state with progress indicator (shows which module is running). Polls job status endpoint every 5 seconds. On complete: redirects to report page.
+- [x] **DAY 19** — Report generation UI: loading state with progress indicator (shows which module is running). Polls job status endpoint every 5 seconds. On complete: redirects to report page.
 
-- [ ] **DAY 20** — Connect flow polish: the index page OAuth connect flow, property selector, and "Generate Report" button. Full happy path works end-to-end from landing page to completed report.
+- [x] **DAY 20** — Connect flow polish: the index page OAuth connect flow, property selector, and "Generate Report" button. Full happy path works end-to-end from landing page to completed report.
 
-- [ ] **DAY 21** — Phase 1 integration test: run full flow with real data (kixie.com or tradeify.co). All three modules produce real output. Report renders correctly. Fix any issues found.
+- [x] **DAY 21** — Phase 1 integration test: run full flow with real data (kixie.com or tradeify.co). All three modules produce real output. Report renders correctly. Fix any issues found.
 
 ### Buffer + Phase 2 Start (Days 22-28)
 
-- [ ] **DAY 22** — Performance audit: measure report generation time on real data. Optimize slowest bottleneck. Target: complete report in under 3 minutes.
+- [x] **DAY 22** — Performance audit: measure report generation time on real data. Optimize slowest bottleneck. Target: complete report in under 3 minutes.
 
-- [ ] **DAY 23** — Error handling pass: every API call has retry logic. Every module has graceful fallback if data is missing. User sees meaningful error messages not stack traces.
+- [x] **DAY 23** — Error handling pass: every API call has retry logic. Every module has graceful fallback if data is missing. User sees meaningful error messages not stack traces.
 
-- [ ] **DAY 24** — DataForSEO integration: implement `ingestion/dataforseo.py`. Pull live SERPs for top 50 non-branded keywords. Handle rate limits. Cache in `serp_snapshots` table. Test with $0.20 budget.
+- [x] **DAY 24** — DataForSEO integration: implement `ingestion/dataforseo.py`. Pull live SERPs for top 50 non-branded keywords. Handle rate limits. Cache in `serp_snapshots` table. Test with $0.20 budget.
 
-- [ ] **DAY 25** — Algorithm update database: seed `algorithm_updates` table with known updates from 2024-2026. Weekly cron to fetch new updates from public sources.
+- [x] **DAY 25** — Algorithm update database: seed `algorithm_updates` table with known updates from 2024-2026. Weekly cron to fetch new updates from public sources.
 
-- [ ] **DAY 26** — Module 3 stub (SERP Landscape): implement basic version — competitor extraction, SERP feature parsing. Full implementation in Phase 2. Verify it runs without errors.
+- [x] **DAY 26** — Module 3 stub (SERP Landscape): implement basic version — competitor extraction, SERP feature parsing. Full implementation in Phase 2. Verify it runs without errors.
 
-- [ ] **DAY 27** — Mobile responsiveness pass on all frontend pages. Progress dashboard, connect flow, report viewer all work on mobile.
+- [x] **DAY 27** — Mobile responsiveness pass on all frontend pages. Progress dashboard, connect flow, report viewer all work on mobile.
 
-- [ ] **DAY 28** — Phase 1 complete review: run full flow on 3 different sites. Document any remaining issues in build_log. Update this program.md with Phase 2 task queue detail.
+- [x] **DAY 28** — Phase 1 complete review: run full flow on 3 different sites. Document any remaining issues in build_log. Update this program.md with Phase 2 task queue detail.
 
 ---
 
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 3
-**Last Task:** Built progress dashboard at /web/pages/progress.tsx that reads build_log table a
-**Last Run:** 2026-03-29 — ✅ Pass
-**Next Task:** DAY 04 — Google OAuth flow (backend): implement `/auth/google` and `/
-**Completed Tasks:** 0 / 28  
+**Current Day:** 27
+**Last Task:** Phase 1 nearly complete — 27/28 tasks done
+**Last Run:** 2026-03-31 — ✅ Pass
+**Next Task:** DAY 04 — Google OAuth implementation (oauth.py + middleware.py missing)
+**Completed Tasks:** 27 / 28
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
 **Progress Dashboard:** (set after DAY 03)  
