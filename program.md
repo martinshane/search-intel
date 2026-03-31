@@ -191,7 +191,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 19** — Report generation UI: loading state with progress indicator (shows which module is running). Polls job status endpoint every 5 seconds. On complete: redirects to report page.
 
-- [ ] **DAY 20** — Connect flow polish: the index page OAuth connect flow, property selector, and "Generate Report" button. Full happy path works end-to-end from landing page to completed report.
+- [x] **DAY 20** — Connect flow polish: the index page OAuth connect flow, property selector, and "Generate Report" button. Full happy path works end-to-end from landing page to completed report.
 
 - [ ] **DAY 21** — Phase 1 integration test: run full flow with real data (kixie.com or tradeify.co). All three modules produce real output. Report renders correctly. Fix any issues found.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 19
-**Last Task:** Build report generation loading UI with progress indicator, status polling, and 
+**Current Day:** 20
+**Last Task:** Connect flow polish: completed OAuth flow, property selector, and Generate Repor
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 20 — Connect flow polish: the index page OAuth connect flow, prop
+**Next Task:** DAY 21 — Phase 1 integration test: run full flow with real data (kixi
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
