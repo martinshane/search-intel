@@ -1,21 +1,33 @@
 """
-Search Intelligence Report — Nightly Autoresearch Loop
-DO NOT MODIFY — this is the autoresearch engine itself.
-The agent builds files in /api and /web, not this file.
+Search Intelligence Report — Autonomous Build Loop
+Inspired by Karpathy's autoresearch pattern.
+
+Each night:
+1. Evaluate the current state of the codebase objectively
+2. If there are problems — fix the worst one, verify the fix
+3. If no problems — identify and build the next most valuable thing
+4. Keep if better, revert if worse
+5. Log and notify
+
+The agent decides what to do. The metric decides if it worked.
+DO NOT MODIFY THIS FILE — it is the autonomous loop itself.
 """
 
 import os
-import re
+import ast
+import json
 import time
 import datetime
 import traceback
-import json
+import subprocess
 import httpx
 from supabase import create_client
 from anthropic import Anthropic
 from github import Github
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
+
+# ── Clients ────────────────────────────────────────────────────────────────────
 
 SUPABASE_URL  = os.environ["SUPABASE_URL"]
 SUPABASE_KEY  = os.environ["SUPABASE_SERVICE_KEY"]
@@ -33,91 +45,157 @@ slack     = WebClient(token=SLACK_TOKEN)
 gh        = Github(GITHUB_TOKEN)
 repo      = gh.get_repo(GITHUB_REPO)
 
-RAILWAY_API = "https://backboard.railway.app/graphql/v2"
+# ── Codebase Evaluation ────────────────────────────────────────────────────────
 
-def get_latest_deployment_status(service_name="search-intel-api"):
-    query = """query { me { projects { edges { node { services { edges { node {
-        name deployments(first:1) { edges { node { status url createdAt } } }
-    } } } } } } } }"""
+def scan_syntax_errors() -> list[dict]:
+    """Find all Python files with syntax errors by fetching from GitHub."""
+    errors = []
     try:
-        r = httpx.post(RAILWAY_API,
-            headers={"Authorization": f"Bearer {RAILWAY_TOKEN}", "Content-Type": "application/json"},
-            json={"query": query}, timeout=30)
-        projects = r.json().get("data", {}).get("me", {}).get("projects", {}).get("edges", [])
-        for p in projects:
-            for s in p.get("node", {}).get("services", {}).get("edges", []):
-                node = s.get("node", {})
-                if node.get("name") == service_name:
-                    deps = node.get("deployments", {}).get("edges", [])
-                    if deps:
-                        dep = deps[0].get("node", {})
-                        return {"status": dep.get("status", "unknown"), "url": dep.get("url", "")}
+        contents = repo.get_contents("api")
+        stack = list(contents)
+        while stack:
+            item = stack.pop()
+            if item.type == "dir":
+                stack.extend(repo.get_contents(item.path))
+            elif item.path.endswith(".py") and item.path != "cron/loop.py":
+                try:
+                    code = item.decoded_content.decode("utf-8")
+                    ast.parse(code)
+                except SyntaxError as e:
+                    errors.append({
+                        "path": item.path,
+                        "error": str(e),
+                        "line": e.lineno,
+                        "code_snippet": code[:500]
+                    })
     except Exception as e:
-        print(f"Railway API error: {e}")
-    return {"status": "unknown", "url": ""}
+        print(f"Scan error: {e}")
+    return errors
 
-def wait_for_deployment(service_name="search-intel-api", timeout_seconds=180):
-    print(f"Waiting for {service_name} deployment...")
-    start = time.time()
-    while time.time() - start < timeout_seconds:
-        result = get_latest_deployment_status(service_name)
-        status = result.get("status", "unknown")
-        print(f"  Deployment: {status}")
-        if status == "SUCCESS":
-            return True
-        elif status in ("FAILED", "CRASHED", "REMOVED"):
-            return False
-        time.sleep(10)
-    print(f"  Timed out after {timeout_seconds}s")
-    return False
-
-def verify_endpoint(url, path="/health", expected_key="status", expected_value="ok"):
-    if not url:
-        return False, "No API_URL set"
-    try:
-        full_url = f"{url.rstrip('/')}{path}"
-        print(f"  Verifying: GET {full_url}")
-        r = httpx.get(full_url, timeout=15)
-        if r.status_code == 200:
-            data = r.json()
-            if data.get(expected_key) == expected_value:
-                return True, f"{full_url} → {data}"
-            return False, f"Unexpected response: {data}"
-        return False, f"HTTP {r.status_code}"
-    except Exception as e:
-        return False, f"Error: {e}"
-
-def run_deployment_checks(day):
+def check_live_endpoints() -> list[dict]:
+    """Hit live endpoints and report what's broken."""
     if not API_URL:
-        return True, "API_URL not set yet — skipping live checks"
-    passed, msg = verify_endpoint(API_URL, "/health", "status", "ok")
-    if not passed:
-        return False, f"Health check failed: {msg}"
-    day_checks = {
-        6: ["/api/gsc/test"], 7: ["/api/ga4/test"],
-        8: ["/api/modules/health"], 13: ["/api/reports"],
-    }
-    for path in day_checks.get(day, []):
+        return []
+    
+    failures = []
+    checks = [
+        ("/health", "GET", {"status": "ok"}),
+        ("/api/v1/reports", "GET", None),   # Should return 401, not 500
+        ("/auth/google", "GET", None),       # Should redirect, not 500
+    ]
+    
+    for path, method, expected in checks:
         try:
-            r = httpx.get(f"{API_URL.rstrip('/')}{path}", timeout=10)
-            if r.status_code in (404, 500, 502, 503):
-                return False, f"{path} returned {r.status_code}"
-            print(f"  {path} → {r.status_code} ✓")
+            url = f"{API_URL.rstrip('/')}{path}"
+            r = httpx.get(url, timeout=10, follow_redirects=False)
+            if r.status_code in (500, 502, 503, 504):
+                failures.append({
+                    "path": path,
+                    "status": r.status_code,
+                    "body": r.text[:200]
+                })
+            elif expected and r.status_code == 200:
+                data = r.json()
+                for k, v in expected.items():
+                    if data.get(k) != v:
+                        failures.append({
+                            "path": path,
+                            "status": r.status_code,
+                            "body": f"Expected {k}={v}, got {data}"
+                        })
         except Exception as e:
-            return False, f"{path} unreachable: {e}"
-    return True, msg
+            failures.append({"path": path, "status": "unreachable", "body": str(e)})
+    
+    return failures
 
-def read_program_md():
-    return repo.get_contents("program.md").decoded_content.decode("utf-8")
+def get_missing_files() -> list[str]:
+    """Find files that are imported but don't exist."""
+    missing = []
+    known_missing = []
+    
+    try:
+        # Check auth module specifically - known gap
+        auth_init = repo.get_contents("api/auth/__init__.py").decoded_content.decode()
+        for line in auth_init.splitlines():
+            if line.startswith("from ."):
+                module = line.split("from .")[1].split(" ")[0]
+                try:
+                    repo.get_contents(f"api/auth/{module}.py")
+                except Exception:
+                    missing.append(f"api/auth/{module}.py")
+    except Exception:
+        pass
+    
+    return missing
 
-def read_spec():
-    return repo.get_contents("supabase/spec.md").decoded_content.decode("utf-8")
+def evaluate_codebase() -> dict:
+    """
+    Full objective evaluation of codebase health.
+    Returns a score and list of problems, ordered by severity.
+    """
+    print("Evaluating codebase...")
+    
+    syntax_errors = scan_syntax_errors()
+    endpoint_failures = check_live_endpoints()
+    missing_files = get_missing_files()
+    
+    problems = []
+    
+    # Syntax errors are critical — code won't run
+    for err in syntax_errors:
+        problems.append({
+            "severity": "critical",
+            "type": "syntax_error",
+            "file": err["path"],
+            "description": f"SyntaxError at line {err['line']}: {err['error']}",
+            "detail": err
+        })
+    
+    # Missing files are critical — imports will fail
+    for f in missing_files:
+        problems.append({
+            "severity": "critical",
+            "type": "missing_file",
+            "file": f,
+            "description": f"File imported but does not exist: {f}",
+            "detail": {"path": f}
+        })
+    
+    # Endpoint failures are high severity
+    for fail in endpoint_failures:
+        problems.append({
+            "severity": "high",
+            "type": "endpoint_failure",
+            "file": fail["path"],
+            "description": f"Endpoint {fail['path']} returning {fail['status']}",
+            "detail": fail
+        })
+    
+    score = 100 - (len([p for p in problems if p["severity"] == "critical"]) * 20) \
+                - (len([p for p in problems if p["severity"] == "high"]) * 10)
+    score = max(0, score)
+    
+    print(f"Score: {score}/100 | Critical: {len([p for p in problems if p['severity']=='critical'])} | High: {len([p for p in problems if p['severity']=='high'])}")
+    
+    return {
+        "score": score,
+        "problems": problems,
+        "syntax_errors": len(syntax_errors),
+        "endpoint_failures": len(endpoint_failures),
+        "missing_files": len(missing_files)
+    }
 
-def update_program_md(content, message):
-    f = repo.get_contents("program.md")
-    repo.update_file("program.md", message, content, f.sha)
+# ── GitHub Helpers ─────────────────────────────────────────────────────────────
 
-def push_file(path, content, message):
+def get_file_content(path: str) -> str | None:
+    """Get current content of a file from GitHub."""
+    try:
+        return repo.get_contents(path).decoded_content.decode("utf-8")
+    except Exception:
+        return None
+
+def push_file(path: str, content: str, message: str):
+    """Create or update a file. Never touches cron/loop.py."""
     if path == "cron/loop.py":
         print(f"  PROTECTED — skipped: {path}")
         return
@@ -126,242 +204,280 @@ def push_file(path, content, message):
         repo.update_file(path, message, content, existing.sha)
     except Exception:
         repo.create_file(path, message, content)
+    print(f"  Pushed: {path}")
 
-def get_next_task(program):
-    """Find next unchecked task — handles DAY and REPAIR tasks."""
-    for line in program.splitlines():
-        stripped = line.strip()
-        # Handle DAY tasks
-        if stripped.startswith("- [ ] **DAY"):
-            try:
-                day = int(line.split("**DAY")[1].split("**")[0].strip())
-                desc = line.split("—", 1)[1].strip() if "—" in line else line.strip()
-                return day, desc
-            except Exception:
-                continue
-        # Handle REPAIR tasks
-        if stripped.startswith("- [ ] **REPAIR"):
-            try:
-                repair_num = int(line.split("**REPAIR")[1].split("**")[0].strip())
-                desc = line.split("—", 1)[1].strip() if "—" in line else line.strip()
-                # Use 100+ range for repair tasks to distinguish from day tasks
-                return 100 + repair_num, desc
-            except Exception:
-                continue
-    return 0, "No tasks remaining"
+def revert_file(path: str, original_content: str, message: str):
+    """Revert a file to its original content."""
+    push_file(path, original_content, message)
+    print(f"  Reverted: {path}")
 
-def mark_task_complete(program, day):
-    lines = program.splitlines()
-    result = []
-    for line in lines:
-        if day >= 100:
-            # REPAIR task
-            repair_num = day - 100
-            if (f"- [ ] **REPAIR {repair_num:02d}**" in line or
-                f"- [ ] **REPAIR {repair_num}**" in line):
-                line = line.replace("- [ ]", "- [x]", 1)
-        else:
-            if (f"- [ ] **DAY {day:02d}**" in line or f"- [ ] **DAY {day}**" in line):
-                line = line.replace("- [ ]", "- [x]", 1)
-        result.append(line)
-    return "\n".join(result)
-
-def update_current_state(program, day, task, status):
-    lines, result, in_state = program.splitlines(), [], False
-    for line in lines:
-        if line.startswith("## Current State"):
-            in_state = True
-        elif line.startswith("## ") and in_state:
-            in_state = False
-        if in_state:
-            if line.startswith("**Current Day:**"):
-                line = f"**Current Day:** {day}"
-            elif line.startswith("**Last Task:**"):
-                line = f"**Last Task:** {task[:80]}"
-            elif line.startswith("**Last Run:**"):
-                line = f"**Last Run:** {datetime.date.today().isoformat()} — {status}"
-            elif line.startswith("**Next Task:**") and "Pass" in status:
-                nd, nt = get_next_task(program)
-                line = f"**Next Task:** DAY {nd:02d} — {nt[:60]}"
-        result.append(line)
-    return "\n".join(result)
-
-def count_completed(program):
-    return program.count("- [x]")
-
-def commit_files(result, message):
-    for f in result.get("files", []):
-        if f["path"] != "cron/loop.py":
-            push_file(f["path"], f["content"], message)
-            print(f"  Pushed: {f['path']}")
+def get_latest_commit_url() -> str:
     try:
         return list(repo.get_commits())[0].html_url
     except Exception:
-        return None
+        return ""
 
-def log_to_supabase(day, task, status, notes, commit_url=None, duration=None):
+def read_spec() -> str:
+    try:
+        return repo.get_contents("supabase/spec.md").decoded_content.decode("utf-8")
+    except Exception:
+        return ""
+
+# ── Railway ────────────────────────────────────────────────────────────────────
+
+RAILWAY_API = "https://backboard.railway.app/graphql/v2"
+
+def wait_for_deployment(timeout=180) -> bool:
+    if not API_URL:
+        return True  # Can't check, assume ok
+    print("Waiting for deployment...")
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            r = httpx.get(f"{API_URL}/health", timeout=10)
+            if r.status_code == 200:
+                print("  Deployment live.")
+                return True
+        except Exception:
+            pass
+        time.sleep(10)
+    return False
+
+# ── Supabase + Slack ───────────────────────────────────────────────────────────
+
+def log_run(action: str, status: str, score_before: int, score_after: int,
+            notes: str, commit_url: str = "", duration: int = 0):
     supabase.table("build_log").insert({
-        "day": day, "run_date": datetime.date.today().isoformat(),
-        "task": task, "status": status, "notes": notes,
-        "commit_url": commit_url, "duration_seconds": duration
+        "day": 0,
+        "run_date": datetime.date.today().isoformat(),
+        "task": action,
+        "status": status,
+        "notes": f"Score: {score_before} → {score_after}\n{notes}",
+        "commit_url": commit_url,
+        "duration_seconds": duration
     }).execute()
 
-def post_to_slack(day, task, status, notes, commit_url=None, completed=0, total=28):
-    icon = "✅" if status == "pass" else "❌"
-    bar = "█" * min(completed, total) + "░" * (total - min(completed, total))
+def post_to_slack(action: str, status: str, score_before: int, score_after: int,
+                  notes: str, commit_url: str = ""):
+    icon = "✅" if status == "pass" else ("↩️" if status == "reverted" else "❌")
+    delta = score_after - score_before
+    delta_str = f"+{delta}" if delta > 0 else str(delta)
+    color_bar = "█" * (score_after // 10) + "░" * (10 - score_after // 10)
+
     blocks = [
         {"type": "header", "text": {"type": "plain_text",
             "text": f"🌙 Search Intel — {datetime.date.today().strftime('%B %d, %Y')}"}},
         {"type": "section", "fields": [
-            {"type": "mrkdwn", "text": f"*Task:*\nDAY {day:02d} — {task[:60]}"},
-            {"type": "mrkdwn", "text": f"*Status:*\n{icon} {status.title()}"}
+            {"type": "mrkdwn", "text": f"*Action:*\n{action[:80]}"},
+            {"type": "mrkdwn", "text": f"*Result:*\n{icon} {status.title()}"}
+        ]},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Score:*\n{score_before} → {score_after} ({delta_str})"},
+            {"type": "mrkdwn", "text": f"*Health:*\n`{color_bar}` {score_after}/100"}
         ]}
     ]
     if notes:
         blocks.append({"type": "section",
             "text": {"type": "mrkdwn", "text": f"*Notes:*\n{notes[:400]}"}})
-    blocks.append({"type": "section",
-        "text": {"type": "mrkdwn",
-            "text": f"*Phase 1:* {completed}/{total}\n`{bar}`"}})
     if commit_url:
         blocks.append({"type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Commit:* <{commit_url}|View>"}})
+            "text": {"type": "mrkdwn", "text": f"*Commit:* <{commit_url}|View changes>"}})
     try:
         slack.chat_postMessage(channel=SLACK_CHANNEL, blocks=blocks)
     except SlackApiError as e:
         print(f"Slack error: {e}")
 
-PLAN_PROMPT = """You are an autonomous build agent for the Search Intelligence Report.
+# ── Agent ──────────────────────────────────────────────────────────────────────
 
-Output a JSON plan with NO file contents:
+AGENT_SYSTEM = """You are an autonomous software engineer working on the Search Intelligence Report project.
+
+Each night you receive an evaluation of the current codebase state including:
+- A health score (0-100)
+- A list of problems (syntax errors, missing files, endpoint failures)
+- The technical spec
+
+Your job is to make ONE targeted improvement. You decide what to fix or build.
+
+Priority order:
+1. Fix syntax errors (code that won't even parse)
+2. Create missing files that break imports
+3. Fix endpoint failures
+4. Improve incomplete implementations
+5. Add missing features from the spec
+
+Respond with ONLY a JSON object:
 {
-    "status": "pass"|"fail",
-    "task_summary": "one line",
-    "notes": "details for Shane",
-    "commit_message": "git message",
-    "failure_reason": "if fail",
-    "shrunk_task": "if fail, smaller scope",
-    "files_to_write": [{"path": "path/from/root", "description": "what it does"}]
+    "action": "one-line description of what you are doing",
+    "reasoning": "why this is the most important thing to fix right now",
+    "files": [
+        {
+            "path": "relative/path/from/repo/root",
+            "content": "COMPLETE file content — never truncated, production quality"
+        }
+    ],
+    "commit_message": "concise git commit message",
+    "expected_improvement": "what metric should improve and by how much"
 }
 
-Rules: Valid JSON only. Never include cron/loop.py. Build only what the task requires."""
+Rules:
+- ONE logical change per run (can span multiple related files)
+- NEVER include cron/loop.py in files
+- File content must be COMPLETE — never truncated
+- Write production-quality Python/TypeScript with proper error handling
+- If fixing a syntax error, rewrite the ENTIRE file correctly, not just the broken part
+- If creating a missing file, implement it fully per the spec
+"""
 
-FILE_PROMPT = """Write ONLY the raw file content for the Search Intelligence Report project.
-No JSON wrapper, no markdown fences, no explanation.
-Start with the first character. End with the last.
-Production-quality code, proper error handling, follow the spec exactly."""
+def run_agent(evaluation: dict, spec: str) -> dict:
+    """Ask the agent what to do and get back files to write."""
+    
+    problems_text = "\n".join([
+        f"  [{p['severity'].upper()}] {p['type']}: {p['description']}"
+        for p in evaluation["problems"][:10]
+    ])
+    
+    message = f"""Current codebase health: {evaluation['score']}/100
 
-def run_agent(program, spec, day, task):
-    plan_r = anthropic.messages.create(
-        model="claude-sonnet-4-5", max_tokens=2000, system=PLAN_PROMPT,
-        messages=[{"role": "user", "content":
-            f"Task: DAY {day:02d}: {task}\n\nprogram.md:\n<program>\n{program}\n</program>\n\n"
-            f"Spec (40k):\n<spec>\n{spec[:40000]}\n</spec>\n\nJSON plan only:"}]
+Problems found ({len(evaluation['problems'])} total):
+{problems_text if problems_text else "  No problems detected"}
+
+Syntax errors: {evaluation['syntax_errors']}
+Missing files: {evaluation['missing_files']}
+Endpoint failures: {evaluation['endpoint_failures']}
+
+Technical spec (first 30k chars):
+<spec>
+{spec[:30000]}
+</spec>
+
+Decide what single improvement to make. Output JSON only."""
+
+    response = anthropic.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=16000,
+        system=AGENT_SYSTEM,
+        messages=[{"role": "user", "content": message}]
     )
-    raw = plan_r.content[0].text.strip()
+
+    raw = response.content[0].text.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"): raw = raw[4:]
     if raw.endswith("```"): raw = raw[:-3]
-    plan = json.loads(raw.strip())
+    
+    return json.loads(raw.strip())
 
-    files_to_write = [f for f in plan.get("files_to_write", [])
-                      if f["path"] != "cron/loop.py"]
-    print(f"Plan: {plan.get('status')} | Files: {[f['path'] for f in files_to_write]}")
-
-    if plan.get("status") == "fail":
-        return {"status": "fail", "task_summary": plan.get("task_summary", task[:60]),
-                "notes": plan.get("notes", ""), "failure_reason": plan.get("failure_reason", ""),
-                "shrunk_task": plan.get("shrunk_task", ""), "files": []}
-
-    files = []
-    for fi in files_to_write:
-        print(f"  Writing: {fi['path']}")
-        fr = anthropic.messages.create(
-            model="claude-sonnet-4-5", max_tokens=16000, system=FILE_PROMPT,
-            messages=[{"role": "user", "content":
-                f"File: {fi['path']}\nDescription: {fi.get('description','')}\n"
-                f"Task: DAY {day:02d} — {task}\nSpec:\n<spec>\n{spec[:40000]}\n</spec>\n"
-                f"Write ONLY the raw file content:"}]
-        )
-        content = fr.content[0].text
-        if content.strip().startswith("```"):
-            lines = content.strip().split("\n")
-            content = "\n".join(lines[1:])
-            if content.strip().endswith("```"): content = content.strip()[:-3]
-        # Basic syntax check for Python files
-        if fi["path"].endswith(".py"):
-            import ast
+def validate_files(files: list[dict]) -> tuple[bool, list[str]]:
+    """Syntax-check all Python files before committing. Returns (ok, errors)."""
+    errors = []
+    for f in files:
+        if f["path"].endswith(".py") and f["path"] != "cron/loop.py":
             try:
-                ast.parse(content)
-                print(f"    Syntax OK: {fi['path']}")
+                ast.parse(f["content"])
             except SyntaxError as e:
-                print(f"    SYNTAX ERROR in {fi['path']}: {e} — skipping")
-                continue  # Don't add broken files
-        files.append({"path": fi["path"], "content": content})
+                errors.append(f"{f['path']}: SyntaxError at line {e.lineno}: {e.msg}")
+    return len(errors) == 0, errors
 
-    return {"status": "pass", "task_summary": plan.get("task_summary", task[:60]),
-            "notes": plan.get("notes", ""),
-            "commit_message": plan.get("commit_message", f"DAY {day:02d}: {task[:50]}"),
-            "files": files}
+# ── Main Loop ──────────────────────────────────────────────────────────────────
 
 def main():
     start = time.time()
-    print(f"\n{'='*60}\nSearch Intel Loop — {datetime.date.today()}\n{'='*60}\n")
-    try:
-        program = read_program_md()
-        spec = read_spec()
-        day, task = get_next_task(program)
+    today = datetime.date.today().isoformat()
+    print(f"\n{'='*60}\nSearch Intel Autonomous Loop — {today}\n{'='*60}\n")
 
-        if day == 0:
-            post_to_slack(0, "Phase 1 complete!", "pass", "28/28 done.", completed=28)
+    try:
+        spec = read_spec()
+
+        # Step 1: Evaluate current state
+        evaluation_before = evaluate_codebase()
+        score_before = evaluation_before["score"]
+
+        # Step 2: Ask agent what to improve
+        print("\nAsking agent what to fix/build...")
+        agent_result = run_agent(evaluation_before, spec)
+
+        action = agent_result.get("action", "Unknown action")
+        reasoning = agent_result.get("reasoning", "")
+        files = [f for f in agent_result.get("files", [])
+                 if f["path"] != "cron/loop.py"]
+        commit_msg = agent_result.get("commit_message", action[:50])
+
+        print(f"Action: {action}")
+        print(f"Files: {[f['path'] for f in files]}")
+
+        if not files:
+            msg = "Agent returned no files to write"
+            print(msg)
+            log_run(action, "skip", score_before, score_before, msg)
+            post_to_slack(action, "skip", score_before, score_before, msg)
             return
 
-        print(f"Task: DAY {day:02d} — {task[:80]}")
-        result = run_agent(program, spec, day, task)
-        status = result.get("status", "fail")
-        notes = result.get("notes", "")
-        task_summary = result.get("task_summary", task[:60])
-        commit_msg = result.get("commit_message", f"DAY {day:02d}: {task[:50]}")
+        # Step 3: Validate before committing
+        valid, syntax_errs = validate_files(files)
+        if not valid:
+            msg = f"Agent wrote invalid Python — not committing:\n" + "\n".join(syntax_errs)
+            print(msg)
+            log_run(action, "fail", score_before, score_before, msg)
+            post_to_slack(action, "fail", score_before, score_before, msg)
+            return
 
-        commit_url = None
-        if status == "pass" and result.get("files"):
-            commit_url = commit_files(result, commit_msg)
-            deployed = wait_for_deployment("search-intel-api", 180)
-            if deployed or not API_URL:
-                ok, msg = run_deployment_checks(day)
-                if not ok:
-                    status, notes = "fail", f"Committed but endpoint failed: {msg}"
-                else:
-                    notes = f"{notes}\nVerified: {msg}"
-            else:
-                status, notes = "fail", "Committed but Railway deployment failed"
+        # Step 4: Save originals for potential rollback
+        originals = {}
+        for f in files:
+            original = get_file_content(f["path"])
+            if original:
+                originals[f["path"]] = original
 
-        if status == "pass":
-            updated = mark_task_complete(program, day)
-            completed_count = count_completed(updated)
-            updated = update_current_state(updated, day, task_summary, "✅ Pass")
-            update_program_md(updated, f"DAY {day:02d} complete: {task_summary[:50]}")
+        # Step 5: Commit the changes
+        print("Committing changes...")
+        for f in files:
+            push_file(f["path"], f["content"], commit_msg)
+        commit_url = get_latest_commit_url()
+
+        # Step 6: Wait for deployment
+        wait_for_deployment(timeout=120)
+
+        # Step 7: Re-evaluate — did we actually improve?
+        print("\nRe-evaluating after change...")
+        time.sleep(5)  # Brief pause for deployment to settle
+        evaluation_after = evaluate_codebase()
+        score_after = evaluation_after["score"]
+
+        if score_after >= score_before:
+            # Improvement or neutral — keep it
+            status = "pass"
+            notes = (f"{reasoning}\n\n"
+                    f"Fixed: {evaluation_before['syntax_errors'] - evaluation_after['syntax_errors']} syntax errors, "
+                    f"{evaluation_before['missing_files'] - evaluation_after['missing_files']} missing files")
+            print(f"Score improved: {score_before} → {score_after} ✅ Keeping changes")
         else:
-            completed_count = count_completed(program)
-            failure = result.get("failure_reason", notes or "Unknown")
-            notes = notes or f"FAILED: {failure}"
-            updated = update_current_state(program, day, task_summary, "❌ Fail")
-            update_program_md(updated, f"DAY {day:02d} failed: {failure[:50]}")
+            # Got worse — revert
+            status = "reverted"
+            notes = (f"Score dropped {score_before} → {score_after}. Reverting.\n"
+                    f"Reasoning was: {reasoning}")
+            print(f"Score dropped: {score_before} → {score_after} ↩️ Reverting")
+            for path, original_content in originals.items():
+                revert_file(path, original_content, f"revert: {commit_msg}")
+            score_after = score_before  # Back to where we were
 
+        # Step 8: Log and notify
         duration = int(time.time() - start)
-        log_to_supabase(day, task_summary, "pass" if status=="pass" else "fail",
-                        notes, commit_url, duration)
-        post_to_slack(day, task_summary, "pass" if status=="pass" else "fail",
-                      notes[:500], commit_url, completed_count)
-        print(f"\nDone in {duration}s")
+        log_run(action, status, score_before, score_after, notes, commit_url, duration)
+        post_to_slack(action, status, score_before, score_after, notes, commit_url)
+        print(f"\nDone in {duration}s — Final score: {score_after}/100")
 
     except Exception as e:
         err = traceback.format_exc()
         print(f"FATAL:\n{err}")
         try:
-            log_to_supabase(0, "cron loop", "fail", err[:1000])
-            post_to_slack(0, "Cron loop", "fail", f"Fatal error:\n```{str(e)[:300]}```")
+            log_to_supabase = lambda: supabase.table("build_log").insert({
+                "day": 0, "run_date": datetime.date.today().isoformat(),
+                "task": "cron loop", "status": "fail",
+                "notes": err[:1000]
+            }).execute()
+            log_to_supabase()
+            post_to_slack("Cron loop", "fail", 0, 0,
+                         f"Fatal error:\n```{str(e)[:300]}```")
         except Exception:
             pass
 
