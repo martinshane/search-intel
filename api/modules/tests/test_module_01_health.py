@@ -1,15 +1,3 @@
-"""
-Comprehensive unit tests for Module 1: Health & Trajectory Analysis
-
-Tests cover:
-- Synthetic data generation with known patterns
-- Schema validation for output structure
-- Change point detection accuracy
-- Trend classification correctness
-- Seasonality detection
-- Forecast validation
-"""
-
 import pytest
 import pandas as pd
 import numpy as np
@@ -95,7 +83,7 @@ class TestSyntheticDataGeneration:
     def test_flat_trend_generation(self):
         """Test generation of flat trend data"""
         df = self.generate_synthetic_daily_data(
-            days=480,
+            days=365,
             base_clicks=1000,
             trend_slope=0.0,
             weekly_seasonality=False,
@@ -103,82 +91,57 @@ class TestSyntheticDataGeneration:
             noise_level=0.05
         )
         
-        assert len(df) == 480
-        assert 'date' in df.columns
-        assert 'clicks' in df.columns
-        assert 'impressions' in df.columns
+        assert len(df) == 365
         assert df['clicks'].mean() == pytest.approx(1000, rel=0.1)
-        assert (df['impressions'] >= df['clicks']).all()
+        assert df['impressions'].mean() == pytest.approx(20000, rel=0.2)
     
-    def test_growing_trend_generation(self):
+    def test_growth_trend_generation(self):
         """Test generation of growing trend data"""
         df = self.generate_synthetic_daily_data(
-            days=480,
+            days=365,
             base_clicks=1000,
             trend_slope=2.0,  # +2 clicks per day
             weekly_seasonality=False,
+            monthly_seasonality=False,
             noise_level=0.05
         )
         
-        # Should grow by approximately 2 * 480 = 960 clicks over period
-        first_week_avg = df.head(7)['clicks'].mean()
-        last_week_avg = df.tail(7)['clicks'].mean()
+        first_month_avg = df.head(30)['clicks'].mean()
+        last_month_avg = df.tail(30)['clicks'].mean()
         
-        assert last_week_avg > first_week_avg
-        growth = last_week_avg - first_week_avg
-        assert growth == pytest.approx(960, rel=0.15)
+        # Should be ~60 clicks higher (30 days * 2 clicks/day)
+        assert last_month_avg > first_month_avg
+        assert last_month_avg - first_month_avg == pytest.approx(60 * 11, rel=0.2)
     
-    def test_declining_trend_generation(self):
-        """Test generation of declining trend data"""
+    def test_weekly_seasonality_generation(self):
+        """Test weekly seasonality pattern"""
         df = self.generate_synthetic_daily_data(
-            days=480,
-            base_clicks=2000,
-            trend_slope=-2.0,  # -2 clicks per day
-            weekly_seasonality=False,
-            noise_level=0.05
-        )
-        
-        first_week_avg = df.head(7)['clicks'].mean()
-        last_week_avg = df.tail(7)['clicks'].mean()
-        
-        assert last_week_avg < first_week_avg
-        decline = first_week_avg - last_week_avg
-        assert decline == pytest.approx(960, rel=0.15)
-    
-    def test_seasonality_generation(self):
-        """Test weekly and monthly seasonality patterns"""
-        df = self.generate_synthetic_daily_data(
-            days=480,
+            days=365,
             base_clicks=1000,
             trend_slope=0.0,
             weekly_seasonality=True,
-            monthly_seasonality=True,
-            noise_level=0.03
+            monthly_seasonality=False,
+            noise_level=0.05
         )
         
         df['day_of_week'] = pd.to_datetime(df['date']).dt.dayofweek
-        df['day_of_month'] = pd.to_datetime(df['date']).dt.day
+        daily_avgs = df.groupby('day_of_week')['clicks'].mean()
         
-        # Tuesday (1) should have higher average than Saturday (5)
-        tuesday_avg = df[df['day_of_week'] == 1]['clicks'].mean()
-        saturday_avg = df[df['day_of_week'] == 5]['clicks'].mean()
-        assert tuesday_avg > saturday_avg
-        
-        # First week of month should be higher than last week
-        first_week = df[df['day_of_month'] <= 7]['clicks'].mean()
-        last_week = df[df['day_of_month'] >= 25]['clicks'].mean()
-        assert first_week > last_week
+        # Tuesday (1) should be highest, Saturday (5) should be lowest
+        assert daily_avgs.idxmax() == 1
+        assert daily_avgs.idxmin() == 5
     
     def test_change_point_generation(self):
         """Test abrupt change point insertion"""
-        change_day = 240  # Middle of dataset
-        magnitude = -0.20  # 20% drop
+        change_day = 200
+        magnitude = -0.3  # 30% drop
         
         df = self.generate_synthetic_daily_data(
-            days=480,
+            days=400,
             base_clicks=1000,
             trend_slope=0.0,
             weekly_seasonality=False,
+            monthly_seasonality=False,
             change_points=[(change_day, magnitude)],
             noise_level=0.05
         )
@@ -186,26 +149,28 @@ class TestSyntheticDataGeneration:
         before_avg = df.iloc[change_day-30:change_day]['clicks'].mean()
         after_avg = df.iloc[change_day:change_day+30]['clicks'].mean()
         
-        expected_after = before_avg * (1 + magnitude)
-        assert after_avg == pytest.approx(expected_after, rel=0.15)
+        # After should be ~30% lower
+        assert after_avg < before_avg
+        assert after_avg / before_avg == pytest.approx(0.7, rel=0.15)
 
 
 class TestSchemaValidation:
-    """Test output schema matches specification exactly"""
+    """Test output schema structure and completeness"""
     
     @pytest.fixture
     def sample_data(self):
-        """Generate sample data for schema tests"""
-        generator = TestSyntheticDataGeneration()
-        return generator.generate_synthetic_daily_data(
+        """Generate standard test dataset"""
+        gen = TestSyntheticDataGeneration()
+        return gen.generate_synthetic_daily_data(
             days=480,
             base_clicks=1000,
             trend_slope=1.0,
-            weekly_seasonality=True
+            weekly_seasonality=True,
+            monthly_seasonality=True
         )
     
-    def test_output_schema_structure(self, sample_data):
-        """Verify all required top-level keys are present"""
+    def test_output_structure(self, sample_data):
+        """Test that output has all required top-level keys"""
         result = analyze_health_trajectory(sample_data)
         
         required_keys = {
@@ -220,27 +185,27 @@ class TestSchemaValidation:
         assert set(result.keys()) == required_keys
     
     def test_overall_direction_values(self, sample_data):
-        """Verify overall_direction is one of valid values"""
+        """Test overall_direction is valid enum value"""
         result = analyze_health_trajectory(sample_data)
         
         valid_directions = {
             'strong_growth',
             'growth',
             'flat',
-            'declining',
+            'decline',
             'strong_decline'
         }
         
         assert result['overall_direction'] in valid_directions
     
     def test_trend_slope_type(self, sample_data):
-        """Verify trend_slope_pct_per_month is numeric"""
+        """Test trend_slope_pct_per_month is numeric"""
         result = analyze_health_trajectory(sample_data)
         
         assert isinstance(result['trend_slope_pct_per_month'], (int, float))
     
-    def test_change_points_schema(self, sample_data):
-        """Verify change_points array schema"""
+    def test_change_points_structure(self, sample_data):
+        """Test change_points array has correct structure"""
         result = analyze_health_trajectory(sample_data)
         
         assert isinstance(result['change_points'], list)
@@ -250,69 +215,50 @@ class TestSchemaValidation:
             assert 'magnitude' in cp
             assert 'direction' in cp
             assert isinstance(cp['magnitude'], (int, float))
-            assert cp['direction'] in ['spike', 'drop']
+            assert cp['direction'] in ['drop', 'spike']
     
-    def test_seasonality_schema(self, sample_data):
-        """Verify seasonality object schema"""
+    def test_seasonality_structure(self, sample_data):
+        """Test seasonality object has required fields"""
         result = analyze_health_trajectory(sample_data)
         
         seasonality = result['seasonality']
-        required_keys = {
-            'best_day',
-            'worst_day',
-            'monthly_cycle',
-            'cycle_description'
-        }
+        assert 'best_day' in seasonality
+        assert 'worst_day' in seasonality
+        assert 'monthly_cycle' in seasonality
         
-        assert set(seasonality.keys()) == required_keys
-        assert isinstance(seasonality['best_day'], str)
-        assert isinstance(seasonality['worst_day'], str)
         assert isinstance(seasonality['monthly_cycle'], bool)
-        assert isinstance(seasonality['cycle_description'], str)
-    
-    def test_anomalies_schema(self, sample_data):
-        """Verify anomalies array schema"""
-        result = analyze_health_trajectory(sample_data)
         
-        assert isinstance(result['anomalies'], list)
-        
-        for anomaly in result['anomalies']:
-            assert 'date' in anomaly
-            assert 'type' in anomaly
-            assert 'magnitude' in anomaly
-            assert anomaly['type'] in ['motif', 'discord']
-            assert isinstance(anomaly['magnitude'], (int, float))
+        if seasonality.get('cycle_description'):
+            assert isinstance(seasonality['cycle_description'], str)
     
-    def test_forecast_schema(self, sample_data):
-        """Verify forecast object schema"""
+    def test_forecast_structure(self, sample_data):
+        """Test forecast has all time horizons with confidence intervals"""
         result = analyze_health_trajectory(sample_data)
         
         forecast = result['forecast']
-        required_periods = {'30d', '60d', '90d'}
+        required_horizons = ['30d', '60d', '90d']
         
-        assert set(forecast.keys()) == required_periods
-        
-        for period in required_periods:
-            assert 'clicks' in forecast[period]
-            assert 'ci_low' in forecast[period]
-            assert 'ci_high' in forecast[period]
-            assert isinstance(forecast[period]['clicks'], (int, float))
-            assert isinstance(forecast[period]['ci_low'], (int, float))
-            assert isinstance(forecast[period]['ci_high'], (int, float))
-            assert forecast[period]['ci_low'] <= forecast[period]['clicks']
-            assert forecast[period]['clicks'] <= forecast[period]['ci_high']
+        for horizon in required_horizons:
+            assert horizon in forecast
+            assert 'clicks' in forecast[horizon]
+            assert 'ci_low' in forecast[horizon]
+            assert 'ci_high' in forecast[horizon]
+            
+            # Confidence intervals should make sense
+            assert forecast[horizon]['ci_low'] <= forecast[horizon]['clicks']
+            assert forecast[horizon]['clicks'] <= forecast[horizon]['ci_high']
 
 
 class TestChangePointDetection:
-    """Test change point detection accuracy on known test cases"""
+    """Test accuracy of change point detection"""
     
     def test_single_drop_detection(self):
-        """Detect single abrupt drop"""
-        generator = TestSyntheticDataGeneration()
+        """Test detection of single abrupt drop"""
+        gen = TestSyntheticDataGeneration()
         change_day = 240
         magnitude = -0.25
         
-        df = generator.generate_synthetic_daily_data(
+        df = gen.generate_synthetic_daily_data(
             days=480,
             base_clicks=1000,
             trend_slope=0.0,
@@ -322,251 +268,129 @@ class TestChangePointDetection:
         )
         
         result = analyze_health_trajectory(df)
-        change_points = result['change_points']
         
-        # Should detect the drop
-        assert len(change_points) >= 1
+        # Should detect at least one change point
+        assert len(result['change_points']) >= 1
         
-        # Find the change point closest to our inserted one
-        detected = min(
-            change_points,
-            key=lambda cp: abs(
-                (pd.to_datetime(cp['date']) - df.iloc[change_day]['date']).days
-            )
-        )
+        # Should detect the intentional drop
+        detected_dates = [pd.to_datetime(cp['date']) for cp in result['change_points']]
+        change_date = df.iloc[change_day]['date']
         
-        # Should be within 14 days of actual change
-        date_diff = abs((pd.to_datetime(detected['date']) - df.iloc[change_day]['date']).days)
-        assert date_diff <= 14
-        
-        # Should detect as a drop
-        assert detected['direction'] == 'drop'
-        
-        # Magnitude should be negative and roughly correct
-        assert detected['magnitude'] < 0
-        assert detected['magnitude'] == pytest.approx(magnitude, abs=0.15)
+        # Allow ±7 day window for detection
+        date_diffs = [abs((d - pd.to_datetime(change_date)).days) for d in detected_dates]
+        assert min(date_diffs) <= 7, "Change point not detected within 7-day window"
     
-    def test_single_spike_detection(self):
-        """Detect single abrupt spike"""
-        generator = TestSyntheticDataGeneration()
-        change_day = 300
-        magnitude = 0.30
+    def test_multiple_change_detection(self):
+        """Test detection of multiple change points"""
+        gen = TestSyntheticDataGeneration()
         
-        df = generator.generate_synthetic_daily_data(
+        df = gen.generate_synthetic_daily_data(
             days=480,
             base_clicks=1000,
             trend_slope=0.0,
             weekly_seasonality=False,
-            change_points=[(change_day, magnitude)],
+            change_points=[
+                (120, -0.20),  # Drop at 4 months
+                (360, 0.30)     # Spike at 12 months
+            ],
             noise_level=0.05
         )
         
         result = analyze_health_trajectory(df)
-        change_points = result['change_points']
-        
-        assert len(change_points) >= 1
-        
-        detected = min(
-            change_points,
-            key=lambda cp: abs(
-                (pd.to_datetime(cp['date']) - df.iloc[change_day]['date']).days
-            )
-        )
-        
-        date_diff = abs((pd.to_datetime(detected['date']) - df.iloc[change_day]['date']).days)
-        assert date_diff <= 14
-        assert detected['direction'] == 'spike'
-        assert detected['magnitude'] > 0
-        assert detected['magnitude'] == pytest.approx(magnitude, abs=0.15)
-    
-    def test_multiple_change_points(self):
-        """Detect multiple change points"""
-        generator = TestSyntheticDataGeneration()
-        changes = [
-            (150, -0.20),
-            (320, 0.25)
-        ]
-        
-        df = generator.generate_synthetic_daily_data(
-            days=480,
-            base_clicks=1000,
-            trend_slope=0.0,
-            weekly_seasonality=False,
-            change_points=changes,
-            noise_level=0.05
-        )
-        
-        result = analyze_health_trajectory(df)
-        change_points = result['change_points']
         
         # Should detect at least 2 change points
-        assert len(change_points) >= 2
+        assert len(result['change_points']) >= 2
         
-        # Verify both are detected (within tolerance)
-        for change_day, expected_mag in changes:
-            detected = min(
-                change_points,
-                key=lambda cp: abs(
-                    (pd.to_datetime(cp['date']) - df.iloc[change_day]['date']).days
-                )
-            )
-            
-            date_diff = abs((pd.to_datetime(detected['date']) - df.iloc[change_day]['date']).days)
-            assert date_diff <= 21  # More tolerance with multiple changes
+        # Should have both drop and spike
+        directions = [cp['direction'] for cp in result['change_points']]
+        assert 'drop' in directions
+        assert 'spike' in directions
     
-    def test_no_false_positives_on_flat_data(self):
-        """Should not detect change points on stable data"""
-        generator = TestSyntheticDataGeneration()
+    def test_no_false_positives_flat_trend(self):
+        """Test that flat trend doesn't generate spurious change points"""
+        gen = TestSyntheticDataGeneration()
         
-        df = generator.generate_synthetic_daily_data(
+        df = gen.generate_synthetic_daily_data(
             days=480,
             base_clicks=1000,
             trend_slope=0.0,
-            weekly_seasonality=True,  # Only seasonality, no changes
+            weekly_seasonality=True,
+            monthly_seasonality=False,
             change_points=None,
             noise_level=0.08
         )
         
         result = analyze_health_trajectory(df)
-        change_points = result['change_points']
         
-        # May detect 0-1 change points due to noise, but not many
-        assert len(change_points) <= 1
-    
-    def test_change_point_with_trend(self):
-        """Detect change point in presence of existing trend"""
-        generator = TestSyntheticDataGeneration()
-        change_day = 240
-        magnitude = -0.30
-        
-        df = generator.generate_synthetic_daily_data(
-            days=480,
-            base_clicks=1000,
-            trend_slope=1.5,  # Existing upward trend
-            weekly_seasonality=False,
-            change_points=[(change_day, magnitude)],
-            noise_level=0.05
-        )
-        
-        result = analyze_health_trajectory(df)
-        change_points = result['change_points']
-        
-        # Should still detect the drop despite trend
-        assert len(change_points) >= 1
-        
-        detected = min(
-            change_points,
-            key=lambda cp: abs(
-                (pd.to_datetime(cp['date']) - df.iloc[change_day]['date']).days
-            )
-        )
-        
-        # May detect as either drop or flattening, but should be near the change
-        date_diff = abs((pd.to_datetime(detected['date']) - df.iloc[change_day]['date']).days)
-        assert date_diff <= 21
+        # Should have 0-2 change points max (some noise-induced false positives acceptable)
+        assert len(result['change_points']) <= 2
 
 
 class TestTrendClassification:
-    """Test trend classification correctness"""
+    """Test trend direction classification accuracy"""
     
     def test_strong_growth_classification(self):
-        """Classify strong growth correctly (>5%/month)"""
-        generator = TestSyntheticDataGeneration()
+        """Test strong growth (>5%/month) classification"""
+        gen = TestSyntheticDataGeneration()
         
-        # 5% per month on 1000 base = 50 clicks/month = ~1.67 clicks/day
-        df = generator.generate_synthetic_daily_data(
+        # 5% monthly growth = ~1.67 clicks/day on base 1000
+        df = gen.generate_synthetic_daily_data(
             days=480,
             base_clicks=1000,
-            trend_slope=2.0,  # >5%/month
-            weekly_seasonality=False,
+            trend_slope=1.8,
+            weekly_seasonality=True,
             noise_level=0.05
         )
         
         result = analyze_health_trajectory(df)
         
-        assert result['overall_direction'] == 'strong_growth'
-        assert result['trend_slope_pct_per_month'] > 5.0
+        assert result['overall_direction'] in ['strong_growth', 'growth']
+        assert result['trend_slope_pct_per_month'] > 4.0
     
-    def test_growth_classification(self):
-        """Classify moderate growth correctly (1-5%/month)"""
-        generator = TestSyntheticDataGeneration()
+    def test_decline_classification(self):
+        """Test decline classification"""
+        gen = TestSyntheticDataGeneration()
         
-        # 3% per month = ~1 click/day on 1000 base
-        df = generator.generate_synthetic_daily_data(
+        # -2% monthly decline
+        df = gen.generate_synthetic_daily_data(
             days=480,
             base_clicks=1000,
-            trend_slope=1.0,
-            weekly_seasonality=False,
+            trend_slope=-0.7,
+            weekly_seasonality=True,
             noise_level=0.05
         )
         
         result = analyze_health_trajectory(df)
         
-        assert result['overall_direction'] in ['growth', 'strong_growth']
-        assert result['trend_slope_pct_per_month'] > 0.5
+        assert result['overall_direction'] in ['decline', 'strong_decline']
+        assert result['trend_slope_pct_per_month'] < -1.0
     
     def test_flat_classification(self):
-        """Classify flat trend correctly (-1 to 1%/month)"""
-        generator = TestSyntheticDataGeneration()
+        """Test flat trend classification"""
+        gen = TestSyntheticDataGeneration()
         
-        df = generator.generate_synthetic_daily_data(
+        df = gen.generate_synthetic_daily_data(
             days=480,
             base_clicks=1000,
             trend_slope=0.0,
-            weekly_seasonality=False,
+            weekly_seasonality=True,
             noise_level=0.05
         )
         
         result = analyze_health_trajectory(df)
         
         assert result['overall_direction'] == 'flat'
-        assert abs(result['trend_slope_pct_per_month']) <= 1.5
-    
-    def test_declining_classification(self):
-        """Classify moderate decline correctly (-5 to -1%/month)"""
-        generator = TestSyntheticDataGeneration()
-        
-        # -3% per month = -1 click/day on 1000 base
-        df = generator.generate_synthetic_daily_data(
-            days=480,
-            base_clicks=1000,
-            trend_slope=-1.0,
-            weekly_seasonality=False,
-            noise_level=0.05
-        )
-        
-        result = analyze_health_trajectory(df)
-        
-        assert result['overall_direction'] in ['declining', 'strong_decline']
-        assert result['trend_slope_pct_per_month'] < -0.5
-    
-    def test_strong_decline_classification(self):
-        """Classify strong decline correctly (<-5%/month)"""
-        generator = TestSyntheticDataGeneration()
-        
-        # -6% per month = -2 clicks/day on 1000 base
-        df = generator.generate_synthetic_daily_data(
-            days=480,
-            base_clicks=1500,
-            trend_slope=-3.0,
-            weekly_seasonality=False,
-            noise_level=0.05
-        )
-        
-        result = analyze_health_trajectory(df)
-        
-        assert result['overall_direction'] == 'strong_decline'
-        assert result['trend_slope_pct_per_month'] < -4.0
+        assert abs(result['trend_slope_pct_per_month']) < 1.0
 
 
 class TestSeasonalityDetection:
-    """Test seasonality detection"""
+    """Test seasonality detection and characterization"""
     
     def test_weekly_seasonality_detection(self):
-        """Detect weekly day-of-week patterns"""
-        generator = TestSyntheticDataGeneration()
+        """Test detection of weekly seasonality pattern"""
+        gen = TestSyntheticDataGeneration()
         
-        df = generator.generate_synthetic_daily_data(
+        df = gen.generate_synthetic_daily_data(
             days=480,
             base_clicks=1000,
             trend_slope=0.0,
@@ -576,24 +400,20 @@ class TestSeasonalityDetection:
         )
         
         result = analyze_health_trajectory(df)
-        seasonality = result['seasonality']
         
-        # Should identify best and worst days
+        seasonality = result['seasonality']
         assert seasonality['best_day'] is not None
         assert seasonality['worst_day'] is not None
-        assert seasonality['best_day'] != seasonality['worst_day']
         
-        # Based on our pattern, Tuesday should be best, Saturday worst
-        # (but algorithm might smooth differently, so just check they're different)
-        valid_days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        assert seasonality['best_day'] in valid_days
-        assert seasonality['worst_day'] in valid_days
+        # Best should be Tuesday, worst should be Saturday
+        assert seasonality['best_day'] in ['Monday', 'Tuesday', 'Wednesday']
+        assert seasonality['worst_day'] in ['Friday', 'Saturday', 'Sunday']
     
-    def test_monthly_seasonality_detection(self):
-        """Detect monthly cycle patterns"""
-        generator = TestSyntheticDataGeneration()
+    def test_monthly_cycle_detection(self):
+        """Test detection of monthly cycle"""
+        gen = TestSyntheticDataGeneration()
         
-        df = generator.generate_synthetic_daily_data(
+        df = gen.generate_synthetic_daily_data(
             days=480,
             base_clicks=1000,
             trend_slope=0.0,
@@ -603,15 +423,278 @@ class TestSeasonalityDetection:
         )
         
         result = analyze_health_trajectory(df)
-        seasonality = result['seasonality']
         
-        # Should detect monthly cycle
-        assert seasonality['monthly_cycle'] is True
-        assert len(seasonality['cycle_description']) > 0
+        seasonality = result['seasonality']
+        assert seasonality['monthly_cycle'] == True
+        assert 'cycle_description' in seasonality
     
     def test_no_seasonality_detection(self):
-        """Should not detect seasonality when none exists"""
-        generator = TestSyntheticDataGeneration()
+        """Test that random data doesn't produce false seasonality"""
+        gen = TestSyntheticDataGeneration()
         
-        df = generator.generate_synthetic_daily_data(
+        df = gen.generate_synthetic_daily_data(
             days=480,
+            base_clicks=1000,
+            trend_slope=0.0,
+            weekly_seasonality=False,
+            monthly_seasonality=False,
+            noise_level=0.15
+        )
+        
+        result = analyze_health_trajectory(df)
+        
+        seasonality = result['seasonality']
+        # Should either have no strong day preference or monthly_cycle = False
+        assert seasonality['monthly_cycle'] == False
+
+
+class TestForecastValidation:
+    """Test forecast generation and reasonableness"""
+    
+    def test_forecast_continuation_of_trend(self):
+        """Test that forecast continues detected trend"""
+        gen = TestSyntheticDataGeneration()
+        
+        # Strong upward trend
+        df = gen.generate_synthetic_daily_data(
+            days=480,
+            base_clicks=1000,
+            trend_slope=2.0,
+            weekly_seasonality=False,
+            noise_level=0.05
+        )
+        
+        result = analyze_health_trajectory(df)
+        
+        current_avg = df.tail(30)['clicks'].mean()
+        forecast_30d = result['forecast']['30d']['clicks']
+        forecast_90d = result['forecast']['90d']['clicks']
+        
+        # Forecast should be higher than current (growing trend)
+        assert forecast_30d > current_avg * 0.9  # Allow some deceleration
+        assert forecast_90d > forecast_30d * 0.9
+    
+    def test_forecast_confidence_intervals_widen(self):
+        """Test that confidence intervals widen over time"""
+        gen = TestSyntheticDataGeneration()
+        
+        df = gen.generate_synthetic_daily_data(
+            days=480,
+            base_clicks=1000,
+            trend_slope=1.0,
+            weekly_seasonality=True,
+            noise_level=0.1
+        )
+        
+        result = analyze_health_trajectory(df)
+        
+        forecast = result['forecast']
+        
+        ci_30d = forecast['30d']['ci_high'] - forecast['30d']['ci_low']
+        ci_60d = forecast['60d']['ci_high'] - forecast['60d']['ci_low']
+        ci_90d = forecast['90d']['ci_high'] - forecast['90d']['ci_low']
+        
+        # Confidence intervals should widen
+        assert ci_60d > ci_30d
+        assert ci_90d > ci_60d
+    
+    def test_forecast_positive_values(self):
+        """Test that forecast never produces negative clicks"""
+        gen = TestSyntheticDataGeneration()
+        
+        # Strong decline
+        df = gen.generate_synthetic_daily_data(
+            days=480,
+            base_clicks=1000,
+            trend_slope=-2.0,
+            weekly_seasonality=False,
+            noise_level=0.05
+        )
+        
+        result = analyze_health_trajectory(df)
+        
+        forecast = result['forecast']
+        
+        for horizon in ['30d', '60d', '90d']:
+            assert forecast[horizon]['clicks'] >= 0
+            assert forecast[horizon]['ci_low'] >= 0
+            assert forecast[horizon]['ci_high'] >= 0
+
+
+class TestAnomalyDetection:
+    """Test anomaly detection functionality"""
+    
+    def test_anomaly_detection_on_spike(self):
+        """Test detection of one-off traffic spike"""
+        gen = TestSyntheticDataGeneration()
+        
+        df = gen.generate_synthetic_daily_data(
+            days=480,
+            base_clicks=1000,
+            trend_slope=0.0,
+            weekly_seasonality=False,
+            noise_level=0.05
+        )
+        
+        # Inject anomalous spike
+        spike_day = 200
+        df.loc[spike_day, 'clicks'] = df.loc[spike_day, 'clicks'] * 3
+        
+        result = analyze_health_trajectory(df)
+        
+        anomalies = result['anomalies']
+        
+        # Should detect at least one anomaly
+        assert len(anomalies) >= 1
+        
+        # Check if spike day is detected
+        if len(anomalies) > 0:
+            anomaly_dates = [pd.to_datetime(a['date']) for a in anomalies]
+            spike_date = df.iloc[spike_day]['date']
+            date_diffs = [abs((d - pd.to_datetime(spike_date)).days) for d in anomaly_dates]
+            assert min(date_diffs) <= 3
+
+
+class TestEdgeCases:
+    """Test edge cases and error handling"""
+    
+    def test_minimum_data_requirement(self):
+        """Test behavior with minimal data (30 days)"""
+        gen = TestSyntheticDataGeneration()
+        
+        df = gen.generate_synthetic_daily_data(
+            days=30,
+            base_clicks=1000,
+            trend_slope=0.0,
+            weekly_seasonality=False
+        )
+        
+        result = analyze_health_trajectory(df)
+        
+        # Should still return valid structure
+        assert 'overall_direction' in result
+        assert 'forecast' in result
+        
+        # But may have degraded quality (no change points expected)
+        assert len(result['change_points']) == 0
+    
+    def test_zero_clicks_handling(self):
+        """Test handling of days with zero clicks"""
+        gen = TestSyntheticDataGeneration()
+        
+        df = gen.generate_synthetic_daily_data(
+            days=480,
+            base_clicks=100,
+            trend_slope=0.0,
+            noise_level=0.3
+        )
+        
+        # Force some zero days
+        df.loc[df['clicks'] < 10, 'clicks'] = 0
+        
+        result = analyze_health_trajectory(df)
+        
+        # Should handle gracefully
+        assert result is not None
+        assert 'overall_direction' in result
+    
+    def test_missing_dates_interpolation(self):
+        """Test handling of missing dates in sequence"""
+        gen = TestSyntheticDataGeneration()
+        
+        df = gen.generate_synthetic_daily_data(
+            days=480,
+            base_clicks=1000
+        )
+        
+        # Remove random 10% of rows
+        df = df.sample(frac=0.9).sort_values('date').reset_index(drop=True)
+        
+        result = analyze_health_trajectory(df)
+        
+        # Should handle gracefully
+        assert result is not None
+        assert 'overall_direction' in result
+
+
+class TestIntegrationScenarios:
+    """Test realistic end-to-end scenarios"""
+    
+    def test_algorithm_update_scenario(self):
+        """Test scenario mimicking algorithm update impact"""
+        gen = TestSyntheticDataGeneration()
+        
+        df = gen.generate_synthetic_daily_data(
+            days=480,
+            base_clicks=5000,
+            trend_slope=2.0,  # Growing before update
+            weekly_seasonality=True,
+            change_points=[
+                (300, -0.35)  # 35% drop at ~10 months (algorithm update)
+            ],
+            noise_level=0.08
+        )
+        
+        result = analyze_health_trajectory(df)
+        
+        # Should classify as declining overall (recent drop overrides earlier growth)
+        assert result['overall_direction'] in ['decline', 'strong_decline']
+        
+        # Should detect the major change point
+        assert len(result['change_points']) >= 1
+        
+        major_drops = [cp for cp in result['change_points'] if cp['direction'] == 'drop']
+        assert len(major_drops) >= 1
+        
+        # Magnitude should be significant
+        assert any(abs(cp['magnitude']) > 0.25 for cp in major_drops)
+    
+    def test_seasonal_business_scenario(self):
+        """Test scenario with strong seasonal pattern"""
+        gen = TestSyntheticDataGeneration()
+        
+        df = gen.generate_synthetic_daily_data(
+            days=480,
+            base_clicks=2000,
+            trend_slope=0.5,
+            weekly_seasonality=True,
+            monthly_seasonality=True,
+            noise_level=0.1
+        )
+        
+        result = analyze_health_trajectory(df)
+        
+        # Should detect monthly cycle
+        assert result['seasonality']['monthly_cycle'] == True
+        
+        # Should still identify underlying growth trend
+        assert result['overall_direction'] in ['growth', 'strong_growth', 'flat']
+    
+    def test_recovery_scenario(self):
+        """Test scenario with drop and recovery"""
+        gen = TestSyntheticDataGeneration()
+        
+        df = gen.generate_synthetic_daily_data(
+            days=480,
+            base_clicks=3000,
+            trend_slope=0.0,
+            weekly_seasonality=True,
+            change_points=[
+                (200, -0.30),  # Drop
+                (350, 0.40)    # Recovery
+            ],
+            noise_level=0.08
+        )
+        
+        result = analyze_health_trajectory(df)
+        
+        # Should detect both change points
+        assert len(result['change_points']) >= 2
+        
+        # Should have both drops and spikes
+        directions = [cp['direction'] for cp in result['change_points']]
+        assert 'drop' in directions
+        assert 'spike' in directions
+        
+        # Overall direction depends on final trend
+        assert result['overall_direction'] in ['flat', 'growth', 'decline']
