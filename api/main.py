@@ -1,356 +1,218 @@
-import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
 import httpx
+from supabase import create_client, Client
 
-from db.supabase_client import get_supabase_client
-from worker.pipeline import start_report_generation
+from config import get_settings
+from auth.oauth import router as oauth_router
+from reports.router import router as reports_router
+
+settings = get_settings()
+
+# Initialize Supabase client
+supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+# HTTP bearer token security
+security = HTTPBearer()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown events."""
+    """Lifespan context manager for startup/shutdown events."""
     # Startup
-    app.state.http_client = httpx.AsyncClient(timeout=30.0)
+    app.state.httpx_client = httpx.AsyncClient(timeout=30.0)
+    app.state.supabase = supabase
+    
     yield
+    
     # Shutdown
-    await app.state.http_client.aclose()
+    await app.state.httpx_client.aclose()
 
 
+# Initialize FastAPI app
 app = FastAPI(
     title="Search Intelligence Report API",
-    description="Backend API for generating comprehensive search intelligence reports",
+    description="Backend API for generating comprehensive search intelligence reports combining GSC, GA4, and SERP data",
     version="1.0.0",
     lifespan=lifespan
 )
 
-# CORS configuration
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Include routers
+app.include_router(oauth_router, prefix="/api/auth", tags=["Authentication"])
+app.include_router(reports_router, prefix="/api/reports", tags=["Reports"])
 
-# ============================================================================
-# Request/Response Models
-# ============================================================================
 
-class CreateReportRequest(BaseModel):
-    """Request body for creating a new report."""
-    gsc_property: str
-    ga4_property: Optional[str] = None
+# Auth dependency
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    """Verify JWT token and return user data."""
+    try:
+        token = credentials.credentials
+        
+        # Verify token with Supabase
+        response = supabase.auth.get_user(token)
+        
+        if not response or not response.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authentication token"
+            )
+        
+        return {
+            "id": response.user.id,
+            "email": response.user.email,
+            "token": token
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Authentication failed: {str(e)}"
+        )
+
+
+# Request/Response models
+class HealthCheckResponse(BaseModel):
+    status: str
+    timestamp: datetime
+    version: str
 
 
 class ReportStatusResponse(BaseModel):
-    """Response for report status polling."""
     id: str
-    user_id: str
-    gsc_property: str
-    ga4_property: Optional[str]
-    status: str  # pending, ingesting, analyzing, generating, complete, failed
-    progress: dict
-    error_message: Optional[str] = None
-    report_data: Optional[dict] = None
-    created_at: str
-    completed_at: Optional[str] = None
+    status: str = Field(..., description="Report status: pending, ingesting, analyzing, generating, complete, failed")
+    progress: dict = Field(default_factory=dict, description="Progress by module")
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    error: Optional[str] = None
 
 
-class CreateReportResponse(BaseModel):
-    """Response after creating a new report."""
-    report_id: str
-    status: str
-    message: str
-
-
-# ============================================================================
-# Dependencies
-# ============================================================================
-
-async def get_user_id(authorization: Optional[str] = Header(None)) -> str:
-    """
-    Extract and validate user ID from Authorization header.
-    
-    In production, this would validate a JWT token from Supabase Auth.
-    For MVP, we accept a simple Bearer token with user_id.
-    """
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header required")
-    
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization format")
-    
-    token = authorization[7:]  # Remove "Bearer " prefix
-    
-    # TODO: In production, validate JWT token with Supabase Auth
-    # For now, treat token as direct user_id
-    if not token:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    
-    return token
-
-
-# ============================================================================
-# Routes
-# ============================================================================
-
+# Root endpoint
 @app.get("/")
 async def root():
-    """Health check endpoint."""
+    """Root endpoint."""
     return {
-        "service": "Search Intelligence Report API",
-        "status": "operational",
-        "version": "1.0.0"
+        "message": "Search Intelligence Report API",
+        "version": "1.0.0",
+        "docs": "/docs"
     }
 
 
-@app.get("/health")
+# Health check endpoint
+@app.get("/health", response_model=HealthCheckResponse)
 async def health_check():
-    """Detailed health check."""
-    supabase = get_supabase_client()
-    
-    try:
-        # Test database connection
-        result = supabase.table("users").select("id").limit(1).execute()
-        db_status = "ok"
-    except Exception as e:
-        db_status = f"error: {str(e)}"
-    
-    return {
-        "status": "ok" if db_status == "ok" else "degraded",
-        "database": db_status,
-        "timestamp": "2025-03-20T00:00:00Z"  # Would use real timestamp in production
-    }
+    """Health check endpoint."""
+    return HealthCheckResponse(
+        status="healthy",
+        timestamp=datetime.now(timezone.utc),
+        version="1.0.0"
+    )
 
 
-@app.post("/reports", response_model=CreateReportResponse)
-async def create_report(
-    request: CreateReportRequest,
-    user_id: str = Depends(get_user_id)
-):
-    """
-    Create a new report generation job.
-    
-    This endpoint:
-    1. Validates user has OAuth tokens for the requested properties
-    2. Creates a report record with status 'pending'
-    3. Starts async report generation pipeline
-    4. Returns immediately with report_id for polling
-    """
-    supabase = get_supabase_client()
-    
-    try:
-        # Verify user exists and has required OAuth tokens
-        user_result = supabase.table("users").select("*").eq("id", user_id).execute()
-        
-        if not user_result.data:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        user = user_result.data[0]
-        
-        # Check for GSC token
-        if not user.get("gsc_token"):
-            raise HTTPException(
-                status_code=400,
-                detail="Google Search Console authorization required"
-            )
-        
-        # Check for GA4 token if GA4 property is requested
-        if request.ga4_property and not user.get("ga4_token"):
-            raise HTTPException(
-                status_code=400,
-                detail="Google Analytics 4 authorization required"
-            )
-        
-        # Create report record
-        report_data = {
-            "user_id": user_id,
-            "gsc_property": request.gsc_property,
-            "ga4_property": request.ga4_property,
-            "status": "pending",
-            "progress": {}
-        }
-        
-        report_result = supabase.table("reports").insert(report_data).execute()
-        
-        if not report_result.data:
-            raise HTTPException(status_code=500, detail="Failed to create report")
-        
-        report = report_result.data[0]
-        report_id = report["id"]
-        
-        # Start async report generation
-        # This runs in the background and updates the report status
-        try:
-            await start_report_generation(report_id, user_id)
-        except Exception as pipeline_error:
-            # Update report status to failed
-            supabase.table("reports").update({
-                "status": "failed",
-                "progress": {"error": str(pipeline_error)}
-            }).eq("id", report_id).execute()
-            
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to start report generation: {str(pipeline_error)}"
-            )
-        
-        return CreateReportResponse(
-            report_id=report_id,
-            status="pending",
-            message="Report generation started. Poll /reports/{id} for status."
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
-
-
-@app.get("/reports/{report_id}", response_model=ReportStatusResponse)
+# Report status endpoint (for polling)
+@app.get("/api/reports/{report_id}/status", response_model=ReportStatusResponse)
 async def get_report_status(
-    report_id: str,
-    user_id: str = Depends(get_user_id)
+    report_id: UUID,
+    current_user: dict = Depends(get_current_user)
 ):
     """
-    Get the status of a report generation job.
+    Get the current status of a report generation job.
     
     This endpoint is polled by the frontend to track progress.
-    Returns current status, progress details, and the complete report data
-    when status is 'complete'.
-    """
-    supabase = get_supabase_client()
     
+    Status values:
+    - pending: Report created, waiting to start
+    - ingesting: Fetching data from GSC, GA4, DataForSEO
+    - analyzing: Running analysis modules
+    - generating: Creating final report structure
+    - complete: Report ready
+    - failed: Error occurred
+    
+    Progress object contains module-level status:
+    {
+        "data_ingestion": "complete",
+        "module_1_health": "complete",
+        "module_2_triage": "running",
+        "module_3_serp": "pending",
+        ...
+    }
+    """
     try:
-        # Fetch report
-        report_result = supabase.table("reports").select("*").eq("id", report_id).execute()
+        # Fetch report from database
+        response = supabase.table("reports").select("*").eq("id", str(report_id)).execute()
         
-        if not report_result.data:
-            raise HTTPException(status_code=404, detail="Report not found")
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Report {report_id} not found"
+            )
         
-        report = report_result.data[0]
+        report = response.data[0]
         
         # Verify ownership
-        if report["user_id"] != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        if report["user_id"] != current_user["id"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this report"
+            )
+        
+        # Parse timestamps
+        created_at = datetime.fromisoformat(report["created_at"].replace("Z", "+00:00"))
+        completed_at = None
+        if report.get("completed_at"):
+            completed_at = datetime.fromisoformat(report["completed_at"].replace("Z", "+00:00"))
         
         # Build response
-        response = ReportStatusResponse(
+        return ReportStatusResponse(
             id=report["id"],
-            user_id=report["user_id"],
-            gsc_property=report["gsc_property"],
-            ga4_property=report.get("ga4_property"),
             status=report["status"],
             progress=report.get("progress", {}),
-            error_message=report.get("progress", {}).get("error"),
-            report_data=report.get("report_data") if report["status"] == "complete" else None,
-            created_at=report["created_at"],
-            completed_at=report.get("completed_at")
+            created_at=created_at,
+            completed_at=completed_at,
+            error=report.get("error")
         )
-        
-        return response
         
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch report status: {str(e)}"
         )
 
 
-@app.get("/reports")
-async def list_reports(
-    user_id: str = Depends(get_user_id),
-    limit: int = 10,
-    offset: int = 0
-):
-    """
-    List all reports for the authenticated user.
-    
-    Returns a paginated list of reports, newest first.
-    """
-    supabase = get_supabase_client()
-    
-    try:
-        # Fetch reports for user
-        reports_result = (
-            supabase.table("reports")
-            .select("id, gsc_property, ga4_property, status, created_at, completed_at")
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-            .range(offset, offset + limit - 1)
-            .execute()
-        )
-        
-        # Get total count
-        count_result = (
-            supabase.table("reports")
-            .select("id", count="exact")
-            .eq("user_id", user_id)
-            .execute()
-        )
-        
-        total = count_result.count if hasattr(count_result, 'count') else len(reports_result.data)
-        
-        return {
-            "reports": reports_result.data,
-            "total": total,
-            "limit": limit,
-            "offset": offset
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
+# Error handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    """Handle HTTP exceptions."""
+    return {
+        "error": exc.detail,
+        "status_code": exc.status_code
+    }
 
 
-@app.delete("/reports/{report_id}")
-async def delete_report(
-    report_id: str,
-    user_id: str = Depends(get_user_id)
-):
-    """
-    Delete a report.
-    
-    This removes the report record from the database.
-    """
-    supabase = get_supabase_client()
-    
-    try:
-        # Verify ownership before deletion
-        report_result = supabase.table("reports").select("user_id").eq("id", report_id).execute()
-        
-        if not report_result.data:
-            raise HTTPException(status_code=404, detail="Report not found")
-        
-        if report_result.data[0]["user_id"] != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
-        
-        # Delete report
-        supabase.table("reports").delete().eq("id", report_id).execute()
-        
-        return {"message": "Report deleted successfully"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    """Handle general exceptions."""
+    return {
+        "error": "Internal server error",
+        "detail": str(exc),
+        "status_code": 500
+    }
 
 
 if __name__ == "__main__":
@@ -358,6 +220,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "8000")),
-        reload=os.getenv("ENV") == "development"
+        port=8000,
+        reload=True
     )
