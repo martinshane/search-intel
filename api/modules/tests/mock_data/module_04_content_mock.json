@@ -1,0 +1,530 @@
+{
+  "cannibalization_clusters": [
+    {
+      "query_group": "crm software comparison",
+      "pages": [
+        "/blog/best-crm-software-2024",
+        "/resources/crm-comparison-guide"
+      ],
+      "shared_queries": 34,
+      "total_impressions_affected": 8900,
+      "overlap_percentage": 0.67,
+      "position_spread": 5.2,
+      "recommendation": "consolidate",
+      "keep_page": "/resources/crm-comparison-guide",
+      "redirect_page": "/blog/best-crm-software-2024",
+      "reasoning": "Resource page has better engagement metrics and more authoritative URL structure"
+    },
+    {
+      "query_group": "email marketing automation",
+      "pages": [
+        "/blog/email-automation-guide",
+        "/blog/marketing-automation-basics",
+        "/services/email-marketing"
+      ],
+      "shared_queries": 28,
+      "total_impressions_affected": 12400,
+      "overlap_percentage": 0.54,
+      "position_spread": 3.8,
+      "recommendation": "differentiate",
+      "suggested_focus": {
+        "/blog/email-automation-guide": "technical implementation",
+        "/blog/marketing-automation-basics": "beginner overview",
+        "/services/email-marketing": "service offering"
+      },
+      "reasoning": "Pages serve different intents; refine content to reduce overlap"
+    },
+    {
+      "query_group": "project management tools",
+      "pages": [
+        "/blog/pm-tools-review",
+        "/blog/top-project-management-software"
+      ],
+      "shared_queries": 19,
+      "total_impressions_affected": 5600,
+      "overlap_percentage": 0.82,
+      "position_spread": 2.1,
+      "recommendation": "consolidate",
+      "keep_page": "/blog/top-project-management-software",
+      "redirect_page": "/blog/pm-tools-review",
+      "reasoning": "Very high overlap with similar content depth; consolidation will strengthen authority"
+    },
+    {
+      "query_group": "customer feedback surveys",
+      "pages": [
+        "/blog/customer-survey-templates",
+        "/resources/feedback-survey-guide"
+      ],
+      "shared_queries": 15,
+      "total_impressions_affected": 3200,
+      "overlap_percentage": 0.43,
+      "position_spread": 6.7,
+      "recommendation": "cross_link",
+      "suggested_links": [
+        {
+          "from": "/blog/customer-survey-templates",
+          "to": "/resources/feedback-survey-guide",
+          "anchor_text": "comprehensive survey methodology guide"
+        },
+        {
+          "from": "/resources/feedback-survey-guide",
+          "to": "/blog/customer-survey-templates",
+          "anchor_text": "ready-to-use survey templates"
+        }
+      ],
+      "reasoning": "Moderate overlap; pages complement each other and should cross-link rather than consolidate"
+    }
+  ],
+  "striking_distance": [
+    {
+      "query": "best crm for small business",
+      "current_position": 11.3,
+      "impressions_last_30d": 8900,
+      "current_clicks_monthly": 124,
+      "estimated_clicks_if_position_5": 534,
+      "estimated_click_gain": 410,
+      "intent": "commercial",
+      "landing_page": "/blog/small-business-crm-guide",
+      "current_ctr": 0.0139,
+      "expected_ctr_position_5": 0.06,
+      "difficulty": "medium",
+      "recommended_actions": [
+        "Add comparison table with pricing",
+        "Embed video walkthrough",
+        "Update publish date to current month",
+        "Add FAQ schema for 'best crm' questions"
+      ]
+    },
+    {
+      "query": "how to improve customer retention",
+      "current_position": 9.7,
+      "impressions_last_30d": 6200,
+      "current_clicks_monthly": 186,
+      "estimated_clicks_if_position_5": 372,
+      "estimated_click_gain": 186,
+      "intent": "informational",
+      "landing_page": "/blog/customer-retention-strategies",
+      "current_ctr": 0.03,
+      "expected_ctr_position_5": 0.06,
+      "difficulty": "low",
+      "recommended_actions": [
+        "Expand content from 1,200 to 2,000+ words",
+        "Add data/statistics section",
+        "Include case study examples",
+        "Improve title tag to include '2024'"
+      ]
+    },
+    {
+      "query": "sales funnel optimization",
+      "current_position": 13.2,
+      "impressions_last_30d": 4800,
+      "current_clicks_monthly": 67,
+      "estimated_clicks_if_position_5": 288,
+      "estimated_click_gain": 221,
+      "intent": "commercial",
+      "landing_page": "/blog/optimize-sales-funnel",
+      "current_ctr": 0.014,
+      "expected_ctr_position_5": 0.06,
+      "difficulty": "medium",
+      "recommended_actions": [
+        "Add interactive funnel calculator tool",
+        "Include conversion rate benchmarks by industry",
+        "Add internal links from 3 high-authority pages",
+        "Create supporting pillar content"
+      ]
+    },
+    {
+      "query": "email deliverability best practices",
+      "current_position": 8.9,
+      "impressions_last_30d": 3400,
+      "current_clicks_monthly": 119,
+      "estimated_clicks_if_position_5": 204,
+      "estimated_click_gain": 85,
+      "intent": "informational",
+      "landing_page": "/blog/email-deliverability-guide",
+      "current_ctr": 0.035,
+      "expected_ctr_position_5": 0.06,
+      "difficulty": "low",
+      "recommended_actions": [
+        "Add checklist download",
+        "Include email header examples",
+        "Add troubleshooting section",
+        "Update with latest Gmail/Yahoo sender requirements"
+      ]
+    },
+    {
+      "query": "lead scoring model",
+      "current_position": 14.8,
+      "impressions_last_30d": 5100,
+      "current_clicks_monthly": 51,
+      "estimated_clicks_if_position_5": 306,
+      "estimated_click_gain": 255,
+      "intent": "informational",
+      "landing_page": "/blog/lead-scoring-basics",
+      "current_ctr": 0.01,
+      "expected_ctr_position_5": 0.06,
+      "difficulty": "high",
+      "recommended_actions": [
+        "Add lead scoring template/calculator",
+        "Include example scoring frameworks from different industries",
+        "Add more internal links from related content",
+        "Create dedicated landing page instead of blog post"
+      ]
+    },
+    {
+      "query": "customer journey mapping",
+      "current_position": 10.4,
+      "impressions_last_30d": 7800,
+      "current_clicks_monthly": 156,
+      "estimated_clicks_if_position_5": 468,
+      "estimated_click_gain": 312,
+      "intent": "informational",
+      "landing_page": "/blog/journey-mapping-guide",
+      "current_ctr": 0.02,
+      "expected_ctr_position_5": 0.06,
+      "difficulty": "medium",
+      "recommended_actions": [
+        "Add downloadable journey map templates",
+        "Include visual examples from 3-4 industries",
+        "Embed journey mapping tool demo video",
+        "Add step-by-step tutorial section"
+      ]
+    },
+    {
+      "query": "marketing attribution models",
+      "current_position": 12.1,
+      "impressions_last_30d": 4200,
+      "current_clicks_monthly": 71,
+      "estimated_clicks_if_position_5": 252,
+      "estimated_click_gain": 181,
+      "intent": "informational",
+      "landing_page": "/blog/attribution-modeling-explained",
+      "current_ctr": 0.017,
+      "expected_ctr_position_5": 0.06,
+      "difficulty": "medium",
+      "recommended_actions": [
+        "Add comparison table of attribution models",
+        "Include ROI calculator tool",
+        "Add pros/cons for each model type",
+        "Link to related conversion tracking content"
+      ]
+    },
+    {
+      "query": "sales pipeline management software",
+      "current_position": 15.3,
+      "impressions_last_30d": 6700,
+      "current_clicks_monthly": 54,
+      "estimated_clicks_if_position_5": 402,
+      "estimated_click_gain": 348,
+      "intent": "commercial",
+      "landing_page": "/blog/pipeline-management-tools",
+      "current_ctr": 0.008,
+      "expected_ctr_position_5": 0.06,
+      "difficulty": "high",
+      "recommended_actions": [
+        "Expand to comprehensive comparison guide",
+        "Add software comparison table with pricing",
+        "Include user reviews/ratings",
+        "Add video demos of top tools",
+        "Build authoritative backlinks"
+      ]
+    },
+    {
+      "query": "b2b content marketing strategy",
+      "current_position": 9.2,
+      "impressions_last_30d": 5900,
+      "current_clicks_monthly": 177,
+      "estimated_clicks_if_position_5": 354,
+      "estimated_click_gain": 177,
+      "intent": "informational",
+      "landing_page": "/blog/b2b-content-strategy",
+      "current_ctr": 0.03,
+      "expected_ctr_position_5": 0.06,
+      "difficulty": "low",
+      "recommended_actions": [
+        "Add strategy template download",
+        "Include industry-specific examples",
+        "Add content calendar template",
+        "Improve internal linking from related posts"
+      ]
+    },
+    {
+      "query": "customer segmentation strategies",
+      "current_position": 11.7,
+      "impressions_last_30d": 3800,
+      "current_clicks_monthly": 76,
+      "estimated_clicks_if_position_5": 228,
+      "estimated_click_gain": 152,
+      "intent": "informational",
+      "landing_page": "/blog/customer-segmentation-guide",
+      "current_ctr": 0.02,
+      "expected_ctr_position_5": 0.06,
+      "difficulty": "medium",
+      "recommended_actions": [
+        "Add segmentation framework examples",
+        "Include data-driven segmentation case studies",
+        "Add worksheet/template for building segments",
+        "Expand RFM analysis section"
+      ]
+    }
+  ],
+  "thin_content": [
+    {
+      "url": "/blog/email-marketing-tips",
+      "word_count": 420,
+      "impressions_last_30d": 2800,
+      "clicks_last_30d": 84,
+      "avg_position": 18.3,
+      "bounce_rate": 0.87,
+      "avg_session_duration": 18,
+      "issue": "thin_content",
+      "recommendation": "Expand to 1,500+ words with actionable frameworks",
+      "estimated_impact_if_fixed": 156,
+      "priority_score": 67.2
+    },
+    {
+      "url": "/blog/social-media-metrics",
+      "word_count": 380,
+      "impressions_last_30d": 1900,
+      "clicks_last_30d": 57,
+      "avg_position": 21.4,
+      "bounce_rate": 0.91,
+      "avg_session_duration": 14,
+      "issue": "thin_content",
+      "recommendation": "Complete rewrite with comprehensive metrics guide",
+      "estimated_impact_if_fixed": 98,
+      "priority_score": 54.3
+    },
+    {
+      "url": "/blog/conversion-rate-optimization",
+      "word_count": 890,
+      "impressions_last_30d": 6200,
+      "clicks_last_30d": 186,
+      "avg_position": 15.7,
+      "bounce_rate": 0.82,
+      "avg_session_duration": 24,
+      "issue": "engagement_mismatch",
+      "recommendation": "Add interactive examples and case studies",
+      "estimated_impact_if_fixed": 248,
+      "priority_score": 78.9
+    },
+    {
+      "url": "/resources/glossary",
+      "word_count": 1240,
+      "impressions_last_30d": 4100,
+      "clicks_last_30d": 123,
+      "avg_position": 12.3,
+      "bounce_rate": 0.89,
+      "avg_session_duration": 12,
+      "issue": "engagement_mismatch",
+      "recommendation": "Expand definitions, add examples, improve internal linking",
+      "estimated_impact_if_fixed": 164,
+      "priority_score": 71.5
+    },
+    {
+      "url": "/blog/content-marketing-basics",
+      "word_count": 520,
+      "impressions_last_30d": 3400,
+      "clicks_last_30d": 102,
+      "avg_position": 16.8,
+      "bounce_rate": 0.84,
+      "avg_session_duration": 22,
+      "issue": "thin_content",
+      "recommendation": "Expand to comprehensive beginner guide (2,000+ words)",
+      "estimated_impact_if_fixed": 187,
+      "priority_score": 69.8
+    }
+  ],
+  "update_priority_matrix": {
+    "urgent_update": [
+      {
+        "url": "/blog/marketing-automation-trends",
+        "age_days": 890,
+        "last_modified": "2023-01-15",
+        "trajectory": "strong_decline",
+        "clicks_monthly_current": 234,
+        "clicks_monthly_6mo_ago": 487,
+        "decline_rate": -0.52,
+        "avg_position_current": 14.2,
+        "avg_position_6mo_ago": 7.8,
+        "reason": "Outdated trend content losing relevance rapidly",
+        "recommended_action": "Complete refresh with 2024/2025 trends",
+        "estimated_recovery": 340,
+        "priority_rank": 1
+      },
+      {
+        "url": "/blog/gdpr-compliance-guide",
+        "age_days": 720,
+        "last_modified": "2023-05-20",
+        "trajectory": "decline",
+        "clicks_monthly_current": 156,
+        "clicks_monthly_6mo_ago": 289,
+        "decline_rate": -0.46,
+        "avg_position_current": 11.5,
+        "avg_position_6mo_ago": 6.2,
+        "reason": "Regulatory content requires regular updates",
+        "recommended_action": "Update with latest regulations and examples",
+        "estimated_recovery": 245,
+        "priority_rank": 2
+      },
+      {
+        "url": "/blog/instagram-marketing-guide",
+        "age_days": 640,
+        "last_modified": "2023-08-12",
+        "trajectory": "decline",
+        "clicks_monthly_current": 298,
+        "clicks_monthly_6mo_ago": 512,
+        "decline_rate": -0.42,
+        "avg_position_current": 9.8,
+        "avg_position_6mo_ago": 5.4,
+        "reason": "Platform features outdated, missing Reels/Threads",
+        "recommended_action": "Major update with current features and strategies",
+        "estimated_recovery": 387,
+        "priority_rank": 3
+      }
+    ],
+    "leave_alone": [
+      {
+        "url": "/blog/customer-retention-fundamentals",
+        "age_days": 1240,
+        "last_modified": "2022-02-18",
+        "trajectory": "stable",
+        "clicks_monthly_current": 445,
+        "clicks_monthly_6mo_ago": 432,
+        "decline_rate": 0.03,
+        "avg_position_current": 6.2,
+        "avg_position_6mo_ago": 6.5,
+        "reason": "Evergreen fundamentals content performing well",
+        "recommended_action": "Monitor only; minor refresh in 6+ months",
+        "priority_rank": null
+      },
+      {
+        "url": "/blog/sales-funnel-stages",
+        "age_days": 980,
+        "last_modified": "2022-11-03",
+        "trajectory": "stable",
+        "clicks_monthly_current": 567,
+        "clicks_monthly_6mo_ago": 553,
+        "decline_rate": 0.03,
+        "avg_position_current": 4.8,
+        "avg_position_6mo_ago": 5.1,
+        "reason": "Core concept content with stable performance",
+        "recommended_action": "Leave alone; strong evergreen asset",
+        "priority_rank": null
+      },
+      {
+        "url": "/blog/what-is-crm",
+        "age_days": 1580,
+        "last_modified": "2021-06-10",
+        "trajectory": "slight_growth",
+        "clicks_monthly_current": 892,
+        "clicks_monthly_6mo_ago": 834,
+        "decline_rate": 0.07,
+        "avg_position_current": 3.2,
+        "avg_position_6mo_ago": 3.8,
+        "reason": "Definitional content performing excellently",
+        "recommended_action": "Leave alone; perfect evergreen example",
+        "priority_rank": null
+      }
+    ],
+    "structural_problem": [
+      {
+        "url": "/blog/ai-chatbot-implementation",
+        "age_days": 45,
+        "last_modified": "2026-01-02",
+        "trajectory": "declining",
+        "clicks_monthly_current": 67,
+        "clicks_monthly_6mo_ago": null,
+        "decline_rate": -0.38,
+        "avg_position_current": 28.4,
+        "avg_position_6mo_ago": null,
+        "reason": "New content failing to gain traction; possible wrong intent targeting",
+        "recommended_action": "Audit search intent; may need complete repositioning or different format",
+        "estimated_recovery": null,
+        "priority_rank": 8
+      },
+      {
+        "url": "/blog/predictive-analytics-guide",
+        "age_days": 72,
+        "last_modified": "2025-11-15",
+        "trajectory": "declining",
+        "clicks_monthly_current": 43,
+        "clicks_monthly_6mo_ago": null,
+        "decline_rate": -0.29,
+        "avg_position_current": 34.2,
+        "avg_position_6mo_ago": null,
+        "reason": "Never achieved traction; likely too technical or wrong keyword targeting",
+        "recommended_action": "Consider unpublishing and redirecting; wrong topic-market fit",
+        "estimated_recovery": null,
+        "priority_rank": 12
+      }
+    ],
+    "double_down": [
+      {
+        "url": "/blog/sales-automation-tools-2024",
+        "age_days": 62,
+        "last_modified": "2025-11-25",
+        "trajectory": "strong_growth",
+        "clicks_monthly_current": 423,
+        "clicks_monthly_6mo_ago": null,
+        "decline_rate": 0.94,
+        "avg_position_current": 8.3,
+        "avg_position_6mo_ago": null,
+        "reason": "New content rapidly climbing rankings",
+        "recommended_action": "Add internal links from 5+ related pages; pursue backlinks; expand content depth",
+        "estimated_upside": 780,
+        "priority_rank": 1
+      },
+      {
+        "url": "/blog/marketing-attribution-2024",
+        "age_days": 89,
+        "last_modified": "2025-10-29",
+        "trajectory": "growth",
+        "clicks_monthly_current": 267,
+        "clicks_monthly_6mo_ago": null,
+        "decline_rate": 0.68,
+        "avg_position_current": 11.7,
+        "avg_position_6mo_ago": null,
+        "reason": "Strong growth trajectory; hitting striking distance",
+        "recommended_action": "Expand comparison section; add calculator tool; build supporting content cluster",
+        "estimated_upside": 520,
+        "priority_rank": 2
+      },
+      {
+        "url": "/blog/customer-data-platform-guide",
+        "age_days": 34,
+        "last_modified": "2025-12-23",
+        "trajectory": "strong_growth",
+        "clicks_monthly_current": 189,
+        "clicks_monthly_6mo_ago": null,
+        "decline_rate": 1.23,
+        "avg_position_current": 13.4,
+        "avg_position_6mo_ago": null,
+        "reason": "Very new but growing extremely fast",
+        "recommended_action": "Accelerate internal linking; add video content; expand to 3,000+ words",
+        "estimated_upside": 645,
+        "priority_rank": 3
+      }
+    ]
+  },
+  "summary": {
+    "total_pages_analyzed": 287,
+    "cannibalization_clusters_found": 4,
+    "total_impressions_affected_by_cannibalization": 30100,
+    "striking_distance_opportunities": 10,
+    "total_monthly_clicks_available_striking_distance": 2325,
+    "thin_content_pages": 5,
+    "engagement_issues": 2,
+    "update_priority_breakdown": {
+      "urgent_update": 3,
+      "leave_alone": 3,
+      "structural_problem": 2,
+      "double_down": 3
+    },
+    "total_recoverable_clicks_monthly": 1172,
+    "total_growth_opportunity_clicks_monthly": 1945,
+    "highest_priority_action": "Fix cannibalization for 'crm software comparison' query group",
+    "quick_win_count": 7,
+    "high_effort_high_reward_count": 3
+  }
+}
