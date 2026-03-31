@@ -546,4 +546,11 @@ def test_merge_deduplicate_by_page_date(gsc_client):
     result = gsc_client._merge_and_deduplicate([chunk1, chunk2], key_field=("page", "date"))
     
     assert len(result) == 2
-    jan1 = next(r for r in result if r["date"] == "2025-01
+    jan1 = next(r for r in result if r["date"] == "2025-01-01")
+    jan2 = next(r for r in result if r["date"] == "2025-01-02")
+    
+    # First chunk data should be kept (first seen wins)
+    assert jan1["clicks"] == 10
+    assert jan1["impressions"] == 100
+    assert jan2["clicks"] == 8
+    assert jan2["impressions"] == 80
