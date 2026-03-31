@@ -13,7 +13,7 @@ from .routers import auth, health, reports
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO if not settings.DEBUG else logging.DEBUG,
+    level=logging.INFO if not settings.debug else logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -24,15 +24,14 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown events."""
     # Startup
     logger.info("Starting Search Intelligence Report API")
-    logger.info(f"Environment: {settings.ENVIRONMENT}")
-    logger.info(f"Debug mode: {settings.DEBUG}")
+    logger.info(f"Environment: {settings.environment}")
+    logger.info(f"Debug mode: {settings.debug}")
 
     # Check critical dependencies
     try:
-        from .services.health_check import check_dependencies
-
-        health_status = await check_dependencies()
-        if not health_status["healthy"]:
+        from .routers.health import detailed_health
+        health_status = await detailed_health()
+        if not health_status.get("healthy", False):
             logger.warning("Some dependencies are unhealthy:")
             for dep, status_info in health_status.get("dependencies", {}).items():
                 if not status_info.get("healthy", False):
@@ -58,7 +57,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=settings.get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,7 +70,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """Handle request validation errors with user-friendly messages."""
     errors = []
     for error in exc.errors():
-        field = " -> ".join(str(x) for x in error["loc"][1:])  # Skip 'body'/'query' prefix
+        field = " -> ".join(str(x) for x in error["loc"][1:])
         message = error["msg"]
         errors.append({"field": field or "request", "message": message})
 
@@ -92,7 +91,6 @@ async def http_exception_handler(request: Request, exc: HTTPError) -> JSONRespon
     """Handle external HTTP errors with retry guidance."""
     logger.error(f"External HTTP error on {request.url.path}: {str(exc)}")
 
-    # Determine if this is a transient error
     is_transient = False
     status_code = status.HTTP_502_BAD_GATEWAY
 
@@ -109,7 +107,7 @@ async def http_exception_handler(request: Request, exc: HTTPError) -> JSONRespon
             "error": "External service error",
             "message": message,
             "retry": is_transient,
-            "details": str(exc) if settings.DEBUG else None,
+            "details": str(exc) if settings.debug else None,
         },
     )
 
@@ -148,11 +146,10 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
     """Handle all other exceptions with safe error messages."""
     logger.exception(f"Unhandled exception on {request.url.path}")
 
-    # Never expose internal errors to users in production
     message = "An unexpected error occurred. Our team has been notified."
     details = None
 
-    if settings.DEBUG:
+    if settings.debug:
         message = f"Internal error: {type(exc).__name__}"
         details = str(exc)
 
@@ -186,15 +183,22 @@ app.include_router(health.router, prefix="/health", tags=["Health"])
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(reports.router, prefix="/reports", tags=["Reports"])
 
+# Include module routes
+try:
+    from .routes.modules import router as modules_router
+    app.include_router(modules_router, prefix="/api/v1/modules", tags=["Modules"])
+    logger.info("Module routes loaded successfully")
+except ImportError as e:
+    logger.warning(f"Could not load module routes: {e}")
+
 
 @app.get("/", include_in_schema=False)
 async def root() -> Dict[str, Any]:
     """Root endpoint with API information."""
     return {
-        "name": "Search Intelligence Report API",
-        "version": "1.0.0",
+        "message": "Search Intelligence Report API",
         "status": "operational",
-        "documentation": "/docs",
+        "docs": "/docs",
         "health": "/health",
     }
 
@@ -206,6 +210,6 @@ if __name__ == "__main__":
         "api.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=settings.DEBUG,
-        log_level="debug" if settings.DEBUG else "info",
+        reload=settings.debug,
+        log_level="debug" if settings.debug else "info",
     )
