@@ -177,7 +177,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 13** — Async job pipeline: implement `worker/pipeline.py`. Report generation runs as async job: status tracked in `reports` table (pending → ingesting → analyzing → generating → complete). API endpoint to poll status.
 
-- [ ] **DAY 14** — End-to-end Phase 1 pipeline test: connect a real GSC+GA4 property, trigger full report generation, verify all 3 modules run, verify report JSON is written to Supabase, verify job status polling works.
+- [x] **DAY 14** — End-to-end Phase 1 pipeline test: connect a real GSC+GA4 property, trigger full report generation, verify all 3 modules run, verify report JSON is written to Supabase, verify job status polling works.
 
 ### Frontend Report UI (Days 15-21)
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 13
-**Last Task:** Implemented async job pipeline with worker/pipeline.py for report generation, st
+**Current Day:** 14
+**Last Task:** End-to-end Phase 1 pipeline test with real GSC+GA4 property, verifying all 3 mod
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 14 — End-to-end Phase 1 pipeline test: connect a real GSC+GA4 pro
+**Next Task:** DAY 15 — Report page scaffold: `/web/pages/report/[id].tsx`. Collapsi
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
