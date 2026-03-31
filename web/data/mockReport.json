@@ -1,0 +1,584 @@
+{
+  "id": "rep_2024_demo_001",
+  "user_id": "usr_demo",
+  "gsc_property": "https://example.com",
+  "ga4_property": "GA4-123456789",
+  "status": "complete",
+  "created_at": "2024-03-15T10:30:00Z",
+  "completed_at": "2024-03-15T10:35:00Z",
+  "date_range": {
+    "start": "2023-01-01",
+    "end": "2024-03-15"
+  },
+  "modules": {
+    "health_trajectory": {
+      "overall_direction": "declining",
+      "trend_slope_pct_per_month": -2.3,
+      "change_points": [
+        {
+          "date": "2023-11-08",
+          "magnitude": -0.12,
+          "direction": "drop",
+          "attributed_to": "November 2023 Core Update"
+        },
+        {
+          "date": "2024-01-15",
+          "magnitude": 0.08,
+          "direction": "recovery",
+          "attributed_to": null
+        }
+      ],
+      "seasonality": {
+        "best_day": "Tuesday",
+        "worst_day": "Saturday",
+        "monthly_cycle": true,
+        "cycle_description": "15% traffic spike first week of each month",
+        "weekly_pattern": {
+          "Monday": 0.95,
+          "Tuesday": 1.08,
+          "Wednesday": 1.02,
+          "Thursday": 0.98,
+          "Friday": 0.92,
+          "Saturday": 0.78,
+          "Sunday": 0.82
+        }
+      },
+      "anomalies": [
+        {
+          "date": "2023-12-25",
+          "type": "discord",
+          "magnitude": -0.45,
+          "description": "Holiday drop"
+        },
+        {
+          "date": "2024-02-14",
+          "type": "motif",
+          "magnitude": 0.32,
+          "description": "Recurring monthly spike pattern"
+        }
+      ],
+      "forecast": {
+        "30d": {
+          "clicks": 12400,
+          "ci_low": 11200,
+          "ci_high": 13600
+        },
+        "60d": {
+          "clicks": 11800,
+          "ci_low": 10100,
+          "ci_high": 13500
+        },
+        "90d": {
+          "clicks": 11200,
+          "ci_low": 9000,
+          "ci_high": 13400
+        }
+      },
+      "current_monthly_clicks": 13500,
+      "narrative": "Your site is experiencing a moderate decline of 2.3% per month. A significant drop occurred during the November 2023 Core Update, with partial recovery in January. Strong weekly seasonality suggests B2B traffic patterns. Without intervention, you're projected to lose approximately 2,300 monthly clicks over the next 90 days."
+    },
+    "page_triage": {
+      "pages": [
+        {
+          "url": "/blog/best-project-management-software-2024",
+          "bucket": "critical",
+          "current_monthly_clicks": 1240,
+          "trend_slope": -0.82,
+          "projected_page1_loss_date": "2024-04-22",
+          "current_position": 7.2,
+          "position_30d_ago": 4.1,
+          "ctr_anomaly": true,
+          "ctr_expected": 0.082,
+          "ctr_actual": 0.031,
+          "engagement_flag": "low_engagement",
+          "bounce_rate": 0.87,
+          "avg_session_duration": 22,
+          "priority_score": 94.2,
+          "recommended_action": "urgent_content_refresh"
+        },
+        {
+          "url": "/features/task-automation",
+          "bucket": "decaying",
+          "current_monthly_clicks": 340,
+          "trend_slope": -0.28,
+          "projected_page1_loss_date": "2024-06-15",
+          "current_position": 8.9,
+          "position_30d_ago": 7.3,
+          "ctr_anomaly": false,
+          "ctr_expected": 0.048,
+          "ctr_actual": 0.052,
+          "engagement_flag": null,
+          "bounce_rate": 0.62,
+          "avg_session_duration": 145,
+          "priority_score": 72.8,
+          "recommended_action": "title_rewrite"
+        },
+        {
+          "url": "/blog/remote-team-collaboration-tips",
+          "bucket": "stable",
+          "current_monthly_clicks": 890,
+          "trend_slope": 0.03,
+          "projected_page1_loss_date": null,
+          "current_position": 5.2,
+          "position_30d_ago": 5.4,
+          "ctr_anomaly": false,
+          "ctr_expected": 0.095,
+          "ctr_actual": 0.098,
+          "engagement_flag": null,
+          "bounce_rate": 0.45,
+          "avg_session_duration": 182,
+          "priority_score": 45.3,
+          "recommended_action": "maintain"
+        },
+        {
+          "url": "/pricing",
+          "bucket": "growing",
+          "current_monthly_clicks": 2100,
+          "trend_slope": 0.45,
+          "projected_page1_loss_date": null,
+          "current_position": 3.1,
+          "position_30d_ago": 4.8,
+          "ctr_anomaly": false,
+          "ctr_expected": 0.142,
+          "ctr_actual": 0.145,
+          "engagement_flag": null,
+          "bounce_rate": 0.38,
+          "avg_session_duration": 95,
+          "priority_score": 22.1,
+          "recommended_action": "double_down"
+        },
+        {
+          "url": "/blog/agile-methodology-guide",
+          "bucket": "critical",
+          "current_monthly_clicks": 780,
+          "trend_slope": -0.91,
+          "projected_page1_loss_date": "2024-04-08",
+          "current_position": 9.8,
+          "position_30d_ago": 5.2,
+          "ctr_anomaly": true,
+          "ctr_expected": 0.038,
+          "ctr_actual": 0.015,
+          "engagement_flag": "low_engagement",
+          "bounce_rate": 0.91,
+          "avg_session_duration": 18,
+          "priority_score": 89.7,
+          "recommended_action": "urgent_content_refresh"
+        }
+      ],
+      "summary": {
+        "total_pages_analyzed": 142,
+        "growing": 23,
+        "stable": 67,
+        "decaying": 38,
+        "critical": 14,
+        "total_recoverable_clicks_monthly": 2840
+      },
+      "narrative": "14 pages are in critical decline, hemorrhaging 2,840 clicks per month. Your top priority is the '/blog/best-project-management-software-2024' page, which has dropped from position 4.1 to 7.2 in 30 days and shows both CTR underperformance and poor engagement signals. This suggests both title/snippet issues and content quality problems."
+    },
+    "serp_landscape": {
+      "keywords_analyzed": 87,
+      "serp_feature_displacement": [
+        {
+          "keyword": "best project management software",
+          "organic_position": 3,
+          "visual_position": 8,
+          "features_above": [
+            "featured_snippet",
+            "paa_x4",
+            "ai_overview"
+          ],
+          "estimated_ctr_impact": -0.062,
+          "impressions": 12400,
+          "clicks_lost_to_features": 769
+        },
+        {
+          "keyword": "agile project management tools",
+          "organic_position": 5,
+          "visual_position": 11,
+          "features_above": [
+            "featured_snippet",
+            "paa_x6",
+            "video_carousel",
+            "ai_overview"
+          ],
+          "estimated_ctr_impact": -0.048,
+          "impressions": 8900,
+          "clicks_lost_to_features": 427
+        },
+        {
+          "keyword": "task management software for teams",
+          "organic_position": 4,
+          "visual_position": 7,
+          "features_above": [
+            "paa_x3",
+            "shopping_results",
+            "ai_overview"
+          ],
+          "estimated_ctr_impact": -0.039,
+          "impressions": 6700,
+          "clicks_lost_to_features": 261
+        }
+      ],
+      "competitors": [
+        {
+          "domain": "asana.com",
+          "keywords_shared": 34,
+          "avg_position": 4.2,
+          "position_trend": "stable",
+          "threat_level": "high"
+        },
+        {
+          "domain": "monday.com",
+          "keywords_shared": 29,
+          "avg_position": 5.8,
+          "position_trend": "improving",
+          "threat_level": "high"
+        },
+        {
+          "domain": "trello.com",
+          "keywords_shared": 22,
+          "avg_position": 6.1,
+          "position_trend": "stable",
+          "threat_level": "medium"
+        },
+        {
+          "domain": "clickup.com",
+          "keywords_shared": 18,
+          "avg_position": 7.3,
+          "position_trend": "improving",
+          "threat_level": "medium"
+        },
+        {
+          "domain": "notion.so",
+          "keywords_shared": 15,
+          "avg_position": 8.9,
+          "position_level": "declining",
+          "threat_level": "low"
+        }
+      ],
+      "intent_mismatches": [
+        {
+          "keyword": "buy project management software",
+          "current_intent": "transactional",
+          "landing_page": "/blog/best-project-management-software-2024",
+          "landing_page_type": "informational_content",
+          "recommendation": "Create dedicated comparison/pricing page"
+        },
+        {
+          "keyword": "project management templates free",
+          "current_intent": "transactional",
+          "landing_page": "/blog/project-templates-guide",
+          "landing_page_type": "informational_content",
+          "recommendation": "Add template download/gating"
+        }
+      ],
+      "total_click_share": 0.12,
+      "click_share_opportunity": 0.31,
+      "clicks_lost_to_serp_features": 1457,
+      "narrative": "SERP feature displacement is your biggest challenge, costing you approximately 1,457 clicks per month. AI Overviews alone account for 40% of this loss. Your organic rank #3 for 'best project management software' is actually visual position #8 due to SERP clutter. Asana and Monday.com dominate your competitive landscape, appearing in 60%+ of your core keywords."
+    },
+    "content_intelligence": {
+      "cannibalization_clusters": [
+        {
+          "query_group": "project management pricing",
+          "pages": [
+            "/blog/project-management-software-pricing-guide",
+            "/pricing"
+          ],
+          "shared_queries": 23,
+          "total_impressions_affected": 4500,
+          "position_page1": 8.2,
+          "position_page2": 11.4,
+          "recommendation": "consolidate",
+          "keep_page": "/pricing",
+          "redirect_page": "/blog/project-management-software-pricing-guide",
+          "estimated_click_recovery": 180
+        },
+        {
+          "query_group": "task automation features",
+          "pages": [
+            "/features/task-automation",
+            "/blog/task-automation-benefits",
+            "/blog/how-to-automate-tasks"
+          ],
+          "shared_queries": 18,
+          "total_impressions_affected": 3200,
+          "avg_positions": [8.9, 12.3, 15.7],
+          "recommendation": "differentiate",
+          "strategy": "Make /features/ product-focused, consolidate blog posts into single comprehensive guide",
+          "estimated_click_recovery": 145
+        }
+      ],
+      "striking_distance": [
+        {
+          "query": "best project management software for small teams",
+          "current_position": 11.3,
+          "impressions": 8900,
+          "current_clicks": 178,
+          "estimated_click_gain_if_top5": 712,
+          "estimated_click_gain_if_top3": 1068,
+          "intent": "commercial",
+          "landing_page": "/blog/best-project-management-software-2024",
+          "gap_to_position_5": 6.3,
+          "effort_estimate": "medium",
+          "recommended_actions": [
+            "Add comparison table",
+            "Update for 2024 pricing",
+            "Add video walkthrough",
+            "Build internal links from related posts"
+          ]
+        },
+        {
+          "query": "project management software comparison",
+          "current_position": 9.8,
+          "impressions": 6700,
+          "current_clicks": 201,
+          "estimated_click_gain_if_top5": 469,
+          "estimated_click_gain_if_top3": 670,
+          "intent": "commercial",
+          "landing_page": "/blog/project-management-software-comparison-2024",
+          "gap_to_position_5": 4.8,
+          "effort_estimate": "low",
+          "recommended_actions": [
+            "Add interactive comparison tool",
+            "Update pricing (outdated)",
+            "Add user review quotes"
+          ]
+        },
+        {
+          "query": "how to choose project management software",
+          "current_position": 13.2,
+          "impressions": 5200,
+          "current_clicks": 104,
+          "estimated_click_gain_if_top5": 416,
+          "estimated_click_gain_if_top3": 624,
+          "intent": "informational",
+          "landing_page": "/blog/choosing-project-management-software",
+          "gap_to_position_5": 8.2,
+          "effort_estimate": "high",
+          "recommended_actions": [
+            "Major content expansion (currently 680 words)",
+            "Add decision framework/flowchart",
+            "Add case studies",
+            "Target featured snippet with FAQ section"
+          ]
+        }
+      ],
+      "thin_content": [
+        {
+          "url": "/blog/agile-methodology-guide",
+          "word_count": 420,
+          "impressions": 9800,
+          "clicks": 147,
+          "bounce_rate": 0.91,
+          "avg_session_duration": 18,
+          "severity": "critical",
+          "recommended_word_count": 2000
+        },
+        {
+          "url": "/blog/scrum-vs-kanban",
+          "word_count": 580,
+          "impressions": 4200,
+          "clicks": 168,
+          "bounce_rate": 0.78,
+          "avg_session_duration": 35,
+          "severity": "high",
+          "recommended_word_count": 1800
+        }
+      ],
+      "update_priority_matrix": {
+        "urgent_update": [
+          {
+            "url": "/blog/best-project-management-software-2024",
+            "age_days": 340,
+            "trend": "critical_decay",
+            "current_monthly_clicks": 1240,
+            "reason": "High traffic, rapid decay, outdated content"
+          },
+          {
+            "url": "/blog/agile-methodology-guide",
+            "age_days": 520,
+            "trend": "critical_decay",
+            "current_monthly_clicks": 780,
+            "reason": "Thin content causing engagement issues"
+          }
+        ],
+        "leave_alone": [
+          {
+            "url": "/blog/remote-team-collaboration-tips",
+            "age_days": 280,
+            "trend": "stable",
+            "current_monthly_clicks": 890,
+            "reason": "Evergreen content performing well"
+          }
+        ],
+        "structural_problem": [
+          {
+            "url": "/blog/project-management-software-pricing-guide",
+            "age_days": 180,
+            "trend": "decaying",
+            "current_monthly_clicks": 230,
+            "reason": "Cannibalizing /pricing page, wrong intent targeting"
+          }
+        ],
+        "double_down": [
+          {
+            "url": "/pricing",
+            "age_days": 90,
+            "trend": "growing",
+            "current_monthly_clicks": 2100,
+            "reason": "Recent optimization working, build more internal links"
+          }
+        ]
+      },
+      "total_cannibalization_impressions": 7700,
+      "total_striking_distance_opportunity": 2776,
+      "narrative": "You have 2 major cannibalization issues costing 325 clicks per month. Your striking distance opportunities represent 2,776 potential monthly clicks with focused optimization efforts. The '/blog/best-project-management-software-2024' page needs urgent attention—it's both in critical decay AND cannibalizing your money page."
+    },
+    "gameplan": {
+      "critical": [
+        {
+          "action": "Emergency content refresh: /blog/best-project-management-software-2024",
+          "pages_affected": ["/blog/best-project-management-software-2024"],
+          "impact_monthly_clicks": 620,
+          "effort": "medium",
+          "timeframe": "this_week",
+          "specific_tasks": [
+            "Update all pricing information (currently showing 2023 prices)",
+            "Rewrite title to: 'Best Project Management Software for Small Teams (2024 Comparison)'",
+            "Add comparison table with 5-7 top tools",
+            "Add video walkthrough or tool screenshots",
+            "Expand from 1200 to 2000+ words",
+            "Add FAQ section targeting PAA opportunities"
+          ],
+          "dependencies": [],
+          "estimated_hours": 8
+        },
+        {
+          "action": "Fix CTR underperformance: Rewrite titles for 5 high-impression pages",
+          "pages_affected": [
+            "/blog/best-project-management-software-2024",
+            "/blog/agile-methodology-guide",
+            "/features/task-automation"
+          ],
+          "impact_monthly_clicks": 340,
+          "effort": "low",
+          "timeframe": "this_week",
+          "specific_tasks": [
+            "A/B test emotional triggers: 'Top 10...' vs 'Best... [Current Year]'",
+            "Add power words: 'Ultimate', 'Complete', 'Proven'",
+            "Include numbers and brackets",
+            "Test year in title (currently missing on several)"
+          ],
+          "dependencies": [],
+          "estimated_hours": 3
+        },
+        {
+          "action": "Resolve cannibalization: Consolidate /blog/project-management-software-pricing-guide into /pricing",
+          "pages_affected": [
+            "/pricing",
+            "/blog/project-management-software-pricing-guide"
+          ],
+          "impact_monthly_clicks": 180,
+          "effort": "low",
+          "timeframe": "this_week",
+          "specific_tasks": [
+            "Extract any unique content from blog post",
+            "Merge into dedicated Pricing Comparison section on /pricing",
+            "Set up 301 redirect from old blog post",
+            "Update all internal links to point to /pricing"
+          ],
+          "dependencies": [],
+          "estimated_hours": 4
+        }
+      ],
+      "quick_wins": [
+        {
+          "action": "Optimize striking distance keywords (3 pages, estimated +1,597 clicks/month)",
+          "pages_affected": [
+            "/blog/best-project-management-software-2024",
+            "/blog/project-management-software-comparison-2024",
+            "/blog/choosing-project-management-software"
+          ],
+          "impact_monthly_clicks": 1597,
+          "effort": "medium",
+          "timeframe": "this_month",
+          "specific_tasks": [
+            "Add interactive comparison calculator to comparison page",
+            "Create decision framework flowchart for 'how to choose' page",
+            "Update all comparison pricing (several are 6+ months old)",
+            "Add 10 internal links from related blog content"
+          ],
+          "dependencies": [],
+          "estimated_hours": 12
+        },
+        {
+          "action": "Target featured snippets on 8 high-opportunity keywords",
+          "pages_affected": [
+            "/blog/best-project-management-software-2024",
+            "/blog/agile-methodology-guide",
+            "/blog/project-management-templates-guide"
+          ],
+          "impact_monthly_clicks": 890,
+          "effort": "low",
+          "timeframe": "this_month",
+          "specific_tasks": [
+            "Add FAQ sections with schema markup",
+            "Format key answers in concise paragraphs (40-60 words)",
+            "Add definition boxes for key terms",
+            "Structure content with clear H2/H3 hierarchy for extraction"
+          ],
+          "dependencies": [],
+          "estimated_hours": 6
+        },
+        {
+          "action": "Fix thin content causing engagement issues (2 pages)",
+          "pages_affected": [
+            "/blog/agile-methodology-guide",
+            "/blog/scrum-vs-kanban"
+          ],
+          "impact_monthly_clicks": 245,
+          "effort": "medium",
+          "timeframe": "this_month",
+          "specific_tasks": [
+            "Expand /blog/agile-methodology-guide from 420 to 2000+ words",
+            "Add practical examples and case studies",
+            "Include downloadable templates or checklists",
+            "Add visual aids (process diagrams, comparison tables)"
+          ],
+          "dependencies": [],
+          "estimated_hours": 10
+        }
+      ],
+      "strategic": [
+        {
+          "action": "Build comprehensive template library to capture 'free templates' queries",
+          "pages_affected": ["new_page"],
+          "impact_monthly_clicks": 3400,
+          "effort": "high",
+          "timeframe": "this_quarter",
+          "specific_tasks": [
+            "Create /templates hub page",
+            "Design 10-15 downloadable project management templates",
+            "Gate behind email capture",
+            "Target keywords: '[template type] template free', 'free project management templates'",
+            "Build internal links from all relevant blog posts"
+          ],
+          "dependencies": [],
+          "estimated_hours": 40
+        },
+        {
+          "action": "Launch comparison tool to capture bottom-of-funnel commercial queries",
+          "pages_affected": ["new_feature"],
+          "impact_monthly_clicks": 2800,
+          "effort": "high",
+          "timeframe": "this_quarter",
+          "specific_tasks": [
+            "Build interactive comparison tool (filters, side-by-side)",
+            "Target: 'compare [tool A] vs [tool B]' queries",
+            "Embed on /pricing and main comparison pages",
+            "Add schema markup for SoftwareApplication",
+            "Promote from blog content"
+          ],
+          "dependencies": [],
+          "
