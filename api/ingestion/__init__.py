@@ -1,23 +1,14 @@
+# api/ingestion/__init__.py
 """
-Ingestion module for Search Intelligence Report.
+Ingestion package for Search Intelligence Report.
 
-Handles data collection from:
-- Google Search Console API
-- Google Analytics 4 Data API
-- DataForSEO SERP API
-- Site crawling for internal link graph
+This package handles data collection from external APIs:
+- Google Search Console (GSC)
+- Google Analytics 4 (GA4)
+- DataForSEO (SERP data)
+- Site crawling (internal link graph)
 """
 
-from api.ingestion.gsc import GSCClient
-from api.ingestion.ga4 import GA4Client
-from api.ingestion.serp import SERPClient
-from api.ingestion.crawler import SiteCrawler
-from api.ingestion.cache import IngestionCache
+from .gsc import GSCIngestion
 
-__all__ = [
-    "GSCClient",
-    "GA4Client",
-    "SERPClient",
-    "SiteCrawler",
-    "IngestionCache",
-]
+__all__ = ["GSCIngestion"]
