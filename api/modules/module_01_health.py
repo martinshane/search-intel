@@ -1,574 +1,599 @@
 """
 Module 1: Health & Trajectory Analysis
-MSTL decomposition, PELT change point detection, STUMPY matrix profile, ARIMA forecasting
+
+Enhanced with robustness fixes for real-world noisy GSC data:
+- Added validation checks for data quality
+- Improved change point detection sensitivity
+- Better handling of sparse data periods
+- Graceful degradation when insufficient data
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional
 import logging
 
-# Time series decomposition and forecasting
-from statsmodels.tsa.seasonal import MSTL
-from statsmodels.tsa.arima.model import ARIMA
+# Statistical libraries
 from scipy import stats
 from scipy.optimize import curve_fit
-
-# Change point detection
+from statsmodels.tsa.seasonal import MSTL
 import ruptures as rpt
 
-# Matrix profile for anomaly/motif detection
-import stumpy
+# Matrix profile for pattern detection
+try:
+    import stumpy
+    STUMPY_AVAILABLE = True
+except ImportError:
+    STUMPY_AVAILABLE = False
+    logging.warning("STUMPY not available - pattern detection will be limited")
 
 logger = logging.getLogger(__name__)
 
 
-def analyze_health_trajectory(daily_data: pd.DataFrame) -> Dict[str, Any]:
+def analyze_health_trajectory(daily_data: pd.DataFrame, min_days: int = 90) -> Dict[str, Any]:
     """
-    Complete Module 1 implementation: Health & Trajectory Analysis
-    
-    Performs:
-    1. MSTL decomposition (trend, weekly/monthly seasonality, residuals)
-    2. Trend direction classification and slope calculation
-    3. PELT change point detection on trend component
-    4. STUMPY matrix profile analysis on residuals (motifs + discords)
-    5. ARIMA forecasting (30/60/90 day projections)
+    Comprehensive health and trajectory analysis with robustness enhancements.
     
     Args:
         daily_data: DataFrame with columns ['date', 'clicks', 'impressions']
-                   Must be sorted by date ascending, daily granularity
-    
+        min_days: Minimum days of data required for analysis
+        
     Returns:
-        Dict matching spec schema with keys:
-        - overall_direction: str
-        - trend_slope_pct_per_month: float
-        - change_points: List[Dict]
-        - seasonality: Dict
-        - anomalies: List[Dict]
-        - forecast: Dict
+        Dictionary containing health metrics, trends, seasonality, anomalies, and forecasts
     """
-    
     try:
-        # Validate and prepare data
-        df = _prepare_data(daily_data)
+        # Validation and preprocessing
+        validated_data = _validate_and_prepare_data(daily_data, min_days)
+        if validated_data is None:
+            return _insufficient_data_response()
         
-        if len(df) < 90:
-            logger.warning(f"Insufficient data for full analysis: {len(df)} days (need 90+)")
-            return _minimal_analysis(df)
+        # Extract time series
+        clicks_series = validated_data['clicks'].values
+        impressions_series = validated_data['impressions'].values
+        dates = validated_data['date'].values
         
-        # 1. MSTL Decomposition
-        decomposition = _perform_mstl_decomposition(df)
+        # 1. Decomposition for trend and seasonality
+        decomposition_result = _perform_decomposition(clicks_series, dates)
         
-        # 2. Trend Analysis
-        trend_analysis = _analyze_trend(decomposition['trend'], df)
-        
-        # 3. Change Point Detection
-        change_points = _detect_change_points(decomposition['trend'], df)
-        
-        # 4. Seasonality Analysis
-        seasonality_analysis = _analyze_seasonality(
-            decomposition['seasonal_weekly'],
-            decomposition['seasonal_monthly'],
-            df
+        # 2. Trend analysis
+        trend_analysis = _analyze_trend(
+            decomposition_result['trend'],
+            dates,
+            clicks_series
         )
         
-        # 5. Anomaly Detection (matrix profile on residuals)
-        anomalies = _detect_anomalies(decomposition['resid'], df)
+        # 3. Change point detection
+        change_points = _detect_change_points(
+            decomposition_result['trend'],
+            dates,
+            clicks_series
+        )
         
-        # 6. Forecasting
-        forecast = _generate_forecast(df, decomposition)
+        # 4. Seasonality analysis
+        seasonality_analysis = _analyze_seasonality(
+            decomposition_result,
+            validated_data
+        )
         
-        # Assemble final result
-        result = {
+        # 5. Anomaly detection
+        anomalies = _detect_anomalies(
+            decomposition_result['residual'],
+            dates,
+            clicks_series
+        )
+        
+        # 6. Pattern detection with STUMPY (if available)
+        patterns = _detect_patterns(clicks_series, dates)
+        
+        # 7. Forecast
+        forecast = _generate_forecast(
+            clicks_series,
+            decomposition_result,
+            trend_analysis
+        )
+        
+        # 8. Overall health score
+        health_score = _calculate_health_score(
+            trend_analysis,
+            change_points,
+            anomalies
+        )
+        
+        return {
+            "status": "success",
+            "data_quality": {
+                "days_analyzed": len(validated_data),
+                "data_completeness": float(validated_data['clicks'].notna().sum() / len(validated_data)),
+                "date_range": {
+                    "start": str(dates[0]),
+                    "end": str(dates[-1])
+                }
+            },
             "overall_direction": trend_analysis['direction'],
             "trend_slope_pct_per_month": trend_analysis['slope_pct_per_month'],
+            "health_score": health_score,
             "change_points": change_points,
             "seasonality": seasonality_analysis,
             "anomalies": anomalies,
+            "patterns": patterns,
             "forecast": forecast,
-            "metadata": {
-                "days_analyzed": len(df),
-                "date_range": {
-                    "start": df['date'].min().isoformat(),
-                    "end": df['date'].max().isoformat()
-                },
-                "avg_daily_clicks": float(df['clicks'].mean()),
-                "total_clicks_period": int(df['clicks'].sum())
+            "summary_metrics": {
+                "current_avg_daily_clicks": float(np.mean(clicks_series[-30:])),
+                "vs_90d_ago": _calculate_period_change(clicks_series, 90),
+                "vs_180d_ago": _calculate_period_change(clicks_series, 180),
+                "volatility": float(np.std(clicks_series) / np.mean(clicks_series))
             }
         }
         
-        logger.info(f"Module 1 analysis complete: {trend_analysis['direction']} trend, "
-                   f"{len(change_points)} change points detected")
-        
-        return result
-        
     except Exception as e:
-        logger.error(f"Module 1 analysis failed: {str(e)}", exc_info=True)
-        raise
+        logger.error(f"Error in health trajectory analysis: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Unable to complete analysis due to data issues"
+        }
 
 
-def _prepare_data(daily_data: pd.DataFrame) -> pd.DataFrame:
-    """Validate and prepare input data"""
+def _validate_and_prepare_data(df: pd.DataFrame, min_days: int) -> Optional[pd.DataFrame]:
+    """
+    Validate and prepare data with enhanced robustness.
+    """
+    if df is None or len(df) == 0:
+        logger.warning("No data provided")
+        return None
     
-    df = daily_data.copy()
+    # Make a copy to avoid modifying original
+    data = df.copy()
     
     # Ensure required columns
     required_cols = ['date', 'clicks', 'impressions']
-    missing = [col for col in required_cols if col not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
+    if not all(col in data.columns for col in required_cols):
+        logger.error(f"Missing required columns. Have: {data.columns.tolist()}")
+        return None
     
     # Convert date to datetime
-    df['date'] = pd.to_datetime(df['date'])
+    if not pd.api.types.is_datetime64_any_dtype(data['date']):
+        data['date'] = pd.to_datetime(data['date'], errors='coerce')
+    
+    # Remove rows with invalid dates
+    data = data.dropna(subset=['date'])
     
     # Sort by date
-    df = df.sort_values('date').reset_index(drop=True)
+    data = data.sort_values('date').reset_index(drop=True)
     
-    # Fill missing dates with 0 clicks/impressions
-    date_range = pd.date_range(start=df['date'].min(), end=df['date'].max(), freq='D')
-    df = df.set_index('date').reindex(date_range, fill_value=0).reset_index()
-    df.columns = ['date', 'clicks', 'impressions'] if len(df.columns) == 3 else ['date'] + list(df.columns[1:])
+    # Check for minimum data requirement
+    if len(data) < min_days:
+        logger.warning(f"Insufficient data: {len(data)} days < {min_days} required")
+        return None
     
-    # Ensure numeric types
-    df['clicks'] = pd.to_numeric(df['clicks'], errors='coerce').fillna(0)
-    df['impressions'] = pd.to_numeric(df['impressions'], errors='coerce').fillna(0)
+    # Fill missing values in clicks/impressions with 0 (common in GSC data)
+    data['clicks'] = pd.to_numeric(data['clicks'], errors='coerce').fillna(0)
+    data['impressions'] = pd.to_numeric(data['impressions'], errors='coerce').fillna(0)
     
-    return df
-
-
-def _perform_mstl_decomposition(df: pd.DataFrame) -> Dict[str, pd.Series]:
-    """
-    Perform MSTL decomposition with weekly and monthly periods
-    
-    Returns dict with: trend, seasonal_weekly, seasonal_monthly, resid
-    """
-    
-    # Use clicks as the primary metric
-    ts = df['clicks'].values
-    
-    # MSTL requires at least 2 full periods of the longest seasonality
-    min_length = 2 * 30  # 60 days minimum
-    if len(ts) < min_length:
-        logger.warning(f"Data too short for MSTL ({len(ts)} days), using simpler decomposition")
-        return _simple_decomposition(df)
-    
-    try:
-        # MSTL with weekly (7) and monthly (30) periods
-        # windows parameter: 7 means "odd integer closest to 7"
-        mstl = MSTL(ts, periods=[7, 30], windows=[7, 31])
-        result = mstl.fit()
+    # Remove outliers (extreme values that would skew analysis)
+    # Using IQR method but only for extreme outliers (10x IQR)
+    for col in ['clicks', 'impressions']:
+        Q1 = data[col].quantile(0.25)
+        Q3 = data[col].quantile(0.75)
+        IQR = Q3 - Q1
+        extreme_upper = Q3 + 10 * IQR
         
-        return {
-            'trend': pd.Series(result.trend, index=df.index),
-            'seasonal_weekly': pd.Series(result.seasonal[:, 0], index=df.index),
-            'seasonal_monthly': pd.Series(result.seasonal[:, 1], index=df.index),
-            'resid': pd.Series(result.resid, index=df.index)
-        }
-        
-    except Exception as e:
-        logger.warning(f"MSTL decomposition failed: {str(e)}, using fallback")
-        return _simple_decomposition(df)
+        outlier_count = (data[col] > extreme_upper).sum()
+        if outlier_count > 0:
+            logger.info(f"Capping {outlier_count} extreme outliers in {col}")
+            data.loc[data[col] > extreme_upper, col] = extreme_upper
+    
+    return data
 
 
-def _simple_decomposition(df: pd.DataFrame) -> Dict[str, pd.Series]:
-    """Fallback decomposition for short time series"""
-    
-    # Simple trend via rolling mean
-    window = min(30, len(df) // 3)
-    trend = df['clicks'].rolling(window=window, center=True).mean().fillna(method='bfill').fillna(method='ffill')
-    
-    # Detrend
-    detrended = df['clicks'] - trend
-    
-    # Weekly seasonality via day-of-week averages
-    df_temp = df.copy()
-    df_temp['dow'] = pd.to_datetime(df_temp['date']).dt.dayofweek
-    df_temp['detrended'] = detrended
-    dow_avg = df_temp.groupby('dow')['detrended'].mean()
-    seasonal_weekly = df_temp['dow'].map(dow_avg)
-    
-    # Residual
-    resid = detrended - seasonal_weekly
-    
+def _insufficient_data_response() -> Dict[str, Any]:
+    """
+    Return a graceful response when data is insufficient.
+    """
     return {
-        'trend': trend,
-        'seasonal_weekly': seasonal_weekly,
-        'seasonal_monthly': pd.Series(0, index=df.index),  # No monthly component
-        'resid': resid
+        "status": "insufficient_data",
+        "message": "Not enough data to perform meaningful analysis. Need at least 90 days of data.",
+        "overall_direction": "unknown",
+        "trend_slope_pct_per_month": 0.0,
+        "health_score": None,
+        "change_points": [],
+        "seasonality": {},
+        "anomalies": [],
+        "patterns": {},
+        "forecast": {}
     }
 
 
-def _analyze_trend(trend: pd.Series, df: pd.DataFrame) -> Dict[str, Any]:
+def _perform_decomposition(series: np.ndarray, dates: np.ndarray) -> Dict[str, np.ndarray]:
     """
-    Analyze trend component: fit linear regression, classify direction
-    
-    Returns:
-        direction: strong_growth, growth, flat, decline, strong_decline
-        slope_pct_per_month: percentage change per month
+    Perform MSTL decomposition with enhanced error handling for noisy data.
     """
-    
-    # Remove NaN values
-    valid_mask = ~trend.isna()
-    y = trend[valid_mask].values
-    x = np.arange(len(y))
-    
-    if len(y) < 2:
+    try:
+        # MSTL requires at least 2 full periods of data
+        # For weekly (7) and monthly (30) periods, need at least 60 days
+        if len(series) < 60:
+            logger.warning("Series too short for MSTL, using simple moving average")
+            return _simple_decomposition(series)
+        
+        # Convert to pandas Series for MSTL
+        ts = pd.Series(series, index=pd.DatetimeIndex(dates))
+        
+        # Handle zeros and very low variance
+        if np.std(series) < 1e-6:
+            logger.warning("Series has near-zero variance")
+            return _simple_decomposition(series)
+        
+        # MSTL with multiple seasonal periods
+        # periods: 7 (weekly), 30 (monthly) - adjusted for data availability
+        periods = []
+        if len(series) >= 14:
+            periods.append(7)
+        if len(series) >= 60:
+            periods.append(30)
+        
+        if not periods:
+            return _simple_decomposition(series)
+        
+        mstl = MSTL(ts, periods=periods, stl_kwargs={'seasonal': 7})
+        result = mstl.fit()
+        
         return {
-            'direction': 'insufficient_data',
+            'trend': result.trend.values,
+            'seasonal': result.seasonal.values,
+            'residual': result.resid.values,
+            'observed': series
+        }
+        
+    except Exception as e:
+        logger.warning(f"MSTL decomposition failed: {e}, using fallback")
+        return _simple_decomposition(series)
+
+
+def _simple_decomposition(series: np.ndarray) -> Dict[str, np.ndarray]:
+    """
+    Fallback decomposition using simple moving averages.
+    """
+    # Trend: 7-day moving average
+    window = min(7, len(series) // 3)
+    trend = pd.Series(series).rolling(window=window, center=True).mean().fillna(method='bfill').fillna(method='ffill').values
+    
+    # Residual: observed - trend
+    residual = series - trend
+    
+    # Seasonal: simple day-of-week pattern if enough data
+    seasonal = np.zeros_like(series)
+    if len(series) >= 14:
+        for i in range(7):
+            mask = np.arange(len(series)) % 7 == i
+            if mask.sum() > 0:
+                seasonal[mask] = np.mean(residual[mask])
+    
+    return {
+        'trend': trend,
+        'seasonal': seasonal,
+        'residual': residual - seasonal,
+        'observed': series
+    }
+
+
+def _analyze_trend(trend: np.ndarray, dates: np.ndarray, original_series: np.ndarray) -> Dict[str, Any]:
+    """
+    Analyze trend component with improved robustness.
+    """
+    # Filter out NaN values from trend
+    valid_mask = ~np.isnan(trend)
+    if valid_mask.sum() < 30:
+        logger.warning("Too many NaN values in trend")
+        return {
+            'direction': 'unknown',
             'slope_pct_per_month': 0.0,
-            'slope_absolute': 0.0,
-            'r_squared': 0.0
+            'slope': 0.0,
+            'confidence': 0.0
         }
     
-    # Linear regression
-    slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
+    clean_trend = trend[valid_mask]
+    clean_x = np.arange(len(trend))[valid_mask]
+    
+    # Linear regression on trend
+    slope, intercept, r_value, p_value, std_err = stats.linregress(clean_x, clean_trend)
     
     # Convert slope to percentage change per month
-    # slope is in clicks/day, convert to clicks/month then to percentage
-    baseline = np.median(y)
-    if baseline > 0:
-        slope_per_month = slope * 30  # 30 days
-        slope_pct_per_month = (slope_per_month / baseline) * 100
+    if len(clean_trend) > 0 and np.mean(clean_trend) > 0:
+        days_in_data = len(clean_trend)
+        avg_value = np.mean(clean_trend)
+        slope_pct_per_month = (slope * 30 / avg_value) * 100
     else:
         slope_pct_per_month = 0.0
     
-    # Classify direction
+    # Classify direction with refined thresholds
     if slope_pct_per_month > 5:
-        direction = 'strong_growth'
+        direction = "strong_growth"
     elif slope_pct_per_month > 1:
-        direction = 'growth'
+        direction = "growth"
     elif slope_pct_per_month > -1:
-        direction = 'flat'
+        direction = "flat"
     elif slope_pct_per_month > -5:
-        direction = 'decline'
+        direction = "declining"
     else:
-        direction = 'strong_decline'
+        direction = "strong_decline"
     
     return {
         'direction': direction,
         'slope_pct_per_month': round(slope_pct_per_month, 2),
-        'slope_absolute': round(slope, 4),
-        'r_squared': round(r_value ** 2, 3),
-        'p_value': round(p_value, 4)
+        'slope': float(slope),
+        'confidence': float(r_value ** 2),  # R-squared as confidence measure
+        'p_value': float(p_value)
     }
 
 
-def _detect_change_points(trend: pd.Series, df: pd.DataFrame) -> List[Dict[str, Any]]:
+def _detect_change_points(trend: np.ndarray, dates: np.ndarray, original_series: np.ndarray) -> List[Dict[str, Any]]:
     """
-    Detect change points in trend using PELT algorithm
-    
-    Returns list of change points with date, magnitude, direction
+    Detect change points with improved sensitivity for noisy data.
     """
-    
-    # Remove NaN
-    valid_mask = ~trend.isna()
-    signal = trend[valid_mask].values
-    dates = df.loc[valid_mask, 'date'].values
-    
-    if len(signal) < 30:
-        logger.warning("Insufficient data for change point detection")
-        return []
+    change_points = []
     
     try:
-        # PELT algorithm (Pruned Exact Linear Time)
-        # pen parameter controls sensitivity (higher = fewer change points)
-        # Start with adaptive penalty based on data variance
-        penalty = 3 * np.var(signal)
+        # Filter valid data
+        valid_mask = ~np.isnan(trend)
+        if valid_mask.sum() < 30:
+            return change_points
         
-        algo = rpt.Pelt(model="rbf", min_size=7, jump=1).fit(signal)
-        change_point_indices = algo.predict(pen=penalty)
+        clean_trend = trend[valid_mask]
+        clean_dates = dates[valid_mask]
         
-        # Remove the final index (always included by ruptures)
-        if change_point_indices and change_point_indices[-1] == len(signal):
-            change_point_indices = change_point_indices[:-1]
+        # Use Pelt algorithm with adjusted penalty
+        # Lower penalty = more sensitive to changes
+        # Penalty scales with data variance
+        signal_std = np.std(clean_trend)
+        if signal_std < 1e-6:
+            return change_points
         
-        change_points = []
+        # Normalize signal for better change point detection
+        normalized_signal = (clean_trend - np.mean(clean_trend)) / signal_std
         
-        for idx in change_point_indices:
-            if idx <= 0 or idx >= len(signal) - 1:
+        # Pelt algorithm
+        algo = rpt.Pelt(model="rbf", min_size=14, jump=1).fit(normalized_signal)
+        
+        # Adjusted penalty based on data length and variance
+        penalty_value = 3 * np.log(len(normalized_signal))
+        detected_bkps = algo.predict(pen=penalty_value)
+        
+        # Convert breakpoints to change point events
+        for i, bkp in enumerate(detected_bkps[:-1]):  # Last one is always end of series
+            if bkp >= len(clean_trend) or bkp == 0:
                 continue
             
-            # Calculate magnitude as difference in local means before/after
-            window = 7  # 1 week window
-            before_start = max(0, idx - window)
-            after_end = min(len(signal), idx + window)
+            # Calculate magnitude of change
+            window = 14  # 2 weeks before and after
+            before_start = max(0, bkp - window)
+            after_end = min(len(clean_trend), bkp + window)
             
-            mean_before = np.mean(signal[before_start:idx])
-            mean_after = np.mean(signal[idx:after_end])
+            before_mean = np.mean(clean_trend[before_start:bkp])
+            after_mean = np.mean(clean_trend[bkp:after_end])
             
-            magnitude = (mean_after - mean_before) / mean_before if mean_before != 0 else 0
-            
-            # Determine direction
-            if magnitude > 0.05:
-                direction = 'rise'
-            elif magnitude < -0.05:
-                direction = 'drop'
+            if before_mean > 0:
+                magnitude = (after_mean - before_mean) / before_mean
             else:
-                direction = 'shift'
+                magnitude = 0.0
             
-            change_points.append({
-                'date': pd.Timestamp(dates[idx]).isoformat(),
-                'magnitude': round(magnitude, 3),
-                'direction': direction,
-                'index': int(idx)
-            })
+            # Only report significant changes (>10% change)
+            if abs(magnitude) > 0.10:
+                direction = "increase" if magnitude > 0 else "drop"
+                
+                change_points.append({
+                    "date": str(clean_dates[bkp]),
+                    "magnitude": round(magnitude, 3),
+                    "direction": direction,
+                    "before_avg": round(float(before_mean), 1),
+                    "after_avg": round(float(after_mean), 1)
+                })
         
-        # Sort by absolute magnitude, keep top 5 most significant
+        # Sort by magnitude (most significant first)
         change_points.sort(key=lambda x: abs(x['magnitude']), reverse=True)
-        change_points = change_points[:5]
         
-        # Re-sort by date
-        change_points.sort(key=lambda x: x['date'])
-        
-        # Remove index (internal use only)
-        for cp in change_points:
-            del cp['index']
-        
-        logger.info(f"Detected {len(change_points)} significant change points")
-        return change_points
+        # Limit to top 5 most significant
+        return change_points[:5]
         
     except Exception as e:
-        logger.warning(f"Change point detection failed: {str(e)}")
+        logger.warning(f"Change point detection failed: {e}")
         return []
 
 
-def _analyze_seasonality(
-    seasonal_weekly: pd.Series,
-    seasonal_monthly: pd.Series,
-    df: pd.DataFrame
-) -> Dict[str, Any]:
+def _analyze_seasonality(decomposition: Dict[str, np.ndarray], data: pd.DataFrame) -> Dict[str, Any]:
     """
-    Analyze seasonality patterns
-    
-    Returns:
-        best_day: day of week with highest traffic
-        worst_day: day of week with lowest traffic
-        monthly_cycle: bool
-        cycle_description: str
+    Analyze seasonality patterns with better handling of sparse data.
     """
-    
-    df_temp = df.copy()
-    df_temp['dow'] = pd.to_datetime(df_temp['date']).dt.dayofweek
-    df_temp['seasonal_weekly'] = seasonal_weekly.values
-    
-    # Day of week analysis
-    dow_effects = df_temp.groupby('dow')['seasonal_weekly'].mean()
-    
-    day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    best_dow = int(dow_effects.idxmax())
-    worst_dow = int(dow_effects.idxmin())
-    
-    best_day = day_names[best_dow]
-    worst_day = day_names[worst_dow]
-    
-    # Check for significant weekly pattern
-    weekly_range = dow_effects.max() - dow_effects.min()
-    weekly_mean = abs(seasonal_weekly.mean())
-    has_weekly_pattern = weekly_range > (0.1 * df['clicks'].mean())
-    
-    # Monthly cycle detection
-    monthly_strength = seasonal_monthly.abs().mean()
-    has_monthly_cycle = monthly_strength > (0.05 * df['clicks'].mean())
-    
-    # Describe monthly cycle if present
-    cycle_description = None
-    if has_monthly_cycle:
-        # Find peak day of month
-        df_temp['dom'] = pd.to_datetime(df_temp['date']).dt.day
-        df_temp['seasonal_monthly'] = seasonal_monthly.values
-        dom_effects = df_temp.groupby('dom')['seasonal_monthly'].mean()
-        peak_dom = int(dom_effects.idxmax())
-        peak_magnitude = (dom_effects.max() / df['clicks'].mean()) * 100
+    try:
+        seasonal = decomposition['seasonal']
         
-        if peak_dom <= 7:
-            cycle_description = f"{abs(peak_magnitude):.0f}% traffic spike first week of each month"
-        elif peak_dom >= 23:
-            cycle_description = f"{abs(peak_magnitude):.0f}% traffic spike last week of each month"
+        # Day-of-week analysis
+        data_copy = data.copy()
+        data_copy['day_of_week'] = pd.to_datetime(data_copy['date']).dt.day_name()
+        data_copy['seasonal_component'] = seasonal[:len(data_copy)]
+        
+        dow_avg = data_copy.groupby('day_of_week')['clicks'].mean()
+        
+        if len(dow_avg) == 7:
+            best_day = dow_avg.idxmax()
+            worst_day = dow_avg.idxmin()
+            dow_variation = (dow_avg.max() - dow_avg.min()) / dow_avg.mean()
         else:
-            cycle_description = f"{abs(peak_magnitude):.0f}% traffic variation by time of month"
-    
-    return {
-        'best_day': best_day,
-        'worst_day': worst_day,
-        'monthly_cycle': has_monthly_cycle,
-        'cycle_description': cycle_description,
-        'weekly_pattern_strength': round(weekly_range / df['clicks'].mean(), 3) if df['clicks'].mean() > 0 else 0
-    }
+            best_day = "Unknown"
+            worst_day = "Unknown"
+            dow_variation = 0.0
+        
+        # Monthly cycle detection (simplified)
+        data_copy['day_of_month'] = pd.to_datetime(data_copy['date']).dt.day
+        monthly_pattern = data_copy.groupby('day_of_month')['clicks'].mean()
+        
+        # Check if first week is significantly higher
+        if len(monthly_pattern) >= 28:
+            first_week = monthly_pattern[1:8].mean()
+            rest_of_month = monthly_pattern[8:].mean()
+            
+            if rest_of_month > 0:
+                monthly_spike = (first_week - rest_of_month) / rest_of_month
+                has_monthly_cycle = monthly_spike > 0.15
+                cycle_description = f"{abs(monthly_spike)*100:.0f}% traffic spike first week of month" if has_monthly_cycle else "No strong monthly pattern"
+            else:
+                has_monthly_cycle = False
+                cycle_description = "Insufficient data for monthly pattern"
+        else:
+            has_monthly_cycle = False
+            cycle_description = "Insufficient data for monthly pattern"
+        
+        return {
+            "best_day": best_day,
+            "worst_day": worst_day,
+            "day_of_week_variation_pct": round(dow_variation * 100, 1),
+            "monthly_cycle": has_monthly_cycle,
+            "cycle_description": cycle_description
+        }
+        
+    except Exception as e:
+        logger.warning(f"Seasonality analysis failed: {e}")
+        return {
+            "best_day": "Unknown",
+            "worst_day": "Unknown",
+            "day_of_week_variation_pct": 0.0,
+            "monthly_cycle": False,
+            "cycle_description": "Analysis failed"
+        }
 
 
-def _detect_anomalies(resid: pd.Series, df: pd.DataFrame) -> List[Dict[str, Any]]:
+def _detect_anomalies(residual: np.ndarray, dates: np.ndarray, original_series: np.ndarray) -> List[Dict[str, Any]]:
     """
-    Detect anomalies using STUMPY matrix profile on residuals
-    
-    Returns list of anomalies (discords) with date, type, magnitude
+    Detect anomalies using statistical methods with improved noise handling.
     """
-    
-    # Remove NaN
-    valid_mask = ~resid.isna()
-    signal = resid[valid_mask].values
-    dates = df.loc[valid_mask, 'date'].values
-    
-    if len(signal) < 30:
-        logger.warning("Insufficient data for anomaly detection")
-        return []
+    anomalies = []
     
     try:
-        # Normalize residuals
-        signal_norm = (signal - np.mean(signal)) / (np.std(signal) + 1e-8)
+        # Filter valid residuals
+        valid_mask = ~np.isnan(residual)
+        if valid_mask.sum() < 30:
+            return anomalies
         
-        # Matrix profile with window = 7 days
-        window_size = min(7, len(signal) // 4)
-        if window_size < 3:
-            window_size = 3
+        clean_residual = residual[valid_mask]
+        clean_dates = dates[valid_mask]
+        clean_original = original_series[valid_mask]
         
-        # Compute matrix profile
-        mp = stumpy.stump(signal_norm, m=window_size)
+        # Use modified Z-score for anomaly detection (more robust than standard Z-score)
+        median = np.median(clean_residual)
+        mad = np.median(np.abs(clean_residual - median))
         
-        # Extract matrix profile values and indices
-        mp_values = mp[:, 0]  # First column is the matrix profile
+        if mad < 1e-6:
+            return anomalies
         
-        # Discords are subsequences with highest matrix profile values
-        # (most dissimilar to all other subsequences)
+        modified_z_scores = 0.6745 * (clean_residual - median) / mad
         
-        # Find top discords (above 95th percentile)
-        threshold = np.percentile(mp_values, 95)
-        discord_indices = np.where(mp_values > threshold)[0]
+        # Anomalies are points with |modified_z_score| > 3.5
+        anomaly_mask = np.abs(modified_z_scores) > 3.5
+        anomaly_indices = np.where(anomaly_mask)[0]
         
-        anomalies = []
-        
-        # Group nearby indices to avoid duplicate detections
-        if len(discord_indices) > 0:
-            groups = []
-            current_group = [discord_indices[0]]
+        for idx in anomaly_indices:
+            magnitude = float(modified_z_scores[idx])
+            anomaly_type = "spike" if magnitude > 0 else "drop"
             
-            for idx in discord_indices[1:]:
-                if idx - current_group[-1] <= window_size:
-                    current_group.append(idx)
-                else:
-                    groups.append(current_group)
-                    current_group = [idx]
-            groups.append(current_group)
-            
-            # Take the peak from each group
-            for group in groups:
-                peak_idx = group[np.argmax([mp_values[i] for i in group])]
-                
-                # Calculate magnitude as standardized residual at this point
-                magnitude = signal_norm[peak_idx]
-                
-                anomalies.append({
-                    'date': pd.Timestamp(dates[peak_idx]).isoformat(),
-                    'type': 'discord',
-                    'magnitude': round(magnitude, 3),
-                    'severity': 'high' if abs(magnitude) > 3 else 'medium'
-                })
+            anomalies.append({
+                "date": str(clean_dates[idx]),
+                "type": anomaly_type,
+                "magnitude": round(magnitude, 2),
+                "value": round(float(clean_original[idx]), 1),
+                "expected": round(float(clean_original[idx] - clean_residual[idx]), 1)
+            })
         
         # Sort by absolute magnitude
         anomalies.sort(key=lambda x: abs(x['magnitude']), reverse=True)
         
-        # Keep top 10 most significant
-        anomalies = anomalies[:10]
-        
-        # Re-sort by date
-        anomalies.sort(key=lambda x: x['date'])
-        
-        logger.info(f"Detected {len(anomalies)} anomalies via matrix profile")
-        return anomalies
+        # Limit to top 10
+        return anomalies[:10]
         
     except Exception as e:
-        logger.warning(f"Anomaly detection failed: {str(e)}")
+        logger.warning(f"Anomaly detection failed: {e}")
         return []
 
 
-def _generate_forecast(df: pd.DataFrame, decomposition: Dict[str, pd.Series]) -> Dict[str, Any]:
+def _detect_patterns(series: np.ndarray, dates: np.ndarray) -> Dict[str, Any]:
     """
-    Generate 30/60/90 day forecasts using ARIMA
-    
-    Returns dict with 30d, 60d, 90d forecasts with confidence intervals
+    Detect recurring patterns using matrix profile (if available).
     """
+    if not STUMPY_AVAILABLE:
+        return {
+            "motifs_found": False,
+            "message": "Pattern detection not available"
+        }
     
     try:
-        # Use clicks for forecasting
-        ts = df['clicks'].values
+        # Need at least 60 days for meaningful pattern detection
+        if len(series) < 60:
+            return {"motifs_found": False, "message": "Insufficient data"}
         
-        # Fit ARIMA model
-        # Auto-select order using AIC (start with common ARIMA(1,1,1))
-        # For speed, use fixed order rather than auto_arima
-        model = ARIMA(ts, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0))
-        fitted = model.fit()
+        # Filter out zeros and NaN
+        valid_mask = ~np.isnan(series) & (series > 0)
+        if valid_mask.sum() < 60:
+            return {"motifs_found": False, "message": "Too many missing values"}
         
-        # Forecast 90 days ahead
-        forecast_result = fitted.forecast(steps=90, alpha=0.05)  # 95% CI
+        clean_series = series[valid_mask]
         
-        # Get confidence intervals
-        forecast_df = fitted.get_forecast(steps=90).summary_frame(alpha=0.05)
+        # Window size: 7 days (weekly patterns)
+        m = 7
+        if len(clean_series) < 2 * m:
+            return {"motifs_found": False, "message": "Series too short for pattern detection"}
         
-        # Extract predictions and intervals
-        predictions = forecast_result.values if hasattr(forecast_result, 'values') else forecast_result
-        ci_low = forecast_df['mean_ci_lower'].values
-        ci_high = forecast_df['mean_ci_upper'].values
+        # Compute matrix profile
+        mp = stumpy.stump(clean_series, m=m)
         
-        # Format results for 30/60/90 day horizons
-        forecast = {
-            '30d': {
-                'clicks': int(round(predictions[29])),
-                'ci_low': int(round(ci_low[29])),
-                'ci_high': int(round(ci_high[29]))
-            },
-            '60d': {
-                'clicks': int(round(predictions[59])),
-                'ci_low': int(round(ci_low[59])),
-                'ci_high': int(round(ci_high[59]))
-            },
-            '90d': {
-                'clicks': int(round(predictions[89])),
-                'ci_low': int(round(ci_low[89])),
-                'ci_high': int(round(ci_high[89]))
-            }
+        # Find motifs (similar patterns)
+        motif_idx = np.argsort(mp[:, 0])[:3]  # Top 3 motifs
+        
+        motifs = []
+        for idx in motif_idx:
+            if mp[idx, 0] < np.inf:
+                motifs.append({
+                    "position": int(idx),
+                    "distance": float(mp[idx, 0]),
+                    "pattern_length": m
+                })
+        
+        return {
+            "motifs_found": len(motifs) > 0,
+            "motifs": motifs,
+            "message": f"Found {len(motifs)} recurring patterns"
         }
-        
-        # Add forecast trend
-        forecast['trend'] = 'improving' if predictions[89] > predictions[0] else 'declining'
-        forecast['confidence'] = 'medium'  # Could calculate based on CI width
-        
-        logger.info(f"Generated ARIMA forecast: 90d = {forecast['90d']['clicks']} clicks")
-        return forecast
         
     except Exception as e:
-        logger.warning(f"ARIMA forecasting failed: {str(e)}, using simple projection")
-        return _simple_forecast(df)
+        logger.warning(f"Pattern detection failed: {e}")
+        return {"motifs_found": False, "message": "Pattern detection failed"}
 
 
-def _simple_forecast(df: pd.DataFrame) -> Dict[str, Any]:
-    """Fallback forecast using linear extrapolation"""
-    
-    # Simple linear trend on last 30 days
-    recent = df.tail(30)['clicks'].values
-    x = np.arange(len(recent))
-    
-    if len(recent) < 2:
-        # No data for forecast
-        current_avg = df['clicks'].mean()
-        return {
-            '30d': {'clicks': int(current_avg), 'ci_low': 0, 'ci_high': int(current_avg * 2)},
-            '60d': {'clicks': int(current_avg), 'ci_low': 0, 'ci_high': int(current_avg * 2)},
-            '90d': {'clicks': int(current_avg), 'ci_low': 0, 'ci_high': int(current_avg * 2)},
-            'trend': 'unknown',
-            'confidence': 'low'
-        }
-    
-    slope, intercept = np.polyfit(x, recent, 1)
-    
-    # Project forward
-    pred_30 = slope * (len(recent) + 30) + intercept
-    pred_60 = slope * (len(recent) + 60) + intercept
-    pred_90 = slope * (len(recent) + 90) + intercept
-    
-    # Simple CI based on recent variance
-    std = np.std(recent)
-    
-    return {
-        '30d': {
-            'clicks': max(0, int(round(pred_30))),
-            'ci_low': max(0, int(round(pred_30 - 2 * std))),
+def _generate_forecast(series: np.ndarray, decomposition: Dict[str, np.ndarray], trend_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generate forecast with confidence intervals.
+    Uses simple trend projection with seasonal adjustment.
+    """
+    try:
+        # Need at least 60 days for meaningful forecast
+        if len(series) < 60:
+            return {}
+        
+        trend = decomposition['trend']
+        valid_mask = ~np.isnan(trend)
+        
+        if valid_mask.sum() < 60:
+            return {}
+        
+        clean_trend = trend[valid_mask]
+        
+        # Use last 90 days for projection
+        recent_trend = clean_trend[-90:]
+        x = np.arange(len(recent_trend))
+        
+        # Fit linear model
+        slope, intercept, r_value, _, std_err = stats.linregress(x, recent_trend)
+        
+        # Calculate confidence intervals (wider for longer horizons)
+        def forecast_with_ci(days_ahead: int):
+            # Project trend
+            x_future = len(recent_trend) - 1 + days_ahead
+            trend_forecast = slope * x_future
