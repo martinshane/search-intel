@@ -1,0 +1,288 @@
+{
+  "keywords_analyzed": 87,
+  "serp_feature_displacement": [
+    {
+      "keyword": "best crm software",
+      "organic_position": 3,
+      "visual_position": 8,
+      "features_above": ["featured_snippet", "paa_x4", "ai_overview"],
+      "estimated_ctr_impact": -0.062
+    },
+    {
+      "keyword": "crm implementation guide",
+      "organic_position": 5,
+      "visual_position": 9,
+      "features_above": ["ai_overview", "paa_x6", "video_carousel"],
+      "estimated_ctr_impact": -0.048
+    },
+    {
+      "keyword": "crm pricing comparison",
+      "organic_position": 2,
+      "visual_position": 6,
+      "features_above": ["shopping_results", "paa_x3", "featured_snippet"],
+      "estimated_ctr_impact": -0.071
+    },
+    {
+      "keyword": "how to choose crm",
+      "organic_position": 4,
+      "visual_position": 4,
+      "features_above": [],
+      "estimated_ctr_impact": 0.0
+    },
+    {
+      "keyword": "crm for small business",
+      "organic_position": 7,
+      "visual_position": 12,
+      "features_above": ["ai_overview", "paa_x5", "local_pack"],
+      "estimated_ctr_impact": -0.034
+    },
+    {
+      "keyword": "free crm software",
+      "organic_position": 6,
+      "visual_position": 10,
+      "features_above": ["featured_snippet", "paa_x4", "shopping_results"],
+      "estimated_ctr_impact": -0.041
+    },
+    {
+      "keyword": "crm vs erp",
+      "organic_position": 8,
+      "visual_position": 11,
+      "features_above": ["knowledge_panel", "paa_x3"],
+      "estimated_ctr_impact": -0.028
+    },
+    {
+      "keyword": "what is crm",
+      "organic_position": 1,
+      "visual_position": 5,
+      "features_above": ["featured_snippet", "ai_overview", "paa_x2"],
+      "estimated_ctr_impact": -0.089
+    }
+  ],
+  "competitors": [
+    {
+      "domain": "hubspot.com",
+      "keywords_shared": 42,
+      "avg_position": 3.8,
+      "threat_level": "high"
+    },
+    {
+      "domain": "salesforce.com",
+      "keywords_shared": 38,
+      "avg_position": 4.2,
+      "threat_level": "high"
+    },
+    {
+      "domain": "zoho.com",
+      "keywords_shared": 34,
+      "avg_position": 5.1,
+      "threat_level": "medium"
+    },
+    {
+      "domain": "pipedrive.com",
+      "keywords_shared": 28,
+      "avg_position": 6.3,
+      "threat_level": "medium"
+    },
+    {
+      "domain": "monday.com",
+      "keywords_shared": 23,
+      "avg_position": 7.2,
+      "threat_level": "low"
+    },
+    {
+      "domain": "freshworks.com",
+      "keywords_shared": 19,
+      "avg_position": 8.1,
+      "threat_level": "low"
+    },
+    {
+      "domain": "capterra.com",
+      "keywords_shared": 31,
+      "avg_position": 4.9,
+      "threat_level": "medium"
+    },
+    {
+      "domain": "g2.com",
+      "keywords_shared": 29,
+      "avg_position": 5.4,
+      "threat_level": "medium"
+    }
+  ],
+  "intent_mismatches": [
+    {
+      "keyword": "crm pricing comparison",
+      "serp_intent": "transactional",
+      "user_page_type": "blog_post",
+      "user_page": "/blog/how-to-compare-crm-pricing",
+      "recommendation": "Create dedicated pricing comparison page or landing page"
+    },
+    {
+      "keyword": "best crm software",
+      "serp_intent": "commercial",
+      "user_page_type": "blog_post",
+      "user_page": "/blog/best-crm-software-2025",
+      "recommendation": "Add pricing tables, feature comparisons, and CTAs for trials"
+    },
+    {
+      "keyword": "crm implementation checklist",
+      "serp_intent": "informational",
+      "user_page_type": "service_page",
+      "user_page": "/services/crm-implementation",
+      "recommendation": "Add detailed checklist content, downloadable PDF resource"
+    },
+    {
+      "keyword": "free crm software",
+      "serp_intent": "transactional",
+      "user_page_type": "blog_post",
+      "user_page": "/blog/free-crm-options",
+      "recommendation": "Convert to comparison landing page with signup CTAs"
+    }
+  ],
+  "total_click_share": 0.12,
+  "click_share_opportunity": 0.31,
+  "serp_feature_summary": {
+    "featured_snippet": {
+      "present_count": 34,
+      "user_owns": 2,
+      "opportunity_count": 32
+    },
+    "people_also_ask": {
+      "present_count": 71,
+      "avg_questions": 4.2
+    },
+    "ai_overview": {
+      "present_count": 28,
+      "impact_keywords": 28,
+      "estimated_total_ctr_loss": -0.18
+    },
+    "video_carousel": {
+      "present_count": 12,
+      "user_owns": 0,
+      "opportunity_count": 12
+    },
+    "local_pack": {
+      "present_count": 8,
+      "blocks_organic": true
+    },
+    "shopping_results": {
+      "present_count": 15,
+      "avg_products_shown": 6
+    },
+    "knowledge_panel": {
+      "present_count": 5,
+      "types": ["entity", "organization"]
+    },
+    "image_pack": {
+      "present_count": 19,
+      "user_owns": 1
+    }
+  },
+  "position_distribution": {
+    "position_1_3": 12,
+    "position_4_6": 28,
+    "position_7_10": 31,
+    "position_11_20": 16
+  },
+  "avg_organic_position": 6.4,
+  "avg_visual_position": 9.2,
+  "position_displacement_severity": "high",
+  "high_displacement_keywords": [
+    "best crm software",
+    "what is crm",
+    "crm pricing comparison",
+    "crm implementation guide",
+    "free crm software"
+  ],
+  "feature_opportunity_recommendations": [
+    {
+      "feature_type": "featured_snippet",
+      "keywords": [
+        "what is crm",
+        "how to implement crm",
+        "crm vs erp",
+        "what is customer relationship management"
+      ],
+      "action": "Restructure content with clear definitions, add FAQ schema markup",
+      "estimated_total_monthly_clicks": 420,
+      "difficulty": "medium"
+    },
+    {
+      "feature_type": "video_carousel",
+      "keywords": [
+        "crm tutorial",
+        "how to use crm",
+        "crm demo",
+        "crm implementation steps"
+      ],
+      "action": "Create video content for these topics, optimize with VideoObject schema",
+      "estimated_total_monthly_clicks": 280,
+      "difficulty": "high"
+    },
+    {
+      "feature_type": "people_also_ask",
+      "keywords": [
+        "best crm software",
+        "crm for small business",
+        "free crm software"
+      ],
+      "action": "Add FAQ sections addressing common PAA questions, implement FAQPage schema",
+      "estimated_total_monthly_clicks": 340,
+      "difficulty": "low"
+    },
+    {
+      "feature_type": "image_pack",
+      "keywords": [
+        "crm dashboard",
+        "crm interface",
+        "crm workflow diagram"
+      ],
+      "action": "Create high-quality screenshots/diagrams, optimize alt text and file names",
+      "estimated_total_monthly_clicks": 150,
+      "difficulty": "low"
+    }
+  ],
+  "competitor_serp_dominance": {
+    "hubspot.com": {
+      "featured_snippets": 8,
+      "video_carousels": 3,
+      "top_3_positions": 18
+    },
+    "salesforce.com": {
+      "featured_snippets": 5,
+      "knowledge_panels": 2,
+      "top_3_positions": 14
+    },
+    "capterra.com": {
+      "featured_snippets": 6,
+      "top_3_positions": 11
+    }
+  },
+  "ai_overview_impact_detail": {
+    "keywords_with_ai_overview": [
+      "what is crm",
+      "how to choose crm",
+      "crm implementation guide",
+      "crm best practices",
+      "what is customer relationship management",
+      "benefits of crm",
+      "crm vs spreadsheet",
+      "how to implement crm system"
+    ],
+    "avg_ctr_loss_per_keyword": -0.064,
+    "total_estimated_monthly_clicks_lost": 890,
+    "mitigation_strategy": "Focus on commercial and transactional keywords less affected by AI Overviews; add unique data, tools, or interactive elements AI cannot replicate"
+  },
+  "serp_volatility": {
+    "high_volatility_keywords": [
+      "best crm software",
+      "crm pricing comparison",
+      "top crm systems"
+    ],
+    "stable_keywords": [
+      "what is crm",
+      "crm implementation checklist",
+      "how to choose crm"
+    ],
+    "avg_feature_change_rate": 0.23
+  }
+}
