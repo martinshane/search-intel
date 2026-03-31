@@ -219,7 +219,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 **Current Day:** 27
 **Last Task:** Phase 1 nearly complete — 27/28 tasks done
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 04 — Google OAuth implementation (oauth.py + middleware.py missing)
+**Next Task:** REPAIR 01 — Rewrite api/ingestion/gsc.py (truncation fix)
 **Completed Tasks:** 27 / 28
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
@@ -233,6 +233,22 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 | — | — | Not started | — | — |
 
 ---
+
+
+---
+
+## Repair Phase — Fix Truncated Files
+
+These tasks run after Phase 1. Each rewrites a file that was truncated due to token limits.
+All must pass syntax check before being marked complete.
+
+- [ ] **REPAIR 01** — Rewrite `api/ingestion/gsc.py` — fix unterminated string at line 650. Full 600+ line GSC ingestion implementation.
+- [ ] **REPAIR 02** — Rewrite `api/modules/module_01_health.py` — fix missing indented block at line 555. Full MSTL + STUMPY + change point + forecast implementation.
+- [ ] **REPAIR 03** — Rewrite `api/modules/module_04_content.py` — fix unterminated string at line 593. Full cannibalization + striking distance + thin content implementation.
+- [ ] **REPAIR 04** — Rewrite `api/modules/module_05_gameplan.py` — fix unterminated string at line 463. Full synthesis + Claude API narrative generation implementation.
+- [ ] **REPAIR 05** — Rewrite `api/modules/module_06_algorithm.py` — fix missing colon at line 634. Full change point + algorithm update correlation implementation.
+- [ ] **REPAIR 06** — Rewrite test files: `api/ingestion/test_gsc.py`, `api/ingestion/test_ga4_ingestion.py`, `api/worker/test_pipeline.py`, `api/modules/tests/test_module_01_health.py`, `api/modules/tests/test_module_05_gameplan.py` — all have truncation syntax errors.
+
 
 ## Spec Reference
 

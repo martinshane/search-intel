@@ -128,24 +128,43 @@ def push_file(path, content, message):
         repo.create_file(path, message, content)
 
 def get_next_task(program):
+    """Find next unchecked task — handles DAY and REPAIR tasks."""
     for line in program.splitlines():
-        if line.strip().startswith("- [ ] **DAY"):
+        stripped = line.strip()
+        # Handle DAY tasks
+        if stripped.startswith("- [ ] **DAY"):
             try:
                 day = int(line.split("**DAY")[1].split("**")[0].strip())
                 desc = line.split("—", 1)[1].strip() if "—" in line else line.strip()
                 return day, desc
             except Exception:
                 continue
+        # Handle REPAIR tasks
+        if stripped.startswith("- [ ] **REPAIR"):
+            try:
+                repair_num = int(line.split("**REPAIR")[1].split("**")[0].strip())
+                desc = line.split("—", 1)[1].strip() if "—" in line else line.strip()
+                # Use 100+ range for repair tasks to distinguish from day tasks
+                return 100 + repair_num, desc
+            except Exception:
+                continue
     return 0, "No tasks remaining"
 
 def mark_task_complete(program, day):
     lines = program.splitlines()
-    return "\n".join(
-        line.replace("- [ ]", "- [x]", 1)
-        if (f"- [ ] **DAY {day:02d}**" in line or f"- [ ] **DAY {day}**" in line)
-        else line
-        for line in lines
-    )
+    result = []
+    for line in lines:
+        if day >= 100:
+            # REPAIR task
+            repair_num = day - 100
+            if (f"- [ ] **REPAIR {repair_num:02d}**" in line or
+                f"- [ ] **REPAIR {repair_num}**" in line):
+                line = line.replace("- [ ]", "- [x]", 1)
+        else:
+            if (f"- [ ] **DAY {day:02d}**" in line or f"- [ ] **DAY {day}**" in line):
+                line = line.replace("- [ ]", "- [x]", 1)
+        result.append(line)
+    return "\n".join(result)
 
 def update_current_state(program, day, task, status):
     lines, result, in_state = program.splitlines(), [], False
@@ -259,7 +278,7 @@ def run_agent(program, spec, day, task):
     for fi in files_to_write:
         print(f"  Writing: {fi['path']}")
         fr = anthropic.messages.create(
-            model="claude-sonnet-4-5", max_tokens=6000, system=FILE_PROMPT,
+            model="claude-sonnet-4-5", max_tokens=16000, system=FILE_PROMPT,
             messages=[{"role": "user", "content":
                 f"File: {fi['path']}\nDescription: {fi.get('description','')}\n"
                 f"Task: DAY {day:02d} — {task}\nSpec:\n<spec>\n{spec[:40000]}\n</spec>\n"
@@ -270,6 +289,15 @@ def run_agent(program, spec, day, task):
             lines = content.strip().split("\n")
             content = "\n".join(lines[1:])
             if content.strip().endswith("```"): content = content.strip()[:-3]
+        # Basic syntax check for Python files
+        if fi["path"].endswith(".py"):
+            import ast
+            try:
+                ast.parse(content)
+                print(f"    Syntax OK: {fi['path']}")
+            except SyntaxError as e:
+                print(f"    SYNTAX ERROR in {fi['path']}: {e} — skipping")
+                continue  # Don't add broken files
         files.append({"path": fi["path"], "content": content})
 
     return {"status": "pass", "task_summary": plan.get("task_summary", task[:60]),
