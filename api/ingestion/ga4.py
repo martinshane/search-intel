@@ -1,621 +1,704 @@
 """
-GA4 Data API ingestion module.
+GA4 data ingestion with comprehensive retry logic and graceful fallbacks.
 
-Fetches traffic, engagement, and conversion data from Google Analytics 4
-to support cross-dataset correlation analysis throughout the report.
+Handles:
+- OAuth token refresh
+- API rate limiting with exponential backoff
+- Missing properties (no GA4 linked)
+- Partial data availability (some metrics missing)
+- Network errors
+- User-friendly error messages
 """
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional, Any
+import time
 
+import httpx
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
+    RunReportRequest,
     DateRange,
     Dimension,
     Metric,
-    RunReportRequest,
-    FilterExpression,
-    Filter,
 )
 from google.oauth2.credentials import Credentials
+from google.auth.exceptions import RefreshError
+from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
 
+class GA4IngestionError(Exception):
+    """Base exception for GA4 ingestion errors"""
+    pass
+
+
+class GA4NotConfiguredError(GA4IngestionError):
+    """Raised when GA4 property is not configured or accessible"""
+    pass
+
+
+class GA4AuthError(GA4IngestionError):
+    """Raised when authentication fails"""
+    pass
+
+
+class GA4RateLimitError(GA4IngestionError):
+    """Raised when rate limit is exceeded"""
+    pass
+
+
+def retry_with_backoff(
+    func,
+    max_retries: int = 5,
+    initial_delay: float = 1.0,
+    backoff_factor: float = 2.0,
+    max_delay: float = 60.0,
+):
+    """
+    Retry a function with exponential backoff.
+    
+    Args:
+        func: Function to retry
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds
+        backoff_factor: Multiplier for delay after each retry
+        max_delay: Maximum delay between retries
+    
+    Returns:
+        Result of successful function call
+    
+    Raises:
+        Last exception encountered if all retries fail
+    """
+    delay = initial_delay
+    last_exception = None
+    
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except HttpError as e:
+            last_exception = e
+            status_code = e.resp.status if hasattr(e, 'resp') else None
+            
+            # Don't retry on client errors (except rate limit)
+            if status_code and 400 <= status_code < 500 and status_code != 429:
+                logger.error(f"GA4 API client error (non-retryable): {e}")
+                raise GA4IngestionError(f"GA4 API error: {str(e)}") from e
+            
+            # Rate limit or server error - retry with backoff
+            if attempt < max_retries - 1:
+                logger.warning(
+                    f"GA4 API call failed (attempt {attempt + 1}/{max_retries}): {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                time.sleep(delay)
+                delay = min(delay * backoff_factor, max_delay)
+            else:
+                logger.error(f"GA4 API call failed after {max_retries} attempts")
+        except Exception as e:
+            last_exception = e
+            logger.error(f"Unexpected error in GA4 API call: {e}")
+            if attempt < max_retries - 1:
+                logger.warning(f"Retrying in {delay:.1f}s...")
+                time.sleep(delay)
+                delay = min(delay * backoff_factor, max_delay)
+    
+    # All retries exhausted
+    raise GA4IngestionError(
+        f"GA4 API call failed after {max_retries} attempts: {str(last_exception)}"
+    ) from last_exception
+
+
 class GA4Client:
-    """Client for fetching data from Google Analytics 4 Data API."""
-
-    def __init__(self, credentials: Credentials):
+    """Wrapper for GA4 API client with error handling and retries"""
+    
+    def __init__(self, credentials: Credentials, property_id: str):
         """
-        Initialize GA4 client with OAuth credentials.
-
+        Initialize GA4 client.
+        
         Args:
-            credentials: Google OAuth2 credentials with GA4 read scope
+            credentials: OAuth credentials
+            property_id: GA4 property ID (format: "properties/123456789")
         """
         self.credentials = credentials
-        self.client = BetaAnalyticsDataClient(credentials=credentials)
-
-    def fetch_traffic_overview(
+        self.property_id = property_id
+        self._client = None
+    
+    def _ensure_client(self):
+        """Ensure client is initialized with valid credentials"""
+        if self._client is None:
+            try:
+                self._client = BetaAnalyticsDataClient(credentials=self.credentials)
+            except Exception as e:
+                logger.error(f"Failed to initialize GA4 client: {e}")
+                raise GA4AuthError(
+                    "Failed to connect to Google Analytics. Please reconnect your account."
+                ) from e
+    
+    def _refresh_credentials_if_needed(self):
+        """Refresh OAuth credentials if expired"""
+        try:
+            if self.credentials.expired and self.credentials.refresh_token:
+                self.credentials.refresh(httpx.Request())
+                logger.info("GA4 credentials refreshed successfully")
+        except RefreshError as e:
+            logger.error(f"Failed to refresh GA4 credentials: {e}")
+            raise GA4AuthError(
+                "Your Google Analytics connection has expired. Please reconnect your account."
+            ) from e
+    
+    def run_report(
         self,
-        property_id: str,
+        dimensions: List[str],
+        metrics: List[str],
         start_date: str,
         end_date: str,
+        dimension_filter: Optional[Any] = None,
+        metric_filter: Optional[Any] = None,
+        limit: int = 100000,
+        offset: int = 0,
     ) -> Dict[str, Any]:
         """
-        Fetch overall traffic metrics (sessions, users, pageviews, engagement).
-
+        Run a GA4 report with retry logic.
+        
         Args:
-            property_id: GA4 property ID (format: "properties/123456789")
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-
+            dimensions: List of dimension names
+            metrics: List of metric names
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            dimension_filter: Optional dimension filter
+            metric_filter: Optional metric filter
+            limit: Row limit
+            offset: Row offset for pagination
+        
         Returns:
-            Dict containing aggregated traffic metrics
+            Dict with 'rows' and 'metadata'
+        
+        Raises:
+            GA4IngestionError: On API errors
         """
-        try:
+        self._ensure_client()
+        self._refresh_credentials_if_needed()
+        
+        def _run():
             request = RunReportRequest(
-                property=property_id,
+                property=self.property_id,
+                dimensions=[Dimension(name=d) for d in dimensions],
+                metrics=[Metric(name=m) for m in metrics],
                 date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                metrics=[
-                    Metric(name="sessions"),
-                    Metric(name="activeUsers"),
-                    Metric(name="screenPageViews"),
-                    Metric(name="bounceRate"),
-                    Metric(name="engagementRate"),
-                    Metric(name="averageSessionDuration"),
-                    Metric(name="engagedSessions"),
-                ],
+                limit=limit,
+                offset=offset,
             )
-
-            response = self.client.run_report(request)
-
-            if not response.rows:
-                return {
-                    "sessions": 0,
-                    "users": 0,
-                    "pageviews": 0,
-                    "bounce_rate": 0,
-                    "engagement_rate": 0,
-                    "avg_session_duration": 0,
-                    "engaged_sessions": 0,
-                }
-
-            row = response.rows[0]
-            return {
-                "sessions": int(row.metric_values[0].value),
-                "users": int(row.metric_values[1].value),
-                "pageviews": int(row.metric_values[2].value),
-                "bounce_rate": float(row.metric_values[3].value),
-                "engagement_rate": float(row.metric_values[4].value),
-                "avg_session_duration": float(row.metric_values[5].value),
-                "engaged_sessions": int(row.metric_values[6].value),
+            
+            if dimension_filter:
+                request.dimension_filter = dimension_filter
+            if metric_filter:
+                request.metric_filter = metric_filter
+            
+            return self._client.run_report(request)
+        
+        try:
+            response = retry_with_backoff(_run)
+            
+            # Parse response into structured format
+            rows = []
+            for row in response.rows:
+                row_data = {}
+                
+                # Add dimensions
+                for i, dim in enumerate(dimensions):
+                    row_data[dim] = row.dimension_values[i].value
+                
+                # Add metrics
+                for i, metric in enumerate(metrics):
+                    value = row.metric_values[i].value
+                    # Try to convert to appropriate type
+                    try:
+                        if '.' in value:
+                            row_data[metric] = float(value)
+                        else:
+                            row_data[metric] = int(value)
+                    except (ValueError, AttributeError):
+                        row_data[metric] = value
+                
+                rows.append(row_data)
+            
+            metadata = {
+                'row_count': response.row_count if hasattr(response, 'row_count') else len(rows),
+                'dimensions': dimensions,
+                'metrics': metrics,
+                'date_range': {'start': start_date, 'end': end_date},
             }
-
+            
+            return {'rows': rows, 'metadata': metadata}
+        
         except Exception as e:
-            logger.error(f"Error fetching traffic overview: {str(e)}")
-            raise
-
-    def fetch_landing_pages(
-        self,
-        property_id: str,
-        start_date: str,
-        end_date: str,
-        limit: int = 1000,
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch landing page performance with engagement metrics.
-
-        Args:
-            property_id: GA4 property ID
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-            limit: Maximum number of pages to return
-
-        Returns:
-            List of dicts, each containing landing page URL and metrics
-        """
-        try:
-            request = RunReportRequest(
-                property=property_id,
-                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                dimensions=[Dimension(name="landingPage")],
-                metrics=[
-                    Metric(name="sessions"),
-                    Metric(name="bounceRate"),
-                    Metric(name="engagementRate"),
-                    Metric(name="averageSessionDuration"),
-                    Metric(name="conversions"),
-                    Metric(name="engagedSessions"),
-                ],
-                limit=limit,
-                order_bys=[
-                    {"metric": {"metric_name": "sessions"}, "desc": True}
-                ],
-            )
-
-            response = self.client.run_report(request)
-
-            landing_pages = []
-            for row in response.rows:
-                landing_pages.append({
-                    "landing_page": row.dimension_values[0].value,
-                    "sessions": int(row.metric_values[0].value),
-                    "bounce_rate": float(row.metric_values[1].value),
-                    "engagement_rate": float(row.metric_values[2].value),
-                    "avg_session_duration": float(row.metric_values[3].value),
-                    "conversions": float(row.metric_values[4].value),
-                    "engaged_sessions": int(row.metric_values[5].value),
-                })
-
-            return landing_pages
-
-        except Exception as e:
-            logger.error(f"Error fetching landing pages: {str(e)}")
-            raise
-
-    def fetch_traffic_by_channel(
-        self,
-        property_id: str,
-        start_date: str,
-        end_date: str,
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch traffic breakdown by default channel group.
-
-        Args:
-            property_id: GA4 property ID
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-
-        Returns:
-            List of dicts with channel and traffic metrics
-        """
-        try:
-            request = RunReportRequest(
-                property=property_id,
-                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                dimensions=[Dimension(name="sessionDefaultChannelGroup")],
-                metrics=[
-                    Metric(name="sessions"),
-                    Metric(name="activeUsers"),
-                    Metric(name="conversions"),
-                ],
-                order_bys=[
-                    {"metric": {"metric_name": "sessions"}, "desc": True}
-                ],
-            )
-
-            response = self.client.run_report(request)
-
-            channels = []
-            for row in response.rows:
-                channels.append({
-                    "channel": row.dimension_values[0].value,
-                    "sessions": int(row.metric_values[0].value),
-                    "users": int(row.metric_values[1].value),
-                    "conversions": float(row.metric_values[2].value),
-                })
-
-            return channels
-
-        except Exception as e:
-            logger.error(f"Error fetching traffic by channel: {str(e)}")
-            raise
-
-    def fetch_traffic_by_source_medium(
-        self,
-        property_id: str,
-        start_date: str,
-        end_date: str,
-        limit: int = 100,
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch traffic breakdown by source/medium.
-
-        Args:
-            property_id: GA4 property ID
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-            limit: Maximum number of source/medium combinations
-
-        Returns:
-            List of dicts with source, medium, and metrics
-        """
-        try:
-            request = RunReportRequest(
-                property=property_id,
-                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                dimensions=[
-                    Dimension(name="sessionSource"),
-                    Dimension(name="sessionMedium"),
-                ],
-                metrics=[
-                    Metric(name="sessions"),
-                    Metric(name="activeUsers"),
-                    Metric(name="conversions"),
-                ],
-                limit=limit,
-                order_bys=[
-                    {"metric": {"metric_name": "sessions"}, "desc": True}
-                ],
-            )
-
-            response = self.client.run_report(request)
-
-            sources = []
-            for row in response.rows:
-                sources.append({
-                    "source": row.dimension_values[0].value,
-                    "medium": row.dimension_values[1].value,
-                    "sessions": int(row.metric_values[0].value),
-                    "users": int(row.metric_values[1].value),
-                    "conversions": float(row.metric_values[2].value),
-                })
-
-            return sources
-
-        except Exception as e:
-            logger.error(f"Error fetching traffic by source/medium: {str(e)}")
-            raise
-
-    def fetch_conversions(
-        self,
-        property_id: str,
-        start_date: str,
-        end_date: str,
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch conversion events breakdown.
-
-        Args:
-            property_id: GA4 property ID
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-
-        Returns:
-            List of dicts with event name and conversion metrics
-        """
-        try:
-            request = RunReportRequest(
-                property=property_id,
-                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                dimensions=[Dimension(name="eventName")],
-                metrics=[
-                    Metric(name="conversions"),
-                    Metric(name="totalRevenue"),
-                ],
-                dimension_filter=FilterExpression(
-                    filter=Filter(
-                        field_name="eventName",
-                        string_filter=Filter.StringFilter(
-                            match_type=Filter.StringFilter.MatchType.EXACT,
-                            value="",
-                            case_sensitive=False,
-                        ),
-                    )
-                ),
-                order_bys=[
-                    {"metric": {"metric_name": "conversions"}, "desc": True}
-                ],
-            )
-
-            response = self.client.run_report(request)
-
-            conversions = []
-            for row in response.rows:
-                conversions.append({
-                    "event_name": row.dimension_values[0].value,
-                    "conversions": float(row.metric_values[0].value),
-                    "revenue": float(row.metric_values[1].value),
-                })
-
-            return conversions
-
-        except Exception as e:
-            logger.error(f"Error fetching conversions: {str(e)}")
-            raise
-
-    def fetch_page_time_series(
-        self,
-        property_id: str,
-        start_date: str,
-        end_date: str,
-        limit: int = 1000,
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch per-page daily time series for cross-referencing with GSC decay analysis.
-
-        Args:
-            property_id: GA4 property ID
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-            limit: Maximum number of page-date combinations
-
-        Returns:
-            List of dicts with page, date, and daily metrics
-        """
-        try:
-            request = RunReportRequest(
-                property=property_id,
-                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                dimensions=[
-                    Dimension(name="pagePath"),
-                    Dimension(name="date"),
-                ],
-                metrics=[
-                    Metric(name="sessions"),
-                    Metric(name="engagementRate"),
-                    Metric(name="averageSessionDuration"),
-                    Metric(name="bounceRate"),
-                ],
-                limit=limit,
-            )
-
-            response = self.client.run_report(request)
-
-            time_series = []
-            for row in response.rows:
-                # Parse YYYYMMDD date format
-                date_str = row.dimension_values[1].value
-                formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
-
-                time_series.append({
-                    "page_path": row.dimension_values[0].value,
-                    "date": formatted_date,
-                    "sessions": int(row.metric_values[0].value),
-                    "engagement_rate": float(row.metric_values[1].value),
-                    "avg_session_duration": float(row.metric_values[2].value),
-                    "bounce_rate": float(row.metric_values[3].value),
-                })
-
-            return time_series
-
-        except Exception as e:
-            logger.error(f"Error fetching page time series: {str(e)}")
-            raise
-
-    def fetch_page_source_attribution(
-        self,
-        property_id: str,
-        start_date: str,
-        end_date: str,
-        limit: int = 1000,
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch landing page performance by traffic source.
-
-        Args:
-            property_id: GA4 property ID
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-            limit: Maximum number of page-source combinations
-
-        Returns:
-            List of dicts with page, source, and metrics
-        """
-        try:
-            request = RunReportRequest(
-                property=property_id,
-                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                dimensions=[
-                    Dimension(name="landingPage"),
-                    Dimension(name="sessionSource"),
-                ],
-                metrics=[
-                    Metric(name="sessions"),
-                    Metric(name="conversions"),
-                    Metric(name="engagementRate"),
-                ],
-                limit=limit,
-                order_bys=[
-                    {"metric": {"metric_name": "sessions"}, "desc": True}
-                ],
-            )
-
-            response = self.client.run_report(request)
-
-            attributions = []
-            for row in response.rows:
-                attributions.append({
-                    "landing_page": row.dimension_values[0].value,
-                    "source": row.dimension_values[1].value,
-                    "sessions": int(row.metric_values[0].value),
-                    "conversions": float(row.metric_values[1].value),
-                    "engagement_rate": float(row.metric_values[2].value),
-                })
-
-            return attributions
-
-        except Exception as e:
-            logger.error(f"Error fetching page source attribution: {str(e)}")
-            raise
-
-    def fetch_device_breakdown(
-        self,
-        property_id: str,
-        start_date: str,
-        end_date: str,
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch traffic breakdown by device category.
-
-        Args:
-            property_id: GA4 property ID
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-
-        Returns:
-            List of dicts with device category and metrics
-        """
-        try:
-            request = RunReportRequest(
-                property=property_id,
-                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                dimensions=[Dimension(name="deviceCategory")],
-                metrics=[
-                    Metric(name="sessions"),
-                    Metric(name="activeUsers"),
-                    Metric(name="engagementRate"),
-                    Metric(name="conversions"),
-                ],
-                order_bys=[
-                    {"metric": {"metric_name": "sessions"}, "desc": True}
-                ],
-            )
-
-            response = self.client.run_report(request)
-
-            devices = []
-            for row in response.rows:
-                devices.append({
-                    "device": row.dimension_values[0].value,
-                    "sessions": int(row.metric_values[0].value),
-                    "users": int(row.metric_values[1].value),
-                    "engagement_rate": float(row.metric_values[2].value),
-                    "conversions": float(row.metric_values[3].value),
-                })
-
-            return devices
-
-        except Exception as e:
-            logger.error(f"Error fetching device breakdown: {str(e)}")
+            logger.error(f"Error running GA4 report: {e}")
             raise
 
 
-async def fetch_ga4_data(
-    credentials: Credentials,
-    property_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
+def fetch_traffic_overview(
+    client: GA4Client,
+    start_date: str,
+    end_date: str,
 ) -> Dict[str, Any]:
     """
-    Fetch complete GA4 dataset for report generation.
-
-    Args:
-        credentials: Google OAuth2 credentials
-        property_id: GA4 property ID (format: "properties/123456789")
-        start_date: Start date in YYYY-MM-DD (default: 16 months ago)
-        end_date: End date in YYYY-MM-DD (default: yesterday)
-
+    Fetch high-level traffic metrics.
+    
     Returns:
-        Dict containing all GA4 data sections needed for analysis modules
+        Dict with daily traffic data or graceful fallback
     """
-    if not start_date:
-        start_date = (datetime.now() - timedelta(days=480)).strftime("%Y-%m-%d")
-    if not end_date:
-        end_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    client = GA4Client(credentials)
-
     try:
-        logger.info(f"Fetching GA4 data for {property_id} from {start_date} to {end_date}")
-
-        data = {
-            "property_id": property_id,
-            "date_range": {"start": start_date, "end": end_date},
-            "traffic_overview": client.fetch_traffic_overview(
-                property_id, start_date, end_date
-            ),
-            "landing_pages": client.fetch_landing_pages(
-                property_id, start_date, end_date
-            ),
-            "channels": client.fetch_traffic_by_channel(
-                property_id, start_date, end_date
-            ),
-            "sources": client.fetch_traffic_by_source_medium(
-                property_id, start_date, end_date
-            ),
-            "conversions": client.fetch_conversions(
-                property_id, start_date, end_date
-            ),
-            "page_time_series": client.fetch_page_time_series(
-                property_id, start_date, end_date
-            ),
-            "page_source_attribution": client.fetch_page_source_attribution(
-                property_id, start_date, end_date
-            ),
-            "devices": client.fetch_device_breakdown(
-                property_id, start_date, end_date
-            ),
-            "fetched_at": datetime.utcnow().isoformat(),
+        return client.run_report(
+            dimensions=['date'],
+            metrics=[
+                'sessions',
+                'totalUsers',
+                'screenPageViews',
+                'bounceRate',
+                'averageSessionDuration',
+                'engagementRate',
+            ],
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except GA4IngestionError as e:
+        logger.warning(f"Failed to fetch traffic overview: {e}")
+        # Return minimal fallback structure
+        return {
+            'rows': [],
+            'metadata': {
+                'error': 'Unable to fetch traffic data',
+                'user_message': 'Traffic overview data is not available. This may affect some report sections.',
+            }
         }
 
-        logger.info(f"Successfully fetched GA4 data: {len(data['landing_pages'])} landing pages")
-        return data
 
+def fetch_landing_pages(
+    client: GA4Client,
+    start_date: str,
+    end_date: str,
+    limit: int = 1000,
+) -> Dict[str, Any]:
+    """
+    Fetch landing page performance with engagement metrics.
+    
+    Returns:
+        Dict with landing page data or graceful fallback
+    """
+    try:
+        return client.run_report(
+            dimensions=['landingPage', 'sessionDefaultChannelGroup'],
+            metrics=[
+                'sessions',
+                'totalUsers',
+                'bounceRate',
+                'averageSessionDuration',
+                'engagementRate',
+                'conversions',
+            ],
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+        )
+    except GA4IngestionError as e:
+        logger.warning(f"Failed to fetch landing pages: {e}")
+        return {
+            'rows': [],
+            'metadata': {
+                'error': 'Unable to fetch landing page data',
+                'user_message': 'Landing page engagement data is not available. Content quality analysis will be limited.',
+            }
+        }
+
+
+def fetch_channel_performance(
+    client: GA4Client,
+    start_date: str,
+    end_date: str,
+) -> Dict[str, Any]:
+    """
+    Fetch traffic by channel group.
+    
+    Returns:
+        Dict with channel data or graceful fallback
+    """
+    try:
+        return client.run_report(
+            dimensions=['sessionDefaultChannelGroup'],
+            metrics=[
+                'sessions',
+                'totalUsers',
+                'engagementRate',
+                'conversions',
+            ],
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except GA4IngestionError as e:
+        logger.warning(f"Failed to fetch channel performance: {e}")
+        return {
+            'rows': [],
+            'metadata': {
+                'error': 'Unable to fetch channel data',
+                'user_message': 'Traffic channel data is not available.',
+            }
+        }
+
+
+def fetch_source_medium(
+    client: GA4Client,
+    start_date: str,
+    end_date: str,
+    limit: int = 500,
+) -> Dict[str, Any]:
+    """
+    Fetch traffic by source/medium.
+    
+    Returns:
+        Dict with source/medium data or graceful fallback
+    """
+    try:
+        return client.run_report(
+            dimensions=['sessionSource', 'sessionMedium'],
+            metrics=[
+                'sessions',
+                'totalUsers',
+                'engagementRate',
+                'conversions',
+            ],
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+        )
+    except GA4IngestionError as e:
+        logger.warning(f"Failed to fetch source/medium data: {e}")
+        return {
+            'rows': [],
+            'metadata': {
+                'error': 'Unable to fetch source/medium data',
+                'user_message': 'Traffic source data is not available.',
+            }
+        }
+
+
+def fetch_conversions(
+    client: GA4Client,
+    start_date: str,
+    end_date: str,
+) -> Dict[str, Any]:
+    """
+    Fetch conversion events.
+    
+    Returns:
+        Dict with conversion data or graceful fallback
+    """
+    try:
+        return client.run_report(
+            dimensions=['eventName'],
+            metrics=['conversions', 'eventValue'],
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except GA4IngestionError as e:
+        logger.warning(f"Failed to fetch conversions: {e}")
+        return {
+            'rows': [],
+            'metadata': {
+                'error': 'Unable to fetch conversion data',
+                'user_message': 'Conversion data is not available. Revenue attribution will be limited.',
+            }
+        }
+
+
+def fetch_page_date_series(
+    client: GA4Client,
+    start_date: str,
+    end_date: str,
+    limit: int = 10000,
+) -> Dict[str, Any]:
+    """
+    Fetch per-page daily time series for engagement tracking.
+    
+    Returns:
+        Dict with page×date data or graceful fallback
+    """
+    try:
+        return client.run_report(
+            dimensions=['pagePath', 'date'],
+            metrics=[
+                'screenPageViews',
+                'sessions',
+                'engagementRate',
+                'bounceRate',
+            ],
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+        )
+    except GA4IngestionError as e:
+        logger.warning(f"Failed to fetch page×date series: {e}")
+        return {
+            'rows': [],
+            'metadata': {
+                'error': 'Unable to fetch page time series',
+                'user_message': 'Daily page-level data is not available. Time-based analysis will be limited.',
+            }
+        }
+
+
+def fetch_device_breakdown(
+    client: GA4Client,
+    start_date: str,
+    end_date: str,
+) -> Dict[str, Any]:
+    """
+    Fetch traffic by device category.
+    
+    Returns:
+        Dict with device data or graceful fallback
+    """
+    try:
+        return client.run_report(
+            dimensions=['deviceCategory'],
+            metrics=[
+                'sessions',
+                'totalUsers',
+                'engagementRate',
+                'conversions',
+            ],
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except GA4IngestionError as e:
+        logger.warning(f"Failed to fetch device breakdown: {e}")
+        return {
+            'rows': [],
+            'metadata': {
+                'error': 'Unable to fetch device data',
+                'user_message': 'Device category data is not available.',
+            }
+        }
+
+
+def fetch_ecommerce_data(
+    client: GA4Client,
+    start_date: str,
+    end_date: str,
+) -> Dict[str, Any]:
+    """
+    Fetch ecommerce metrics if available (for revenue attribution).
+    
+    Returns:
+        Dict with ecommerce data or empty structure if not available
+    """
+    try:
+        return client.run_report(
+            dimensions=['landingPage'],
+            metrics=[
+                'ecommercePurchases',
+                'totalRevenue',
+                'averagePurchaseRevenue',
+            ],
+            start_date=start_date,
+            end_date=end_date,
+            limit=1000,
+        )
     except Exception as e:
-        logger.error(f"Error in fetch_ga4_data: {str(e)}")
+        # Ecommerce data is optional - many sites won't have it
+        logger.info(f"Ecommerce data not available (this is normal for non-ecommerce sites): {e}")
+        return {
+            'rows': [],
+            'metadata': {
+                'error': 'No ecommerce data',
+                'user_message': 'Ecommerce tracking is not enabled. Revenue estimates will use conversion values instead.',
+                'is_optional': True,
+            }
+        }
+
+
+def ingest_ga4_data(
+    credentials: Credentials,
+    property_id: str,
+    months_back: int = 16,
+) -> Dict[str, Any]:
+    """
+    Main entry point for GA4 data ingestion with comprehensive error handling.
+    
+    Args:
+        credentials: OAuth credentials
+        property_id: GA4 property ID
+        months_back: Number of months of historical data to fetch
+    
+    Returns:
+        Dict containing all GA4 data with graceful fallbacks for missing sections
+    
+    Raises:
+        GA4NotConfiguredError: If property is not accessible
+        GA4AuthError: If authentication fails
+    """
+    # Validate property_id format
+    if not property_id:
+        raise GA4NotConfiguredError(
+            "No Google Analytics property is connected. Please connect a GA4 property to enable engagement analysis."
+        )
+    
+    if not property_id.startswith('properties/'):
+        property_id = f'properties/{property_id}'
+    
+    # Calculate date range
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=months_back * 30)
+    
+    start_date_str = start_date.strftime('%Y-%m-%d')
+    end_date_str = end_date.strftime('%Y-%m-%d')
+    
+    logger.info(
+        f"Starting GA4 ingestion for property {property_id}, "
+        f"date range {start_date_str} to {end_date_str}"
+    )
+    
+    try:
+        client = GA4Client(credentials, property_id)
+    except GA4AuthError as e:
+        logger.error(f"GA4 authentication failed: {e}")
         raise
+    except Exception as e:
+        logger.error(f"Failed to initialize GA4 client: {e}")
+        raise GA4NotConfiguredError(
+            f"Unable to access Google Analytics property. Error: {str(e)}"
+        ) from e
+    
+    # Fetch all data sections with individual error handling
+    data = {
+        'property_id': property_id,
+        'date_range': {
+            'start': start_date_str,
+            'end': end_date_str,
+        },
+        'ingestion_timestamp': datetime.now().isoformat(),
+    }
+    
+    sections = [
+        ('traffic_overview', lambda: fetch_traffic_overview(client, start_date_str, end_date_str)),
+        ('landing_pages', lambda: fetch_landing_pages(client, start_date_str, end_date_str)),
+        ('channel_performance', lambda: fetch_channel_performance(client, start_date_str, end_date_str)),
+        ('source_medium', lambda: fetch_source_medium(client, start_date_str, end_date_str)),
+        ('conversions', lambda: fetch_conversions(client, start_date_str, end_date_str)),
+        ('page_date_series', lambda: fetch_page_date_series(client, start_date_str, end_date_str)),
+        ('device_breakdown', lambda: fetch_device_breakdown(client, start_date_str, end_date_str)),
+        ('ecommerce', lambda: fetch_ecommerce_data(client, start_date_str, end_date_str)),
+    ]
+    
+    errors = []
+    warnings = []
+    
+    for section_name, fetch_func in sections:
+        try:
+            logger.info(f"Fetching GA4 section: {section_name}")
+            section_data = fetch_func()
+            data[section_name] = section_data
+            
+            # Check for section-level errors/warnings
+            if 'metadata' in section_data and 'error' in section_data['metadata']:
+                if section_data['metadata'].get('is_optional'):
+                    warnings.append(section_data['metadata']['user_message'])
+                else:
+                    warnings.append(section_data['metadata']['user_message'])
+            
+            logger.info(
+                f"Successfully fetched {section_name}: "
+                f"{len(section_data.get('rows', []))} rows"
+            )
+        except Exception as e:
+            error_msg = f"Failed to fetch {section_name}: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+            # Store empty structure so downstream code doesn't break
+            data[section_name] = {
+                'rows': [],
+                'metadata': {'error': str(e)},
+            }
+    
+    # Summary metadata
+    data['ingestion_summary'] = {
+        'total_sections': len(sections),
+        'successful_sections': len([s for s in sections if s[0] in data and data[s[0]].get('rows')]),
+        'errors': errors,
+        'warnings': warnings,
+        'total_rows': sum(len(data[s[0]].get('rows', [])) for s in sections),
+    }
+    
+    # Log final status
+    if errors:
+        logger.warning(
+            f"GA4 ingestion completed with {len(errors)} errors and {len(warnings)} warnings. "
+            f"Some analysis sections may be limited."
+        )
+    else:
+        logger.info(
+            f"GA4 ingestion completed successfully. "
+            f"{data['ingestion_summary']['total_rows']} total rows fetched."
+        )
+    
+    return data
 
 
-def calculate_conversion_rate(
-    landing_page_data: List[Dict[str, Any]]
-) -> Dict[str, float]:
+def validate_ga4_connection(credentials: Credentials, property_id: str) -> Dict[str, Any]:
     """
-    Calculate conversion rate per landing page for revenue attribution.
-
+    Validate GA4 connection without fetching full data.
+    
     Args:
-        landing_page_data: List of landing page records from fetch_landing_pages
-
+        credentials: OAuth credentials
+        property_id: GA4 property ID
+    
     Returns:
-        Dict mapping landing page URL to conversion rate (0-1)
+        Dict with validation status and basic property info
     """
-    conversion_rates = {}
-
-    for page in landing_page_data:
-        url = page["landing_page"]
-        sessions = page["sessions"]
-        conversions = page["conversions"]
-
-        if sessions > 0:
-            conversion_rates[url] = conversions / sessions
-        else:
-            conversion_rates[url] = 0.0
-
-    return conversion_rates
-
-
-def identify_low_engagement_pages(
-    landing_page_data: List[Dict[str, Any]],
-    min_sessions: int = 100,
-    bounce_threshold: float = 80.0,
-    duration_threshold: float = 30.0,
-) -> List[Dict[str, Any]]:
-    """
-    Identify landing pages with high traffic but poor engagement metrics.
-
-    Used in Module 2 (Page Triage) to flag content mismatch issues.
-
-    Args:
-        landing_page_data: List of landing page records
-        min_sessions: Minimum sessions to consider (avoid low-volume noise)
-        bounce_threshold: Bounce rate % threshold for flagging
-        duration_threshold: Avg session duration (seconds) threshold for flagging
-
-    Returns:
-        List of problematic pages with engagement metrics
-    """
-    low_engagement = []
-
-    for page in landing_page_data:
-        if page["sessions"] < min_sessions:
-            continue
-
-        if (
-            page["bounce_rate"] > bounce_threshold
-            and page["avg_session_duration"] < duration_threshold
-        ):
-            low_engagement.append({
-                "landing_page": page["landing_page"],
-                "sessions": page["sessions"],
-                "bounce_rate": page["bounce_rate"],
-                "avg_session_duration": page["avg_session_duration"],
-                "engagement_rate": page["engagement_rate"],
-                "flag": "content_mismatch",
-            })
-
-    # Sort by sessions (prioritize high-traffic pages)
-    low_engagement.sort(key=lambda x: x["sessions"], reverse=True)
-
-    return low_engagement
+    if not property_id.startswith('properties/'):
+        property_id = f'properties/{property_id}'
+    
+    try:
+        client = GA4Client(credentials, property_id)
+        
+        # Try a minimal request to verify access
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=7)
+        
+        result = client.run_report(
+            dimensions=['date'],
+            metrics=['sessions'],
+            start_date=start_date.strftime('%Y-%m-%d'),
+            end_date=end_date.strftime('%Y-%m-%d'),
+            limit=10,
+        )
+        
+        return {
+            'valid': True,
+            'property_id': property_id,
+            'has_data': len(result['rows']) > 0,
+            'message': 'GA4 connection is valid and data is accessible.',
+        }
+    
+    except GA4AuthError as e:
+        return {
+            'valid': False,
+            'error': 'authentication_failed',
+            'message': str(e),
+        }
+    except GA4IngestionError as e:
+        return {
+            'valid': False,
+            'error': 'api_error',
+            'message': str(e),
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error validating GA4 connection: {e}")
+        return {
+            'valid': False,
+            'error': 'unknown',
+            'message': f'Unable to validate GA4 connection: {str(e)}',
+        }

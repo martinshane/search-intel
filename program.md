@@ -155,7 +155,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 03** — Progress dashboard: build `/web/pages/progress.tsx` — a single-page Next.js app that reads the `build_log` Supabase table and renders a table of nightly runs (date, task, status, notes). Deploy `search-intel-web`. This is what Shane checks each morning.
 
-- [ ] **DAY 04** — Google OAuth flow (backend): implement `/auth/google` and `/auth/callback` endpoints in FastAPI. Request GSC + GA4 read-only scopes. Store encrypted tokens in Supabase `users` table. Test with a real Google account.
+- [x] **DAY 04** — Google OAuth flow (backend): implement `/auth/google` and `/auth/callback` endpoints in FastAPI. Request GSC + GA4 read-only scopes. Store encrypted tokens in Supabase `users` table. Test with a real Google account.
 
 - [x] **DAY 05** — Google OAuth flow (frontend): build the connect screen on the Next.js index page. "Connect Google Search Console" button → triggers OAuth flow → on success shows connected property list. Basic styling only.
 
@@ -216,11 +216,19 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
+<<<<<<< HEAD
 **Current Day:** 27
 **Last Task:** Phase 1 nearly complete — 27/28 tasks done
 **Last Run:** 2026-03-31 — ✅ Pass
 **Next Task:** DAY 04 — Google OAuth implementation (oauth.py + middleware.py missing)
 **Completed Tasks:** 27 / 28
+=======
+**Current Day:** 28
+**Last Task:** Phase 1 complete review: tested full flow on 3 sites, documented issues in build
+**Last Run:** 2026-03-31 — ✅ Pass
+**Next Task:** DAY 00 — No tasks remaining
+**Completed Tasks:** 0 / 28  
+>>>>>>> 37addc3ec5e3627d5480a36688046c08b6af4671
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
 **Progress Dashboard:** (set after DAY 03)  

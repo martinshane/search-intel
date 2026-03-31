@@ -1,505 +1,489 @@
 """
-Async job pipeline for report generation.
+Analysis pipeline coordinator with comprehensive error handling.
 
-This module orchestrates the complete analysis workflow:
-1. Data ingestion (GSC, GA4, DataForSEO, site crawl)
-2. Sequential execution of 12 analysis modules
-3. Report synthesis and storage
-4. Progress tracking and error handling
-
-The pipeline is designed to run as an async background job (2-5 min execution time).
+Orchestrates the execution of all analysis modules, continuing on failures,
+tracking errors, and generating partial reports when necessary.
 """
 
-import asyncio
 import logging
-from datetime import datetime, timezone
+import traceback
+from datetime import datetime
 from typing import Any, Dict, List, Optional
-from uuid import UUID
+from dataclasses import dataclass, field, asdict
 
-import httpx
-from supabase import Client
-
-from api.config import settings
-from api.utils.exceptions import (
-    DataIngestionError,
-    AnalysisError,
-    ReportGenerationError,
-)
+from api.worker.modules import health_trajectory
+from api.worker.modules import page_triage
+from api.worker.modules import serp_landscape
+from api.worker.modules import content_intelligence
+from api.worker.modules import gameplan
+from api.worker.modules import algorithm_impact
+from api.worker.modules import intent_migration
+from api.worker.modules import ctr_modeling
+from api.worker.modules import site_architecture
+from api.worker.modules import branded_split
+from api.worker.modules import competitive_threats
+from api.worker.modules import revenue_attribution
 
 logger = logging.getLogger(__name__)
 
 
-class ReportPipeline:
+@dataclass
+class ModuleError:
+    """Represents an error that occurred during module execution."""
+    module_name: str
+    error_type: str
+    error_message: str
+    traceback: str
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    user_message: str = ""
+
+
+@dataclass
+class ModuleResult:
+    """Result from a single module execution."""
+    module_name: str
+    status: str  # "success", "failed", "skipped"
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[ModuleError] = None
+    execution_time_seconds: float = 0.0
+
+
+@dataclass
+class PipelineResult:
+    """Complete pipeline execution result."""
+    status: str  # "complete", "partial", "failed"
+    modules: List[ModuleResult]
+    errors: List[ModuleError]
+    total_execution_time: float
+    completed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+class AnalysisPipeline:
     """
-    Orchestrates the end-to-end report generation pipeline.
+    Orchestrates the sequential execution of all analysis modules.
     
-    Each pipeline instance is bound to a specific report ID and handles:
-    - Progress tracking in Supabase
-    - Sequential module execution with dependency management
-    - Error handling and recovery
-    - Final report compilation
+    Implements graceful degradation:
+    - Continues execution even if individual modules fail
+    - Tracks all errors for user reporting
+    - Generates partial reports with available data
+    - Provides meaningful error messages for each failure type
     """
-
-    def __init__(
-        self,
-        report_id: UUID,
-        user_id: UUID,
-        gsc_property: str,
-        ga4_property: Optional[str],
-        supabase: Client,
-    ):
-        self.report_id = report_id
-        self.user_id = user_id
-        self.gsc_property = gsc_property
-        self.ga4_property = ga4_property
-        self.supabase = supabase
-        self.progress: Dict[str, str] = {}
-        self.report_data: Dict[str, Any] = {}
-        self.ingested_data: Dict[str, Any] = {}
-
-    async def run(self) -> Dict[str, Any]:
-        """
-        Execute the complete pipeline.
+    
+    def __init__(self):
+        self.modules = [
+            ("health_trajectory", health_trajectory.analyze_health_trajectory),
+            ("page_triage", page_triage.analyze_page_triage),
+            ("serp_landscape", serp_landscape.analyze_serp_landscape),
+            ("content_intelligence", content_intelligence.analyze_content_intelligence),
+            ("gameplan", gameplan.generate_gameplan),
+            ("algorithm_impact", algorithm_impact.analyze_algorithm_impacts),
+            ("intent_migration", intent_migration.analyze_intent_migration),
+            ("ctr_modeling", ctr_modeling.model_contextual_ctr),
+            ("site_architecture", site_architecture.analyze_site_architecture),
+            ("branded_split", branded_split.analyze_branded_split),
+            ("competitive_threats", competitive_threats.analyze_competitive_threats),
+            ("revenue_attribution", revenue_attribution.estimate_revenue_attribution),
+        ]
         
-        Returns:
-            Complete report data dictionary
-            
-        Raises:
-            DataIngestionError: If data fetching fails
-            AnalysisError: If any analysis module fails
-            ReportGenerationError: If final synthesis fails
-        """
-        try:
-            await self._update_status("ingesting")
-            logger.info(f"Starting pipeline for report {self.report_id}")
-
-            # Phase 1: Data Ingestion
-            await self._ingest_data()
-
-            # Phase 2: Analysis Modules (sequential - some depend on prior outputs)
-            await self._update_status("analyzing")
-            
-            await self._run_module("module_1", self._analyze_health_trajectory)
-            await self._run_module("module_2", self._analyze_page_triage)
-            await self._run_module("module_3", self._analyze_serp_landscape)
-            await self._run_module("module_4", self._analyze_content_intelligence)
-            await self._run_module("module_5", self._generate_gameplan)
-            await self._run_module("module_6", self._analyze_algorithm_impacts)
-            await self._run_module("module_7", self._analyze_intent_migration)
-            await self._run_module("module_8", self._model_contextual_ctr)
-            await self._run_module("module_9", self._analyze_site_architecture)
-            await self._run_module("module_10", self._analyze_branded_split)
-            await self._run_module("module_11", self._analyze_competitive_threats)
-            await self._run_module("module_12", self._estimate_revenue_attribution)
-
-            # Phase 3: Report Generation
-            await self._update_status("generating")
-            await self._generate_final_report()
-
-            # Phase 4: Complete
-            await self._update_status("complete")
-            await self._save_completed_report()
-
-            logger.info(f"Pipeline completed successfully for report {self.report_id}")
-            return self.report_data
-
-        except Exception as e:
-            logger.error(f"Pipeline failed for report {self.report_id}: {str(e)}")
-            await self._update_status("failed", error=str(e))
-            raise
-
-    async def _update_status(
-        self, status: str, error: Optional[str] = None
-    ) -> None:
-        """Update report status and progress in Supabase."""
-        update_data = {
-            "status": status,
-            "progress": self.progress,
+        self.module_dependencies = {
+            "gameplan": ["health_trajectory", "page_triage", "serp_landscape", "content_intelligence"],
+            "ctr_modeling": ["serp_landscape"],
+            "competitive_threats": ["serp_landscape"],
         }
         
-        if error:
-            update_data["error"] = error
-            
-        if status == "complete":
-            update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
-
-        try:
-            self.supabase.table("reports").update(update_data).eq(
-                "id", str(self.report_id)
-            ).execute()
-        except Exception as e:
-            logger.error(f"Failed to update report status: {str(e)}")
-            # Don't raise - status update failures shouldn't kill the pipeline
-
-    async def _run_module(self, module_name: str, module_func) -> None:
+        self.user_friendly_errors = {
+            "insufficient_data": "Not enough data available to complete this analysis. This section requires at least 30 days of search data.",
+            "api_failure": "Unable to retrieve required data from external service. This section will be retried automatically.",
+            "processing_error": "An error occurred while processing the data for this section. Other sections are unaffected.",
+            "missing_dependency": "This analysis depends on data from another section that failed to complete.",
+            "configuration_error": "Configuration issue prevented this analysis from running. Please contact support.",
+        }
+    
+    def _categorize_error(self, error: Exception, module_name: str) -> str:
+        """Categorize an error to provide appropriate user message."""
+        error_str = str(error).lower()
+        
+        if "insufficient" in error_str or "not enough" in error_str or "empty" in error_str:
+            return "insufficient_data"
+        elif "api" in error_str or "request" in error_str or "connection" in error_str:
+            return "api_failure"
+        elif "dependency" in error_str or "required" in error_str:
+            return "missing_dependency"
+        elif "config" in error_str or "setting" in error_str:
+            return "configuration_error"
+        else:
+            return "processing_error"
+    
+    def _create_module_error(
+        self,
+        module_name: str,
+        error: Exception,
+        tb: str
+    ) -> ModuleError:
+        """Create a structured error object with user-friendly message."""
+        error_category = self._categorize_error(error, module_name)
+        user_message = self.user_friendly_errors.get(
+            error_category,
+            "An error occurred in this analysis section. The report will continue with remaining sections."
+        )
+        
+        return ModuleError(
+            module_name=module_name,
+            error_type=type(error).__name__,
+            error_message=str(error),
+            traceback=tb,
+            user_message=user_message
+        )
+    
+    def _check_dependencies(
+        self,
+        module_name: str,
+        completed_modules: Dict[str, ModuleResult]
+    ) -> tuple[bool, Optional[str]]:
         """
-        Execute a single analysis module with error handling and progress tracking.
+        Check if all dependencies for a module are satisfied.
+        
+        Returns:
+            (can_run, skip_reason)
+        """
+        deps = self.module_dependencies.get(module_name, [])
+        
+        for dep in deps:
+            if dep not in completed_modules:
+                return False, f"Required module '{dep}' has not run yet"
+            
+            if completed_modules[dep].status != "success":
+                return False, f"Required module '{dep}' failed or was skipped"
+        
+        return True, None
+    
+    def _execute_module(
+        self,
+        module_name: str,
+        module_func: callable,
+        data_context: Dict[str, Any],
+        completed_modules: Dict[str, ModuleResult]
+    ) -> ModuleResult:
+        """
+        Execute a single module with error handling.
         
         Args:
-            module_name: Identifier for progress tracking (e.g., "module_1")
-            module_func: Async function that performs the analysis
+            module_name: Name of the module
+            module_func: The analysis function to call
+            data_context: All input data (GSC, GA4, SERP, etc.)
+            completed_modules: Results from previously run modules
+            
+        Returns:
+            ModuleResult with status and data or error
         """
+        start_time = datetime.utcnow()
+        
         try:
-            self.progress[module_name] = "running"
-            await self._update_status("analyzing")
+            # Check dependencies
+            can_run, skip_reason = self._check_dependencies(module_name, completed_modules)
+            if not can_run:
+                logger.warning(f"Skipping {module_name}: {skip_reason}")
+                return ModuleResult(
+                    module_name=module_name,
+                    status="skipped",
+                    error=ModuleError(
+                        module_name=module_name,
+                        error_type="DependencyNotMet",
+                        error_message=skip_reason,
+                        traceback="",
+                        user_message=f"This analysis was skipped because a required previous analysis did not complete successfully."
+                    )
+                )
             
-            logger.info(f"Running {module_name} for report {self.report_id}")
-            result = await module_func()
+            # Prepare module-specific inputs
+            module_data = self._prepare_module_inputs(
+                module_name,
+                data_context,
+                completed_modules
+            )
             
-            self.report_data[module_name] = result
-            self.progress[module_name] = "complete"
-            await self._update_status("analyzing")
+            # Execute module
+            logger.info(f"Executing module: {module_name}")
+            result = module_func(**module_data)
+            
+            execution_time = (datetime.utcnow() - start_time).total_seconds()
+            
+            logger.info(f"Module {module_name} completed successfully in {execution_time:.2f}s")
+            
+            return ModuleResult(
+                module_name=module_name,
+                status="success",
+                data=result,
+                execution_time_seconds=execution_time
+            )
             
         except Exception as e:
-            self.progress[module_name] = "failed"
-            await self._update_status("analyzing")
-            logger.error(f"{module_name} failed: {str(e)}")
-            raise AnalysisError(f"{module_name} failed: {str(e)}") from e
-
-    async def _ingest_data(self) -> None:
-        """
-        Phase 1: Fetch all required data from external APIs.
-        
-        Fetches:
-        - GSC performance data (multiple dimensions: query, page, date, query+page, etc.)
-        - GA4 engagement and conversion data
-        - DataForSEO SERP data for top keywords
-        - Site crawl data (internal links, page metadata)
-        
-        All responses are cached in Supabase with 24h TTL.
-        """
-        try:
-            # TODO: Implement actual data ingestion
-            # This is a placeholder that will be implemented with the ingestion modules
-            self.ingested_data = {
-                "gsc_daily": [],
-                "gsc_query": [],
-                "gsc_page": [],
-                "gsc_query_page": [],
-                "ga4_landing_pages": [],
-                "ga4_conversions": [],
-                "serp_data": [],
-                "link_graph": [],
-            }
-            logger.info(f"Data ingestion completed for report {self.report_id}")
+            execution_time = (datetime.utcnow() - start_time).total_seconds()
+            tb = traceback.format_exc()
             
-        except Exception as e:
-            logger.error(f"Data ingestion failed: {str(e)}")
-            raise DataIngestionError(f"Failed to ingest data: {str(e)}") from e
-
-    # ==================== Analysis Modules ====================
-    # Each module implements the logic specified in the technical spec
-    # Placeholders for now - will be implemented in separate module files
-
-    async def _analyze_health_trajectory(self) -> Dict[str, Any]:
-        """
-        Module 1: Health & Trajectory Analysis
-        
-        Performs MSTL decomposition, change point detection, STUMPY analysis,
-        and forward projection using ARIMA/Prophet.
-        
-        Returns:
-            Dictionary with trend analysis, seasonality, anomalies, and forecast
-        """
-        # TODO: Implement Module 1
-        # Will use: statsmodels (MSTL), ruptures (change points), STUMPY, scipy
-        return {
-            "overall_direction": "stable",
-            "trend_slope_pct_per_month": 0.0,
-            "change_points": [],
-            "seasonality": {},
-            "anomalies": [],
-            "forecast": {},
-        }
-
-    async def _analyze_page_triage(self) -> Dict[str, Any]:
-        """
-        Module 2: Page-Level Triage
-        
-        Per-page trend fitting, CTR anomaly detection using Isolation Forest,
-        engagement cross-reference with GA4, priority scoring.
-        
-        Returns:
-            Dictionary with page analysis and priority recommendations
-        """
-        # TODO: Implement Module 2
-        # Will use: PyOD (Isolation Forest), scipy (regression), sklearn
-        return {
-            "pages": [],
-            "summary": {
-                "total_pages_analyzed": 0,
-                "growing": 0,
-                "stable": 0,
-                "decaying": 0,
-                "critical": 0,
-            },
-        }
-
-    async def _analyze_serp_landscape(self) -> Dict[str, Any]:
-        """
-        Module 3: SERP Landscape Analysis
-        
-        SERP feature displacement, competitor mapping, intent classification,
-        click share estimation.
-        
-        Returns:
-            Dictionary with SERP analysis and competitive intelligence
-        """
-        # TODO: Implement Module 3
-        # Will use: pandas, custom SERP feature parsing
-        return {
-            "keywords_analyzed": 0,
-            "serp_feature_displacement": [],
-            "competitors": [],
-            "intent_mismatches": [],
-            "total_click_share": 0.0,
-        }
-
-    async def _analyze_content_intelligence(self) -> Dict[str, Any]:
-        """
-        Module 4: Content Intelligence
-        
-        Cannibalization detection, striking distance opportunities,
-        thin content flagging, content age vs performance matrix.
-        
-        Returns:
-            Dictionary with content optimization opportunities
-        """
-        # TODO: Implement Module 4
-        # Will use: sklearn (TF-IDF, cosine similarity), sentence-transformers
-        return {
-            "cannibalization_clusters": [],
-            "striking_distance": [],
-            "thin_content": [],
-            "update_priority_matrix": {},
-        }
-
-    async def _generate_gameplan(self) -> Dict[str, Any]:
-        """
-        Module 5: The Gameplan
-        
-        Synthesizes outputs from Modules 1-4 into prioritized action list.
-        Uses LLM (Claude) for narrative generation.
-        
-        Returns:
-            Dictionary with critical fixes, quick wins, strategic plays, and narrative
-        """
-        # TODO: Implement Module 5
-        # Will use: anthropic (Claude API) for synthesis
-        return {
-            "critical": [],
-            "quick_wins": [],
-            "strategic": [],
-            "structural": [],
-            "total_estimated_monthly_click_recovery": 0,
-            "narrative": "",
-        }
-
-    async def _analyze_algorithm_impacts(self) -> Dict[str, Any]:
-        """
-        Module 6: Algorithm Update Impact Analysis
-        
-        Correlates change points with known algorithm updates,
-        assesses historical vulnerability.
-        
-        Returns:
-            Dictionary with update impacts and vulnerability assessment
-        """
-        # TODO: Implement Module 6
-        # Will use: ruptures (change point detection), pandas
-        return {
-            "updates_impacting_site": [],
-            "vulnerability_score": 0.0,
-            "recommendation": "",
-        }
-
-    async def _analyze_intent_migration(self) -> Dict[str, Any]:
-        """
-        Module 7: Query Intent Migration Tracking
-        
-        Classifies query intent using LLM, tracks distribution changes over time,
-        estimates AI Overview impact.
-        
-        Returns:
-            Dictionary with intent distribution and strategic recommendations
-        """
-        # TODO: Implement Module 7
-        # Will use: anthropic (Claude API) for intent classification
-        return {
-            "intent_distribution_current": {},
-            "intent_distribution_6mo_ago": {},
-            "ai_overview_impact": {},
-            "strategic_recommendation": "",
-        }
-
-    async def _model_contextual_ctr(self) -> Dict[str, Any]:
-        """
-        Module 8: CTR Modeling by SERP Context
-        
-        Builds gradient boosting model for SERP-context-aware CTR prediction,
-        identifies over/underperformers, scores feature opportunities.
-        
-        Returns:
-            Dictionary with CTR model results and optimization opportunities
-        """
-        # TODO: Implement Module 8
-        # Will use: sklearn (gradient boosting), pandas
-        return {
-            "ctr_model_accuracy": 0.0,
-            "keyword_ctr_analysis": [],
-            "feature_opportunities": [],
-        }
-
-    async def _analyze_site_architecture(self) -> Dict[str, Any]:
-        """
-        Module 9: Site Architecture & Authority Flow
-        
-        PageRank simulation, authority flow analysis, orphan detection,
-        cluster analysis, optimal link recommendations.
-        
-        Returns:
-            Dictionary with PageRank distribution and link recommendations
-        """
-        # TODO: Implement Module 9
-        # Will use: networkx (PageRank), community (Louvain clustering)
-        return {
-            "pagerank_distribution": {},
-            "authority_flow_to_conversion": 0.0,
-            "orphan_pages": [],
-            "content_silos": [],
-            "link_recommendations": [],
-        }
-
-    async def _analyze_branded_split(self) -> Dict[str, Any]:
-        """
-        Module 10: Branded vs Non-Branded Health
-        
-        Classifies queries as branded/non-branded using fuzzy matching,
-        runs independent trajectory analysis, calculates dependency risk.
-        
-        Returns:
-            Dictionary with branded/non-branded trends and opportunity sizing
-        """
-        # TODO: Implement Module 10
-        # Will use: rapidfuzz (fuzzy matching), scipy
-        return {
-            "branded_ratio": 0.0,
-            "dependency_level": "",
-            "branded_trend": {},
-            "non_branded_trend": {},
-            "non_branded_opportunity": {},
-        }
-
-    async def _analyze_competitive_threats(self) -> Dict[str, Any]:
-        """
-        Module 11: Competitive Threat Radar
-        
-        Competitor frequency analysis, emerging threat detection,
-        content velocity estimation, keyword vulnerability assessment.
-        
-        Returns:
-            Dictionary with competitive intelligence and threat levels
-        """
-        # TODO: Implement Module 11
-        # Will use: pandas, scipy (trend detection)
-        return {
-            "primary_competitors": [],
-            "emerging_threats": [],
-            "keyword_vulnerability": [],
-        }
-
-    async def _estimate_revenue_attribution(self) -> Dict[str, Any]:
-        """
-        Module 12: Revenue Attribution
-        
-        Maps clicks to conversions, models position-to-revenue,
-        calculates revenue at risk, estimates ROI of recommended actions.
-        
-        Returns:
-            Dictionary with revenue analysis and action ROI
-        """
-        # TODO: Implement Module 12
-        # Will use: pandas, scipy
-        return {
-            "total_search_attributed_revenue_monthly": 0.0,
-            "revenue_at_risk_90d": 0.0,
-            "top_revenue_keywords": [],
-            "action_roi": {},
-        }
-
-    async def _generate_final_report(self) -> None:
-        """
-        Phase 3: Compile all module outputs into final report structure.
-        
-        Adds metadata, summary statistics, and prepares for UI rendering.
-        """
-        try:
-            self.report_data["metadata"] = {
-                "report_id": str(self.report_id),
-                "user_id": str(self.user_id),
-                "gsc_property": self.gsc_property,
-                "ga4_property": self.ga4_property,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "version": "1.0",
-            }
+            logger.error(f"Module {module_name} failed: {e}")
+            logger.debug(f"Traceback: {tb}")
             
-            # TODO: Add cross-module summary statistics
-            # TODO: Generate executive summary using LLM
+            error = self._create_module_error(module_name, e, tb)
             
-            logger.info(f"Final report generated for {self.report_id}")
-            
-        except Exception as e:
-            logger.error(f"Report generation failed: {str(e)}")
-            raise ReportGenerationError(f"Failed to generate report: {str(e)}") from e
-
-    async def _save_completed_report(self) -> None:
-        """Save completed report data to Supabase."""
-        try:
-            self.supabase.table("reports").update(
-                {
-                    "report_data": self.report_data,
-                    "status": "complete",
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
-                }
-            ).eq("id", str(self.report_id)).execute()
-            
-            logger.info(f"Report {self.report_id} saved to database")
-            
-        except Exception as e:
-            logger.error(f"Failed to save report: {str(e)}")
-            raise
-
-
-async def start_report_pipeline(
-    report_id: UUID,
-    user_id: UUID,
-    gsc_property: str,
-    ga4_property: Optional[str],
-    supabase: Client,
-) -> None:
-    """
-    Entry point for starting a report generation pipeline.
+            return ModuleResult(
+                module_name=module_name,
+                status="failed",
+                error=error,
+                execution_time_seconds=execution_time
+            )
     
-    This function is called by the job worker when a new report is queued.
+    def _prepare_module_inputs(
+        self,
+        module_name: str,
+        data_context: Dict[str, Any],
+        completed_modules: Dict[str, ModuleResult]
+    ) -> Dict[str, Any]:
+        """
+        Prepare input parameters for a specific module.
+        
+        Maps from raw data context and completed module outputs to the
+        specific parameters each module expects.
+        """
+        # Base data available to all modules
+        inputs = {}
+        
+        # Module-specific input preparation
+        if module_name == "health_trajectory":
+            inputs = {
+                "daily_data": data_context.get("gsc_daily_data"),
+            }
+        
+        elif module_name == "page_triage":
+            inputs = {
+                "page_daily_data": data_context.get("gsc_page_daily_data"),
+                "ga4_landing_data": data_context.get("ga4_landing_pages"),
+                "gsc_page_summary": data_context.get("gsc_page_summary"),
+            }
+        
+        elif module_name == "serp_landscape":
+            inputs = {
+                "serp_data": data_context.get("serp_data"),
+                "gsc_keyword_data": data_context.get("gsc_keyword_data"),
+            }
+        
+        elif module_name == "content_intelligence":
+            inputs = {
+                "gsc_query_page": data_context.get("gsc_query_page_data"),
+                "page_data": data_context.get("crawl_data"),
+                "ga4_engagement": data_context.get("ga4_engagement_data"),
+            }
+        
+        elif module_name == "gameplan":
+            # Gameplan synthesizes outputs from previous modules
+            inputs = {
+                "health": completed_modules.get("health_trajectory", {}).data,
+                "triage": completed_modules.get("page_triage", {}).data,
+                "serp": completed_modules.get("serp_landscape", {}).data,
+                "content": completed_modules.get("content_intelligence", {}).data,
+            }
+        
+        elif module_name == "algorithm_impact":
+            inputs = {
+                "daily_data": data_context.get("gsc_daily_data"),
+                "change_points": (
+                    completed_modules.get("health_trajectory", {}).data or {}
+                ).get("change_points", []) if completed_modules.get("health_trajectory") else [],
+            }
+        
+        elif module_name == "intent_migration":
+            inputs = {
+                "gsc_query_date_data": data_context.get("gsc_query_date_data"),
+            }
+        
+        elif module_name == "ctr_modeling":
+            inputs = {
+                "serp_data": data_context.get("serp_data"),
+                "gsc_data": data_context.get("gsc_keyword_data"),
+            }
+        
+        elif module_name == "site_architecture":
+            inputs = {
+                "link_graph": data_context.get("internal_link_graph"),
+                "page_performance": data_context.get("gsc_page_summary"),
+            }
+        
+        elif module_name == "branded_split":
+            inputs = {
+                "gsc_query_data": data_context.get("gsc_query_data"),
+                "brand_terms": data_context.get("brand_terms", []),
+            }
+        
+        elif module_name == "competitive_threats":
+            inputs = {
+                "serp_data": data_context.get("serp_data"),
+                "gsc_data": data_context.get("gsc_keyword_data"),
+            }
+        
+        elif module_name == "revenue_attribution":
+            inputs = {
+                "gsc_data": data_context.get("gsc_page_summary"),
+                "ga4_conversions": data_context.get("ga4_conversions"),
+                "ga4_engagement": data_context.get("ga4_landing_pages"),
+            }
+        
+        return inputs
+    
+    def _generate_partial_report_message(
+        self,
+        successful: int,
+        failed: int,
+        skipped: int
+    ) -> str:
+        """Generate a user-friendly message for partial report completion."""
+        total = successful + failed + skipped
+        
+        if failed == 0 and skipped == 0:
+            return "All analysis sections completed successfully."
+        
+        msg = f"Report completed with {successful} of {total} sections. "
+        
+        if failed > 0:
+            msg += f"{failed} section(s) encountered errors and were excluded. "
+        
+        if skipped > 0:
+            msg += f"{skipped} section(s) were skipped due to missing dependencies. "
+        
+        msg += "The report includes all available insights from successfully completed sections."
+        
+        return msg
+    
+    def execute(self, data_context: Dict[str, Any]) -> PipelineResult:
+        """
+        Execute the complete analysis pipeline.
+        
+        Args:
+            data_context: Dictionary containing all input data:
+                - gsc_daily_data: Daily time series from GSC
+                - gsc_page_daily_data: Per-page daily data
+                - gsc_page_summary: Page-level aggregates
+                - gsc_keyword_data: Keyword performance data
+                - gsc_query_page_data: Query-to-page mapping
+                - gsc_query_date_data: Query time series
+                - ga4_landing_pages: Landing page performance
+                - ga4_conversions: Conversion data
+                - ga4_engagement_data: Engagement metrics
+                - serp_data: SERP data from DataForSEO
+                - crawl_data: Internal link graph
+                - internal_link_graph: Graph structure
+                - brand_terms: List of brand keywords
+        
+        Returns:
+            PipelineResult with all module results and any errors
+        """
+        pipeline_start = datetime.utcnow()
+        
+        logger.info("Starting analysis pipeline execution")
+        logger.info(f"Available data keys: {list(data_context.keys())}")
+        
+        completed_modules: Dict[str, ModuleResult] = {}
+        all_errors: List[ModuleError] = []
+        module_results: List[ModuleResult] = []
+        
+        # Execute each module in sequence
+        for module_name, module_func in self.modules:
+            result = self._execute_module(
+                module_name,
+                module_func,
+                data_context,
+                completed_modules
+            )
+            
+            module_results.append(result)
+            completed_modules[module_name] = result
+            
+            if result.error:
+                all_errors.append(result.error)
+        
+        # Calculate summary statistics
+        successful = sum(1 for r in module_results if r.status == "success")
+        failed = sum(1 for r in module_results if r.status == "failed")
+        skipped = sum(1 for r in module_results if r.status == "skipped")
+        
+        total_time = (datetime.utcnow() - pipeline_start).total_seconds()
+        
+        # Determine overall status
+        if successful == len(self.modules):
+            status = "complete"
+        elif successful > 0:
+            status = "partial"
+        else:
+            status = "failed"
+        
+        logger.info(f"Pipeline execution completed: {status}")
+        logger.info(f"Successful: {successful}, Failed: {failed}, Skipped: {skipped}")
+        logger.info(f"Total execution time: {total_time:.2f}s")
+        
+        pipeline_result = PipelineResult(
+            status=status,
+            modules=module_results,
+            errors=all_errors,
+            total_execution_time=total_time
+        )
+        
+        return pipeline_result
+    
+    def get_report_data(self, pipeline_result: PipelineResult) -> Dict[str, Any]:
+        """
+        Extract successful module data into report structure.
+        
+        Args:
+            pipeline_result: The pipeline execution result
+            
+        Returns:
+            Dictionary suitable for report rendering, with metadata about
+            which sections are available
+        """
+        report = {
+            "metadata": {
+                "status": pipeline_result.status,
+                "generated_at": pipeline_result.completed_at,
+                "execution_time_seconds": pipeline_result.total_execution_time,
+                "completion_message": self._generate_partial_report_message(
+                    sum(1 for m in pipeline_result.modules if m.status == "success"),
+                    sum(1 for m in pipeline_result.modules if m.status == "failed"),
+                    sum(1 for m in pipeline_result.modules if m.status == "skipped")
+                ),
+            },
+            "sections": {},
+            "errors": [asdict(e) for e in pipeline_result.errors]
+        }
+        
+        # Add successful module data
+        for module_result in pipeline_result.modules:
+            section_data = {
+                "status": module_result.status,
+                "execution_time_seconds": module_result.execution_time_seconds,
+            }
+            
+            if module_result.status == "success" and module_result.data:
+                section_data["data"] = module_result.data
+            elif module_result.error:
+                section_data["error"] = {
+                    "type": module_result.error.error_type,
+                    "message": module_result.error.user_message,
+                }
+            
+            report["sections"][module_result.module_name] = section_data
+        
+        return report
+
+
+def run_analysis_pipeline(data_context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convenience function to execute pipeline and return report data.
     
     Args:
-        report_id: UUID of the report record
-        user_id: UUID of the user requesting the report
-        gsc_property: GSC property URL
-        ga4_property: GA4 property ID (optional)
-        supabase: Supabase client instance
+        data_context: All input data required for analysis
+        
+    Returns:
+        Complete report data structure ready for rendering
     """
-    pipeline = ReportPipeline(
-        report_id=report_id,
-        user_id=user_id,
-        gsc_property=gsc_property,
-        ga4_property=ga4_property,
-        supabase=supabase,
-    )
-    
-    try:
-        await pipeline.run()
-    except Exception as e:
-        logger.error(f"Pipeline execution failed: {str(e)}")
-        # Error already logged in pipeline.run()
-        raise
+    pipeline = AnalysisPipeline()
+    result = pipeline.execute(data_context)
+    return pipeline.get_report_data(result)

@@ -1,17 +1,8 @@
+"""Worker package for async job processing.
+
+This package handles the async report generation pipeline.
 """
-Worker package for async job processing.
 
-Handles report generation pipeline and background tasks.
-"""
+from api.worker.pipeline import ReportPipeline, ReportStatus
 
-from .tasks import (
-    generate_report,
-    update_algorithm_database,
-    cleanup_expired_cache,
-)
-
-__all__ = [
-    "generate_report",
-    "update_algorithm_database",
-    "cleanup_expired_cache",
-]
+__all__ = ["ReportPipeline", "ReportStatus"]

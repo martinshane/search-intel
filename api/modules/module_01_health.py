@@ -1,507 +1,556 @@
 """
-Module 1: Health & Trajectory Analysis
+Module 01: Health & Trajectory Analysis
 
-Performs time series decomposition, change point detection, anomaly detection,
-and forecasting on site-wide GSC traffic data.
+Analyzes overall site health and traffic trajectory using time-series decomposition,
+change point detection, pattern discovery, and forecasting.
 
-Dependencies:
-- statsmodels (MSTL decomposition)
-- ruptures (change point detection via PELT)
-- stumpy (matrix profile for motifs/discords)
-- scipy (curve fitting)
-- numpy, pandas
+Error handling strategy:
+- Graceful fallbacks for insufficient data (< 30 days)
+- Decomposition failures fall back to simple linear regression
+- Missing forecasts when statistical models fail
+- Always return valid schema with partial results + error flags
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
 import logging
-
-try:
-    from statsmodels.tsa.seasonal import MSTL
-    from statsmodels.tsa.arima.model import ARIMA
-except ImportError:
-    MSTL = None
-    ARIMA = None
-
-try:
-    import ruptures as rpt
-except ImportError:
-    rpt = None
-
-try:
-    import stumpy
-except ImportError:
-    stumpy = None
-
-from scipy import stats
-from scipy.optimize import curve_fit
 
 logger = logging.getLogger(__name__)
 
+# Conditional imports with fallbacks
+try:
+    from statsmodels.tsa.seasonal import MSTL
+    HAS_MSTL = True
+except ImportError:
+    HAS_MSTL = False
+    logger.warning("statsmodels not available - will use fallback decomposition")
 
-class HealthTrajectoryAnalyzer:
-    """Analyzes site health and traffic trajectory using advanced time series methods."""
+try:
+    import stumpy
+    HAS_STUMPY = True
+except ImportError:
+    HAS_STUMPY = False
+    logger.warning("stumpy not available - pattern detection disabled")
+
+try:
+    import ruptures as rpt
+    HAS_RUPTURES = True
+except ImportError:
+    HAS_RUPTURES = False
+    logger.warning("ruptures not available - using scipy for change points")
+
+try:
+    from scipy import stats, signal
+    from scipy.optimize import curve_fit
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+    logger.warning("scipy not available - some features disabled")
+
+try:
+    from statsmodels.tsa.arima.model import ARIMA
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+    HAS_ARIMA = True
+except ImportError:
+    HAS_ARIMA = False
+    logger.warning("ARIMA not available - will use simple extrapolation")
+
+
+def _validate_input_data(daily_data: pd.DataFrame) -> tuple[bool, Optional[str]]:
+    """
+    Validate input data meets minimum requirements.
     
-    def __init__(self):
-        self.required_days = 90  # Minimum days needed for meaningful analysis
-        
-    def analyze(self, daily_data: pd.DataFrame) -> Dict[str, Any]:
-        """
-        Main analysis entry point.
-        
-        Args:
-            daily_data: DataFrame with columns ['date', 'clicks', 'impressions', 'ctr', 'position']
-                       Must have at least 90 days of data, ideally 12-16 months
-        
-        Returns:
-            Dictionary with health and trajectory analysis results
-        """
-        try:
-            # Validate input
-            if daily_data is None or len(daily_data) == 0:
-                return self._empty_result("No data provided")
-            
-            if len(daily_data) < self.required_days:
-                return self._empty_result(f"Insufficient data: {len(daily_data)} days (need {self.required_days})")
-            
-            # Ensure date column is datetime and sorted
-            daily_data = daily_data.copy()
-            daily_data['date'] = pd.to_datetime(daily_data['date'])
-            daily_data = daily_data.sort_values('date').reset_index(drop=True)
-            
-            # Check for required columns
-            required_cols = ['date', 'clicks', 'impressions']
-            missing_cols = [col for col in required_cols if col not in daily_data.columns]
-            if missing_cols:
-                return self._empty_result(f"Missing required columns: {missing_cols}")
-            
-            # Fill any gaps in date range
-            daily_data = self._fill_date_gaps(daily_data)
-            
-            results = {
-                "data_range": {
-                    "start_date": daily_data['date'].min().strftime('%Y-%m-%d'),
-                    "end_date": daily_data['date'].max().strftime('%Y-%m-%d'),
-                    "days": len(daily_data)
-                }
-            }
-            
-            # 1. Decomposition
-            decomposition = self._decompose_time_series(daily_data['clicks'].values)
-            results['decomposition'] = decomposition
-            
-            # 2. Trend analysis
-            trend_analysis = self._analyze_trend(decomposition.get('trend'))
-            results.update(trend_analysis)
-            
-            # 3. Change point detection
-            change_points = self._detect_change_points(
-                daily_data['clicks'].values,
-                daily_data['date'].values
-            )
-            results['change_points'] = change_points
-            
-            # 4. Seasonality analysis
-            seasonality = self._analyze_seasonality(
-                decomposition.get('seasonal_weekly'),
-                decomposition.get('seasonal_monthly'),
-                daily_data['date'].values
-            )
-            results['seasonality'] = seasonality
-            
-            # 5. Anomaly detection (motifs and discords)
-            anomalies = self._detect_anomalies(
-                decomposition.get('resid'),
-                daily_data['date'].values
-            )
-            results['anomalies'] = anomalies
-            
-            # 6. Forecast
-            forecast = self._generate_forecast(
-                daily_data['clicks'].values,
-                decomposition
-            )
-            results['forecast'] = forecast
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error in health trajectory analysis: {str(e)}", exc_info=True)
-            return self._empty_result(f"Analysis error: {str(e)}")
+    Returns:
+        (is_valid, error_message)
+    """
+    if daily_data is None or daily_data.empty:
+        return False, "No data provided"
     
-    def _fill_date_gaps(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Fill any missing dates in the time series with zeros."""
-        date_range = pd.date_range(start=df['date'].min(), end=df['date'].max(), freq='D')
-        full_df = pd.DataFrame({'date': date_range})
-        merged = full_df.merge(df, on='date', how='left')
-        
-        # Fill missing numeric values with 0
-        numeric_cols = ['clicks', 'impressions', 'ctr', 'position']
-        for col in numeric_cols:
-            if col in merged.columns:
-                merged[col] = merged[col].fillna(0)
-        
-        return merged
+    if len(daily_data) < 30:
+        return False, f"Insufficient data: {len(daily_data)} days (minimum 30 required)"
     
-    def _decompose_time_series(self, data: np.ndarray) -> Dict[str, Any]:
-        """
-        Perform MSTL decomposition with weekly and monthly seasonality.
-        
-        Returns:
-            Dict with trend, seasonal components, and residuals
-        """
-        if MSTL is None:
-            logger.warning("statsmodels not available, skipping decomposition")
-            return {
-                'trend': data,
-                'seasonal_weekly': np.zeros_like(data),
-                'seasonal_monthly': np.zeros_like(data),
-                'resid': np.zeros_like(data)
-            }
-        
-        try:
-            # MSTL expects periods as a list
-            # 7 for weekly, 30 for monthly cycles
-            mstl = MSTL(data, periods=[7, 30], stl_kwargs={'seasonal': 7})
-            result = mstl.fit()
-            
-            # Extract components
-            trend = result.trend
-            seasonal = result.seasonal
-            resid = result.resid
-            
-            # Separate seasonal components (first is weekly, second is monthly)
-            seasonal_weekly = seasonal[:, 0] if seasonal.shape[1] > 0 else np.zeros_like(data)
-            seasonal_monthly = seasonal[:, 1] if seasonal.shape[1] > 1 else np.zeros_like(data)
-            
-            return {
-                'trend': trend,
-                'seasonal_weekly': seasonal_weekly,
-                'seasonal_monthly': seasonal_monthly,
-                'resid': resid
-            }
-            
-        except Exception as e:
-            logger.warning(f"MSTL decomposition failed: {str(e)}, using simple moving average")
-            # Fallback: simple trend extraction via moving average
-            window = min(30, len(data) // 4)
-            trend = pd.Series(data).rolling(window=window, center=True).mean().fillna(method='bfill').fillna(method='ffill').values
-            return {
-                'trend': trend,
-                'seasonal_weekly': np.zeros_like(data),
-                'seasonal_monthly': np.zeros_like(data),
-                'resid': data - trend
-            }
+    required_cols = ['date', 'clicks']
+    missing_cols = [col for col in required_cols if col not in daily_data.columns]
+    if missing_cols:
+        return False, f"Missing required columns: {missing_cols}"
     
-    def _analyze_trend(self, trend: Optional[np.ndarray]) -> Dict[str, Any]:
-        """
-        Analyze trend component to determine direction and magnitude.
+    if daily_data['clicks'].isna().all():
+        return False, "All click values are null"
+    
+    return True, None
+
+
+def _simple_trend_analysis(daily_data: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Fallback trend analysis using simple linear regression.
+    Used when MSTL decomposition fails or insufficient data.
+    """
+    try:
+        # Prepare data
+        df = daily_data.copy()
+        df = df.sort_values('date')
+        df['days_since_start'] = (df['date'] - df['date'].min()).dt.days
         
-        Returns:
-            Dict with overall_direction, trend_slope_pct_per_month, etc.
-        """
-        if trend is None or len(trend) == 0:
-            return {
-                'overall_direction': 'unknown',
-                'trend_slope_pct_per_month': 0.0,
-                'trend_confidence': 0.0
-            }
+        # Fill missing values with forward fill then backward fill
+        df['clicks'] = df['clicks'].fillna(method='ffill').fillna(method='bfill').fillna(0)
         
-        # Fit linear regression on trend
-        x = np.arange(len(trend))
-        
-        # Remove any NaN values
-        valid_mask = ~np.isnan(trend)
-        if valid_mask.sum() < 10:
-            return {
-                'overall_direction': 'insufficient_data',
-                'trend_slope_pct_per_month': 0.0,
-                'trend_confidence': 0.0
-            }
-        
-        x_valid = x[valid_mask]
-        trend_valid = trend[valid_mask]
-        
-        slope, intercept, r_value, p_value, std_err = stats.linregress(x_valid, trend_valid)
-        
-        # Convert slope to % change per month
-        # slope is per day, multiply by 30 for monthly
-        # divide by mean to get percentage
-        mean_traffic = np.mean(trend_valid)
-        if mean_traffic > 0:
-            slope_pct_per_month = (slope * 30 / mean_traffic) * 100
+        # Simple linear regression
+        if HAS_SCIPY:
+            slope, intercept, r_value, p_value, std_err = stats.linregress(
+                df['days_since_start'], 
+                df['clicks']
+            )
         else:
-            slope_pct_per_month = 0.0
+            # Fallback to numpy polyfit
+            coeffs = np.polyfit(df['days_since_start'], df['clicks'], 1)
+            slope, intercept = coeffs[0], coeffs[1]
+            r_value = 0.0
+        
+        # Calculate trend direction
+        avg_clicks = df['clicks'].mean()
+        if avg_clicks > 0:
+            monthly_change_pct = (slope * 30 / avg_clicks) * 100
+        else:
+            monthly_change_pct = 0.0
         
         # Classify direction
-        if slope_pct_per_month > 5:
-            direction = 'strong_growth'
-        elif slope_pct_per_month > 1:
-            direction = 'growth'
-        elif slope_pct_per_month > -1:
-            direction = 'flat'
-        elif slope_pct_per_month > -5:
-            direction = 'decline'
+        if monthly_change_pct > 5:
+            direction = "strong_growth"
+        elif monthly_change_pct > 1:
+            direction = "growth"
+        elif monthly_change_pct > -1:
+            direction = "flat"
+        elif monthly_change_pct > -5:
+            direction = "decline"
         else:
-            direction = 'strong_decline'
+            direction = "strong_decline"
+        
+        # Simple day-of-week seasonality
+        df['day_of_week'] = df['date'].dt.day_name()
+        dow_avg = df.groupby('day_of_week')['clicks'].mean()
+        best_day = dow_avg.idxmax() if not dow_avg.empty else "Unknown"
+        worst_day = dow_avg.idxmin() if not dow_avg.empty else "Unknown"
         
         return {
-            'overall_direction': direction,
-            'trend_slope_pct_per_month': round(slope_pct_per_month, 2),
-            'trend_confidence': round(r_value ** 2, 3),  # R² value
-            'trend_p_value': round(p_value, 4)
+            "trend_component": df['clicks'].tolist(),
+            "seasonal_component": None,
+            "residual_component": None,
+            "slope": float(slope),
+            "direction": direction,
+            "monthly_change_pct": float(monthly_change_pct),
+            "best_day": best_day,
+            "worst_day": worst_day,
+            "method": "simple_linear_regression"
         }
-    
-    def _detect_change_points(self, data: np.ndarray, dates: np.ndarray) -> List[Dict[str, Any]]:
-        """
-        Detect structural breaks in the time series using PELT algorithm.
         
-        Returns:
-            List of change points with date and magnitude
-        """
-        if rpt is None:
-            logger.warning("ruptures library not available, skipping change point detection")
+    except Exception as e:
+        logger.error(f"Simple trend analysis failed: {e}")
+        return {
+            "trend_component": None,
+            "seasonal_component": None,
+            "residual_component": None,
+            "slope": 0.0,
+            "direction": "unknown",
+            "monthly_change_pct": 0.0,
+            "best_day": "Unknown",
+            "worst_day": "Unknown",
+            "method": "failed",
+            "error": str(e)
+        }
+
+
+def _decompose_time_series(daily_data: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Decompose time series using MSTL or fallback to simple analysis.
+    """
+    if not HAS_MSTL:
+        logger.info("MSTL not available, using simple trend analysis")
+        return _simple_trend_analysis(daily_data)
+    
+    try:
+        df = daily_data.copy()
+        df = df.sort_values('date')
+        df = df.set_index('date')
+        
+        # Fill missing values
+        df['clicks'] = df['clicks'].fillna(method='ffill').fillna(method='bfill').fillna(0)
+        
+        # Ensure we have enough data for decomposition
+        if len(df) < 60:  # Need at least 2 months for weekly + monthly seasonality
+            logger.info(f"Insufficient data for MSTL ({len(df)} days), using simple analysis")
+            return _simple_trend_analysis(daily_data)
+        
+        # MSTL decomposition with weekly and monthly periods
+        mstl = MSTL(df['clicks'], periods=[7, 30], stl_kwargs={'seasonal_deg': 0})
+        result = mstl.fit()
+        
+        # Extract components
+        trend = result.trend
+        seasonal = result.seasonal
+        resid = result.resid
+        
+        # Calculate trend slope
+        trend_values = trend.dropna().values
+        if len(trend_values) > 1:
+            x = np.arange(len(trend_values))
+            slope = np.polyfit(x, trend_values, 1)[0]
+            
+            avg_clicks = trend_values.mean()
+            if avg_clicks > 0:
+                monthly_change_pct = (slope * 30 / avg_clicks) * 100
+            else:
+                monthly_change_pct = 0.0
+        else:
+            slope = 0.0
+            monthly_change_pct = 0.0
+        
+        # Classify direction
+        if monthly_change_pct > 5:
+            direction = "strong_growth"
+        elif monthly_change_pct > 1:
+            direction = "growth"
+        elif monthly_change_pct > -1:
+            direction = "flat"
+        elif monthly_change_pct > -5:
+            direction = "decline"
+        else:
+            direction = "strong_decline"
+        
+        # Day of week analysis from seasonal component
+        df_temp = df.reset_index()
+        df_temp['day_of_week'] = df_temp['date'].dt.day_name()
+        df_temp['seasonal'] = seasonal.values if len(seasonal) == len(df_temp) else 0
+        dow_seasonal = df_temp.groupby('day_of_week')['seasonal'].mean()
+        best_day = dow_seasonal.idxmax() if not dow_seasonal.empty else "Unknown"
+        worst_day = dow_seasonal.idxmin() if not dow_seasonal.empty else "Unknown"
+        
+        return {
+            "trend_component": trend.tolist(),
+            "seasonal_component": seasonal.tolist(),
+            "residual_component": resid.tolist(),
+            "slope": float(slope),
+            "direction": direction,
+            "monthly_change_pct": float(monthly_change_pct),
+            "best_day": best_day,
+            "worst_day": worst_day,
+            "method": "mstl"
+        }
+        
+    except Exception as e:
+        logger.warning(f"MSTL decomposition failed: {e}, falling back to simple analysis")
+        return _simple_trend_analysis(daily_data)
+
+
+def _detect_change_points(trend_data: List[float], dates: pd.Series) -> List[Dict[str, Any]]:
+    """
+    Detect change points in trend component using ruptures or scipy fallback.
+    """
+    if trend_data is None or len(trend_data) < 30:
+        return []
+    
+    try:
+        trend_array = np.array([x for x in trend_data if x is not None and not np.isnan(x)])
+        
+        if len(trend_array) < 30:
             return []
         
-        try:
-            # Use PELT with rbf kernel
-            algo = rpt.Pelt(model="rbf", min_size=7, jump=1).fit(data)
+        change_points = []
+        
+        if HAS_RUPTURES:
+            # Use PELT algorithm for change point detection
+            try:
+                algo = rpt.Pelt(model="rbf", min_size=7, jump=1).fit(trend_array)
+                result = algo.predict(pen=10)
+                
+                # Convert indices to change points with magnitude
+                for idx in result[:-1]:  # Last point is always end of series
+                    if idx > 0 and idx < len(trend_array) - 1:
+                        magnitude = (trend_array[idx] - trend_array[idx-1]) / (trend_array[idx-1] + 1)
+                        direction = "increase" if magnitude > 0 else "drop"
+                        
+                        # Map back to date
+                        date_idx = min(idx, len(dates) - 1)
+                        change_date = dates.iloc[date_idx]
+                        
+                        change_points.append({
+                            "date": change_date.strftime("%Y-%m-%d") if hasattr(change_date, 'strftime') else str(change_date),
+                            "magnitude": float(magnitude),
+                            "direction": direction
+                        })
+            except Exception as e:
+                logger.warning(f"PELT algorithm failed: {e}, using scipy fallback")
+        
+        # Fallback to simple threshold-based detection if ruptures failed or not available
+        if not change_points and HAS_SCIPY:
+            # Use find_peaks on absolute differences
+            diffs = np.diff(trend_array)
+            abs_diffs = np.abs(diffs)
+            threshold = np.percentile(abs_diffs, 90)  # Top 10% of changes
             
-            # Detect with penalty tuned to avoid over-segmentation
-            penalty_value = np.log(len(data)) * np.var(data)
-            change_indices = algo.predict(pen=penalty_value)
+            peaks, _ = signal.find_peaks(abs_diffs, height=threshold, distance=7)
             
-            # Remove the last index (end of series)
-            change_indices = [idx for idx in change_indices if idx < len(data)]
-            
-            change_points = []
-            for idx in change_indices:
-                if idx > 0 and idx < len(data):
-                    # Calculate magnitude as relative change
-                    before_mean = np.mean(data[max(0, idx-14):idx])
-                    after_mean = np.mean(data[idx:min(len(data), idx+14)])
+            for idx in peaks:
+                if idx < len(trend_array) - 1:
+                    magnitude = diffs[idx] / (trend_array[idx] + 1)
+                    direction = "increase" if magnitude > 0 else "drop"
                     
-                    if before_mean > 0:
-                        magnitude = (after_mean - before_mean) / before_mean
-                    else:
-                        magnitude = 0.0
+                    date_idx = min(idx, len(dates) - 1)
+                    change_date = dates.iloc[date_idx]
                     
                     change_points.append({
-                        'date': pd.Timestamp(dates[idx]).strftime('%Y-%m-%d'),
-                        'magnitude': round(magnitude, 3),
-                        'direction': 'increase' if magnitude > 0 else 'drop'
+                        "date": change_date.strftime("%Y-%m-%d") if hasattr(change_date, 'strftime') else str(change_date),
+                        "magnitude": float(magnitude),
+                        "direction": direction
                     })
-            
-            # Sort by absolute magnitude and keep top 5
-            change_points.sort(key=lambda x: abs(x['magnitude']), reverse=True)
-            return change_points[:5]
-            
-        except Exception as e:
-            logger.warning(f"Change point detection failed: {str(e)}")
-            return []
-    
-    def _analyze_seasonality(
-        self,
-        weekly_seasonal: Optional[np.ndarray],
-        monthly_seasonal: Optional[np.ndarray],
-        dates: np.ndarray
-    ) -> Dict[str, Any]:
-        """
-        Analyze seasonal components to identify patterns.
         
-        Returns:
-            Dict with best/worst days, monthly cycles, etc.
-        """
-        result = {
-            'best_day': None,
-            'worst_day': None,
-            'monthly_cycle': False,
-            'cycle_description': None
-        }
+        # Sort by magnitude and keep top 5 most significant
+        change_points.sort(key=lambda x: abs(x['magnitude']), reverse=True)
+        return change_points[:5]
         
-        if weekly_seasonal is not None and len(weekly_seasonal) >= 7:
-            # Reshape into weeks and average each day of week
-            # Pad to make divisible by 7
-            pad_length = (7 - len(weekly_seasonal) % 7) % 7
-            padded = np.pad(weekly_seasonal, (0, pad_length), mode='edge')
-            weeks = padded.reshape(-1, 7)
-            day_averages = np.mean(weeks, axis=0)
-            
-            days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            best_idx = np.argmax(day_averages)
-            worst_idx = np.argmin(day_averages)
-            
-            result['best_day'] = days[best_idx]
-            result['worst_day'] = days[worst_idx]
-        
-        if monthly_seasonal is not None and len(monthly_seasonal) >= 30:
-            # Check if monthly seasonal component is significant
-            monthly_std = np.std(monthly_seasonal)
-            if monthly_std > np.std(weekly_seasonal) * 0.5 if weekly_seasonal is not None else monthly_std > 0:
-                result['monthly_cycle'] = True
-                
-                # Find peak within month (approx)
-                # Take last 30 days as representative month
-                last_month = monthly_seasonal[-30:]
-                peak_day = np.argmax(last_month) + 1
-                magnitude = (np.max(last_month) - np.mean(last_month)) / np.mean(np.abs(last_month)) if np.mean(np.abs(last_month)) > 0 else 0
-                
-                if magnitude > 0.1:
-                    result['cycle_description'] = f"Traffic spike around day {peak_day} of month ({magnitude*100:.0f}% above average)"
-        
-        return result
-    
-    def _detect_anomalies(self, residuals: Optional[np.ndarray], dates: np.ndarray) -> List[Dict[str, Any]]:
-        """
-        Use STUMPY matrix profile to detect anomalies (discords).
-        
-        Returns:
-            List of anomalies with date, type, and magnitude
-        """
-        if stumpy is None or residuals is None or len(residuals) < 30:
-            return []
-        
-        try:
-            # Use a window size of 7 days for pattern matching
-            window_size = min(7, len(residuals) // 4)
-            if window_size < 3:
-                return []
-            
-            # Compute matrix profile
-            mp = stumpy.stump(residuals, m=window_size)
-            
-            # Find top discords (anomalies)
-            # Discord index is where matrix profile distance is highest
-            discord_indices = np.argsort(mp[:, 0])[-5:]  # Top 5 discords
-            
-            anomalies = []
-            for idx in discord_indices:
-                if idx >= 0 and idx < len(dates):
-                    # Calculate magnitude as z-score
-                    window = residuals[max(0, idx-window_size):min(len(residuals), idx+window_size)]
-                    magnitude = (residuals[idx] - np.mean(window)) / (np.std(window) + 1e-6)
-                    
-                    if abs(magnitude) > 2:  # At least 2 standard deviations
-                        anomalies.append({
-                            'date': pd.Timestamp(dates[idx]).strftime('%Y-%m-%d'),
-                            'type': 'discord',
-                            'magnitude': round(magnitude, 2)
-                        })
-            
-            return anomalies
-            
-        except Exception as e:
-            logger.warning(f"Anomaly detection failed: {str(e)}")
-            return []
-    
-    def _generate_forecast(self, data: np.ndarray, decomposition: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generate 30/60/90 day forecast using ARIMA on detrended/deseasonalized data.
-        
-        Returns:
-            Dict with forecasts and confidence intervals
-        """
-        if ARIMA is None or len(data) < 60:
-            # Simple baseline forecast using recent average
-            recent_mean = np.mean(data[-30:])
-            return {
-                '30d': {'clicks': int(recent_mean * 30), 'ci_low': None, 'ci_high': None},
-                '60d': {'clicks': int(recent_mean * 60), 'ci_low': None, 'ci_high': None},
-                '90d': {'clicks': int(recent_mean * 90), 'ci_low': None, 'ci_high': None}
-            }
-        
-        try:
-            # Fit ARIMA on the data
-            # Use auto order selection with reasonable bounds
-            model = ARIMA(data, order=(1, 1, 1), seasonal_order=(1, 0, 1, 7))
-            fitted = model.fit()
-            
-            # Forecast 90 days ahead
-            forecast_result = fitted.forecast(steps=90)
-            forecast_values = forecast_result
-            
-            # Get confidence intervals (approximate if not available)
-            # Use last 30 days std as proxy for uncertainty
-            recent_std = np.std(data[-30:])
-            
-            result = {}
-            for days, label in [(30, '30d'), (60, '60d'), (90, '90d')]:
-                forecast_mean = np.mean(forecast_values[:days])
-                
-                # Confidence intervals widen with time
-                uncertainty = recent_std * np.sqrt(days / 30)
-                
-                result[label] = {
-                    'clicks': int(forecast_mean * days),
-                    'ci_low': int((forecast_mean - 1.96 * uncertainty) * days),
-                    'ci_high': int((forecast_mean + 1.96 * uncertainty) * days)
-                }
-            
-            return result
-            
-        except Exception as e:
-            logger.warning(f"ARIMA forecast failed: {str(e)}, using simple projection")
-            # Fallback to trend-based projection
-            trend = decomposition.get('trend')
-            if trend is not None and len(trend) > 30:
-                recent_trend = trend[-30:]
-                x = np.arange(len(recent_trend))
-                slope, intercept = np.polyfit(x, recent_trend, 1)
-                
-                result = {}
-                for days, label in [(30, '30d'), (60, '60d'), (90, '90d')]:
-                    projected = intercept + slope * (len(recent_trend) + days)
-                    uncertainty = np.std(recent_trend) * np.sqrt(days / 30)
-                    
-                    result[label] = {
-                        'clicks': int(max(0, projected * days)),
-                        'ci_low': int(max(0, (projected - 1.96 * uncertainty) * days)),
-                        'ci_high': int(max(0, (projected + 1.96 * uncertainty) * days))
-                    }
-                
-                return result
-            
-            # Ultimate fallback
-            recent_mean = np.mean(data[-30:])
-            return {
-                '30d': {'clicks': int(recent_mean * 30), 'ci_low': None, 'ci_high': None},
-                '60d': {'clicks': int(recent_mean * 60), 'ci_low': None, 'ci_high': None},
-                '90d': {'clicks': int(recent_mean * 90), 'ci_low': None, 'ci_high': None}
-            }
-    
-    def _empty_result(self, reason: str) -> Dict[str, Any]:
-        """Return empty result structure with error message."""
-        return {
-            'error': reason,
-            'overall_direction': 'unknown',
-            'trend_slope_pct_per_month': 0.0,
-            'change_points': [],
-            'seasonality': {
-                'best_day': None,
-                'worst_day': None,
-                'monthly_cycle': False,
-                'cycle_description': None
-            },
-            'anomalies': [],
-            'forecast': {
-                '30d': {'clicks': None, 'ci_low': None, 'ci_high': None},
-                '60d': {'clicks': None, 'ci_low': None, 'ci_high': None},
-                '90d': {'clicks': None, 'ci_low': None, 'ci_high': None}
-            }
-        }
+    except Exception as e:
+        logger.error(f"Change point detection failed: {e}")
+        return []
 
 
-def analyze_health_trajectory(daily_data: pd.DataFrame) -> Dict[str, Any]:
+def _detect_patterns(residual_data: List[float]) -> Dict[str, Any]:
     """
-    Main entry point for Module 1 analysis.
+    Detect recurring patterns and anomalies using STUMPY or fallback.
+    """
+    if not HAS_STUMPY or residual_data is None:
+        return {
+            "motifs": [],
+            "anomalies": [],
+            "method": "disabled"
+        }
+    
+    try:
+        resid_array = np.array([x for x in residual_data if x is not None and not np.isnan(x)])
+        
+        if len(resid_array) < 50:  # Need sufficient data for pattern detection
+            return {
+                "motifs": [],
+                "anomalies": [],
+                "method": "insufficient_data"
+            }
+        
+        # Compute matrix profile with window of 7 days
+        m = 7
+        if len(resid_array) > m:
+            mp = stumpy.stump(resid_array, m=m)
+            
+            # Find motifs (recurring patterns) - lowest matrix profile values
+            motif_idx = np.argsort(mp[:, 0])[:3]  # Top 3 motifs
+            
+            # Find discords (anomalies) - highest matrix profile values
+            discord_idx = np.argsort(mp[:, 0])[-3:]  # Top 3 anomalies
+            
+            motifs = [{"index": int(idx), "score": float(mp[idx, 0])} for idx in motif_idx]
+            anomalies = [{"index": int(idx), "score": float(mp[idx, 0])} for idx in discord_idx]
+            
+            return {
+                "motifs": motifs,
+                "anomalies": anomalies,
+                "method": "stumpy"
+            }
+        else:
+            return {
+                "motifs": [],
+                "anomalies": [],
+                "method": "insufficient_data"
+            }
+            
+    except Exception as e:
+        logger.error(f"Pattern detection failed: {e}")
+        return {
+            "motifs": [],
+            "anomalies": [],
+            "method": "failed",
+            "error": str(e)
+        }
+
+
+def _forecast_trend(daily_data: pd.DataFrame, decomposition: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+    """
+    Forecast future trend using ARIMA or simple extrapolation.
+    """
+    try:
+        df = daily_data.copy()
+        df = df.sort_values('date')
+        df['clicks'] = df['clicks'].fillna(method='ffill').fillna(method='bfill').fillna(0)
+        
+        clicks_series = df['clicks'].values
+        
+        if len(clicks_series) < 30:
+            return _simple_forecast(clicks_series, decomposition.get('slope', 0))
+        
+        if HAS_ARIMA:
+            try:
+                # Try ARIMA forecasting
+                model = ARIMA(clicks_series, order=(1, 1, 1))
+                fitted = model.fit()
+                
+                # Forecast 30, 60, 90 days
+                forecast_30 = fitted.forecast(steps=30)
+                forecast_60 = fitted.forecast(steps=60)
+                forecast_90 = fitted.forecast(steps=90)
+                
+                # Get confidence intervals (approximate)
+                std_err = np.std(fitted.resid) if hasattr(fitted, 'resid') else np.std(clicks_series) * 0.1
+                
+                return {
+                    "30d": {
+                        "clicks": float(forecast_30[-1]),
+                        "ci_low": float(forecast_30[-1] - 1.96 * std_err),
+                        "ci_high": float(forecast_30[-1] + 1.96 * std_err)
+                    },
+                    "60d": {
+                        "clicks": float(forecast_60[-1]),
+                        "ci_low": float(forecast_60[-1] - 1.96 * std_err * 1.5),
+                        "ci_high": float(forecast_60[-1] + 1.96 * std_err * 1.5)
+                    },
+                    "90d": {
+                        "clicks": float(forecast_90[-1]),
+                        "ci_low": float(forecast_90[-1] - 1.96 * std_err * 2),
+                        "ci_high": float(forecast_90[-1] + 1.96 * std_err * 2)
+                    },
+                    "method": "arima"
+                }
+            except Exception as e:
+                logger.warning(f"ARIMA forecasting failed: {e}, using simple extrapolation")
+                return _simple_forecast(clicks_series, decomposition.get('slope', 0))
+        else:
+            return _simple_forecast(clicks_series, decomposition.get('slope', 0))
+            
+    except Exception as e:
+        logger.error(f"Forecasting failed: {e}")
+        return _simple_forecast([0], 0)
+
+
+def _simple_forecast(clicks_series: np.ndarray, slope: float) -> Dict[str, Dict[str, float]]:
+    """
+    Simple linear extrapolation forecast fallback.
+    """
+    try:
+        current_avg = np.mean(clicks_series[-30:]) if len(clicks_series) >= 30 else np.mean(clicks_series)
+        std_dev = np.std(clicks_series[-30:]) if len(clicks_series) >= 30 else np.std(clicks_series)
+        
+        if std_dev == 0 or np.isnan(std_dev):
+            std_dev = current_avg * 0.1  # Assume 10% variation
+        
+        forecast_30 = current_avg + (slope * 30)
+        forecast_60 = current_avg + (slope * 60)
+        forecast_90 = current_avg + (slope * 90)
+        
+        return {
+            "30d": {
+                "clicks": float(max(0, forecast_30)),
+                "ci_low": float(max(0, forecast_30 - 1.96 * std_dev)),
+                "ci_high": float(forecast_30 + 1.96 * std_dev)
+            },
+            "60d": {
+                "clicks": float(max(0, forecast_60)),
+                "ci_low": float(max(0, forecast_60 - 1.96 * std_dev * 1.5)),
+                "ci_high": float(forecast_60 + 1.96 * std_dev * 1.5)
+            },
+            "90d": {
+                "clicks": float(max(0, forecast_90)),
+                "ci_low": float(max(0, forecast_90 - 1.96 * std_dev * 2)),
+                "ci_high": float(forecast_90 + 1.96 * std_dev * 2)
+            },
+            "method": "linear_extrapolation"
+        }
+    except Exception as e:
+        logger.error(f"Simple forecast failed: {e}")
+        return {
+            "30d": {"clicks": 0, "ci_low": 0, "ci_high": 0},
+            "60d": {"clicks": 0, "ci_low": 0, "ci_high": 0},
+            "90d": {"clicks": 0, "ci_low": 0, "ci_high": 0},
+            "method": "failed"
+        }
+
+
+def analyze_health_trajectory(daily_data: pd.DataFrame) -> dict:
+    """
+    Analyze overall site health and traffic trajectory.
     
     Args:
-        daily_data: DataFrame with GSC daily time series data
-        
+        daily_data: DataFrame with columns ['date', 'clicks', 'impressions']
+                   Date should be datetime, 16 months of daily data
+    
     Returns:
-        Dict containing health and trajectory analysis results
+        Dictionary with health metrics, trend analysis, change points,
+        seasonality patterns, anomalies, and forecast.
+        Always returns valid schema even with partial failures.
     """
-    analyzer = HealthTrajectoryAnalyzer()
-    return analyzer.analyze(daily_data)
+    # Validate input
+    is_valid, error_msg = _validate_input_data(daily_data)
+    
+    if not is_valid:
+        logger.error(f"Invalid input data: {error_msg}")
+        return {
+            "overall_direction": "unknown",
+            "trend_slope_pct_per_month": 0.0,
+            "change_points": [],
+            "seasonality": {
+                "best_day": "Unknown",
+                "worst_day": "Unknown",
+                "monthly_cycle": False,
+                "cycle_description": "Insufficient data for analysis"
+            },
+            "anomalies": [],
+            "forecast": {
+                "30d": {"clicks": 0, "ci_low": 0, "ci_high": 0},
+                "60d": {"clicks": 0, "ci_low": 0, "ci_high": 0},
+                "90d": {"clicks": 0, "ci_low": 0, "ci_high": 0}
+            },
+            "data_quality": {
+                "sufficient_data": False,
+                "days_analyzed": len(daily_data) if daily_data is not None else 0,
+                "error": error_msg
+            }
+        }
+    
+    try:
+        # 1. Decompose time series
+        logger.info("Starting time series decomposition")
+        decomposition = _decompose_time_series(daily_data)
+        
+        # 2. Detect change points
+        logger.info("Detecting change points")
+        change_points = _detect_change_points(
+            decomposition.get('trend_component'),
+            daily_data.sort_values('date')['date']
+        )
+        
+        # 3. Detect patterns and anomalies
+        logger.info("Detecting patterns and anomalies")
+        patterns = _detect_patterns(decomposition.get('residual_component'))
+        
+        # Map anomalies to dates
+        anomalies_with_dates = []
+        if patterns.get('anomalies'):
+            df_sorted = daily_data.sort_values('date')
+            for anomaly in patterns['anomalies']:
+                idx = anomaly['index']
+                if idx < len(df_sorted):
+                    anomalies_with_dates.append({
+                        "date": df_sorted.iloc[idx]['date'].strftime("%Y-%m-%d"),
+                        "type": "discord",
+                        "magnitude": anomaly['score']
+                    })
+        
+        # 4. Forecast future trend
+        logger.info("Generating forecast")
+        forecast = _forecast_trend(daily_data, decomposition)
+        
+        # 5. Determine monthly cycle presence
+        has_monthly_cycle = False
+        cycle_description = "No significant monthly pattern detected"
+        
+        if decomposition.get('seasonal_component') is not None:
+            seasonal = decomposition['seasonal_component']
+            # Simple heuristic: check if there's meaningful variation in seasonal component
+            if len(seasonal) > 30:
+                
