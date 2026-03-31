@@ -328,6 +328,20 @@ Rules:
 - If creating a missing file, implement it fully per the spec
 """
 
+def get_broken_file_contents(problems: list) -> str:
+    """Fetch actual content of broken files from GitHub so agent can fix them."""
+    broken = [p for p in problems if p["type"] == "syntax_error"][:2]  # Max 2 at a time
+    if not broken:
+        return ""
+    
+    result = []
+    for p in broken:
+        path = p["file"]
+        content = get_file_content(path)
+        if content:
+            result.append(f"\n--- BROKEN FILE: {path} ---\n{content}\n--- END {path} ---")
+    return "\n".join(result)
+
 def run_agent(evaluation: dict, spec: str) -> dict:
     """Ask the agent what to do and get back files to write."""
     
@@ -335,6 +349,9 @@ def run_agent(evaluation: dict, spec: str) -> dict:
         f"  [{p['severity'].upper()}] {p['type']}: {p['description']}"
         for p in evaluation["problems"][:10]
     ])
+    
+    # Fetch actual broken file contents so agent fixes the right files
+    broken_files_text = get_broken_file_contents(evaluation["problems"])
     
     message = f"""Current codebase health: {evaluation['score']}/100
 
@@ -345,12 +362,17 @@ Syntax errors: {evaluation['syntax_errors']}
 Missing files: {evaluation['missing_files']}
 Endpoint failures: {evaluation['endpoint_failures']}
 
+IMPORTANT: Fix problems in the EXISTING files listed above.
+Do NOT create new files in different directories.
+All source files live under api/ or web/ — never backend/, src/, or other paths.
+{broken_files_text}
+
 Technical spec (first 30k chars):
 <spec>
 {spec[:30000]}
 </spec>
 
-Decide what single improvement to make. Output JSON only."""
+Fix the broken files above. Output JSON only."""
 
     response = anthropic.messages.create(
         model="claude-sonnet-4-5",
@@ -367,15 +389,22 @@ Decide what single improvement to make. Output JSON only."""
     
     return json.loads(raw.strip())
 
+ALLOWED_DIRS = ("api/", "web/", "cron/", "supabase/", "tests/")
+
 def validate_files(files: list[dict]) -> tuple[bool, list[str]]:
-    """Syntax-check all Python files before committing. Returns (ok, errors)."""
+    """Syntax-check Python files and reject files in wrong directories."""
     errors = []
     for f in files:
-        if f["path"].endswith(".py") and f["path"] != "cron/loop.py":
+        path = f["path"]
+        # Reject files outside allowed directories
+        if not any(path.startswith(d) for d in ALLOWED_DIRS):
+            errors.append(f"{path}: REJECTED — not in allowed directory (api/, web/, cron/, supabase/, tests/)")
+            continue
+        if path.endswith(".py") and path != "cron/loop.py":
             try:
                 ast.parse(f["content"])
             except SyntaxError as e:
-                errors.append(f"{f['path']}: SyntaxError at line {e.lineno}: {e.msg}")
+                errors.append(f"{path}: SyntaxError at line {e.lineno}: {e.msg}")
     return len(errors) == 0, errors
 
 # ── Main Loop ──────────────────────────────────────────────────────────────────
