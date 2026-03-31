@@ -167,7 +167,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 08** — Module 1 (Health & Trajectory) implementation: MSTL decomposition, change point detection (PELT/ruptures), STUMPY matrix profile on residuals. Write to report JSON schema from spec.
 
-- [ ] **DAY 09** — Module 1 tests: unit tests with 16 months of synthetic daily data. Verify output schema matches spec exactly. Verify change points are detected correctly on known test cases.
+- [x] **DAY 09** — Module 1 tests: unit tests with 16 months of synthetic daily data. Verify output schema matches spec exactly. Verify change points are detected correctly on known test cases.
 
 - [ ] **DAY 10** — Module 2 (Page Triage) implementation: per-page trend fitting, PyOD Isolation Forest CTR anomaly detection, GA4 engagement cross-reference, priority scoring.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 8
-**Last Task:** Implemented Module 1 (Health & Trajectory) with MSTL decomposition, PELT change 
+**Current Day:** 9
+**Last Task:** Created comprehensive unit tests for Module 1 with synthetic data validation and
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 09 — Module 1 tests: unit tests with 16 months of synthetic daily
+**Next Task:** DAY 10 — Module 2 (Page Triage) implementation: per-page trend fittin
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
