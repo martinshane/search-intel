@@ -1,587 +1,499 @@
 """
-Pipeline orchestrator for Search Intelligence Report generation.
-Coordinates data ingestion and analysis module execution with comprehensive
-error handling, retry logic, and progress tracking.
+Parallel execution pipeline for analysis modules.
+
+Implements dependency-aware parallel execution:
+- Independent modules run concurrently using asyncio
+- Modules with dependencies wait for their prerequisites
+- Progress tracking and error handling for each module
 """
 
 import asyncio
+import time
+from typing import Dict, List, Callable, Any, Optional
+from dataclasses import dataclass
+from enum import Enum
 import logging
-import traceback
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field
-
-from api.data.gsc_client import GSCClient
-from api.data.ga4_client import GA4Client
-from api.data.dataforseo_client import DataForSEOClient
-from api.analysis.health_trajectory import analyze_health_trajectory
-from api.analysis.page_triage import analyze_page_triage
-from api.analysis.gameplan import generate_gameplan
-from api.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
 
+class ModuleStatus(Enum):
+    """Execution status for a module."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 @dataclass
 class ModuleResult:
-    """Result from a single analysis module."""
+    """Result from a module execution."""
     module_name: str
-    success: bool
+    status: ModuleStatus
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
-    warning: Optional[str] = None
-    execution_time_seconds: float = 0.0
+    duration_seconds: Optional[float] = None
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
 
 
 @dataclass
-class PipelineContext:
-    """Shared context passed between pipeline stages."""
-    report_id: str
-    user_id: str
-    gsc_property: str
-    ga4_property: Optional[str]
-    
-    # Raw data storage
-    gsc_data: Dict[str, Any] = field(default_factory=dict)
-    ga4_data: Dict[str, Any] = field(default_factory=dict)
-    serp_data: Dict[str, Any] = field(default_factory=dict)
-    
-    # Analysis results
-    results: Dict[str, ModuleResult] = field(default_factory=dict)
-    
-    # Tracking
-    start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+class ModuleDefinition:
+    """Definition of an analysis module."""
+    name: str
+    func: Callable
+    dependencies: List[str]
+    timeout_seconds: int = 300  # 5 minutes default
 
 
-class ReportPipeline:
+class PipelineExecutor:
     """
-    Orchestrates the complete report generation pipeline with error handling,
-    retry logic, and graceful degradation.
+    Executes analysis modules in parallel where possible.
+    
+    Analyzes dependency graph and runs independent modules concurrently.
+    Tracks progress and handles failures gracefully.
     """
     
-    def __init__(
-        self,
-        gsc_client: GSCClient,
-        ga4_client: Optional[GA4Client] = None,
-        dataforseo_client: Optional[DataForSEOClient] = None,
-        max_retries: int = 3,
-        retry_delay_seconds: int = 5
-    ):
-        self.gsc_client = gsc_client
-        self.ga4_client = ga4_client
-        self.dataforseo_client = dataforseo_client
-        self.max_retries = max_retries
-        self.retry_delay_seconds = retry_delay_seconds
-        self.supabase = get_supabase_client()
-    
-    async def generate_report(
-        self,
-        report_id: str,
-        user_id: str,
-        gsc_property: str,
-        ga4_property: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def __init__(self, modules: List[ModuleDefinition]):
         """
-        Generate a complete Search Intelligence Report.
+        Initialize pipeline with module definitions.
         
         Args:
-            report_id: UUID of the report record
-            user_id: UUID of the user
-            gsc_property: GSC property URL
-            ga4_property: Optional GA4 property ID
-            
-        Returns:
-            Complete report data structure
+            modules: List of module definitions with dependencies
         """
-        ctx = PipelineContext(
-            report_id=report_id,
-            user_id=user_id,
-            gsc_property=gsc_property,
-            ga4_property=ga4_property
-        )
+        self.modules = {m.name: m for m in modules}
+        self.results: Dict[str, ModuleResult] = {}
+        self.progress_callback: Optional[Callable] = None
         
-        try:
-            # Update status to ingesting
-            await self._update_report_status(report_id, "ingesting", {
-                "stage": "data_ingestion",
-                "progress": 0
-            })
-            
-            # Phase 1: Data Ingestion
-            logger.info(f"Report {report_id}: Starting data ingestion")
-            await self._ingest_data(ctx)
-            
-            # Update status to analyzing
-            await self._update_report_status(report_id, "analyzing", {
-                "stage": "analysis",
-                "progress": 33
-            })
-            
-            # Phase 2: Analysis Modules
-            logger.info(f"Report {report_id}: Starting analysis modules")
-            await self._run_analysis_modules(ctx)
-            
-            # Update status to generating
-            await self._update_report_status(report_id, "generating", {
-                "stage": "report_generation",
-                "progress": 66
-            })
-            
-            # Phase 3: Report Assembly
-            logger.info(f"Report {report_id}: Assembling final report")
-            report_data = await self._assemble_report(ctx)
-            
-            # Mark complete
-            await self._update_report_status(report_id, "complete", {
-                "stage": "complete",
-                "progress": 100
-            }, report_data)
-            
-            logger.info(f"Report {report_id}: Generation complete")
-            return report_data
-            
-        except Exception as e:
-            logger.error(f"Report {report_id}: Fatal error - {str(e)}")
-            logger.error(traceback.format_exc())
-            await self._update_report_status(report_id, "failed", {
-                "stage": "error",
-                "error": str(e),
-                "traceback": traceback.format_exc()
-            })
-            raise
+        # Validate dependency graph
+        self._validate_dependencies()
     
-    async def _ingest_data(self, ctx: PipelineContext) -> None:
-        """
-        Ingest data from GSC, GA4, and optionally DataForSEO.
-        Uses retry logic and graceful degradation.
-        """
-        # GSC data is mandatory
-        gsc_success = await self._retry_with_backoff(
-            self._fetch_gsc_data,
-            ctx,
-            "GSC data ingestion"
-        )
+    def _validate_dependencies(self) -> None:
+        """Validate that all dependencies exist and there are no cycles."""
+        for module in self.modules.values():
+            for dep in module.dependencies:
+                if dep not in self.modules:
+                    raise ValueError(
+                        f"Module '{module.name}' depends on unknown module '{dep}'"
+                    )
         
-        if not gsc_success:
-            raise RuntimeError("Failed to fetch GSC data after all retries")
+        # Check for cycles using DFS
+        visited = set()
+        rec_stack = set()
         
-        # GA4 data is optional but highly valuable
-        if self.ga4_client and ctx.ga4_property:
-            ga4_success = await self._retry_with_backoff(
-                self._fetch_ga4_data,
-                ctx,
-                "GA4 data ingestion"
-            )
+        def has_cycle(name: str) -> bool:
+            visited.add(name)
+            rec_stack.add(name)
             
-            if not ga4_success:
-                ctx.warnings.append(
-                    "GA4 data unavailable - report will continue with GSC data only. "
-                    "Some sections (engagement metrics, conversions) will be limited."
-                )
-                logger.warning(f"Report {ctx.report_id}: GA4 data unavailable, continuing without it")
-        else:
-            ctx.warnings.append(
-                "GA4 not connected - engagement and conversion data unavailable"
-            )
-        
-        # SERP data is optional (Phase 2 feature)
-        if self.dataforseo_client:
-            serp_success = await self._retry_with_backoff(
-                self._fetch_serp_data,
-                ctx,
-                "SERP data ingestion"
-            )
+            for dep in self.modules[name].dependencies:
+                if dep not in visited:
+                    if has_cycle(dep):
+                        return True
+                elif dep in rec_stack:
+                    return True
             
-            if not serp_success:
-                ctx.warnings.append(
-                    "SERP data unavailable - SERP landscape and CTR modeling sections will be limited"
-                )
-                logger.warning(f"Report {ctx.report_id}: SERP data unavailable")
-    
-    async def _fetch_gsc_data(self, ctx: PipelineContext) -> bool:
-        """Fetch all required GSC data."""
-        try:
-            logger.info(f"Report {ctx.report_id}: Fetching GSC data")
-            
-            # Fetch daily time series (16 months)
-            daily_data = await self.gsc_client.get_daily_performance(
-                ctx.gsc_property,
-                months_back=16
-            )
-            
-            if not daily_data or daily_data.empty:
-                logger.error(f"Report {ctx.report_id}: No GSC daily data returned")
-                return False
-            
-            ctx.gsc_data['daily'] = daily_data
-            logger.info(f"Report {ctx.report_id}: Fetched {len(daily_data)} days of GSC data")
-            
-            # Fetch per-page data
-            page_data = await self.gsc_client.get_page_performance(
-                ctx.gsc_property,
-                months_back=16
-            )
-            
-            if not page_data or page_data.empty:
-                logger.warning(f"Report {ctx.report_id}: No GSC page data returned")
-                ctx.gsc_data['pages'] = None
-            else:
-                ctx.gsc_data['pages'] = page_data
-                logger.info(f"Report {ctx.report_id}: Fetched {len(page_data)} pages")
-            
-            # Fetch per-query data
-            query_data = await self.gsc_client.get_query_performance(
-                ctx.gsc_property,
-                months_back=16
-            )
-            
-            if not query_data or query_data.empty:
-                logger.warning(f"Report {ctx.report_id}: No GSC query data returned")
-                ctx.gsc_data['queries'] = None
-            else:
-                ctx.gsc_data['queries'] = query_data
-                logger.info(f"Report {ctx.report_id}: Fetched {len(query_data)} queries")
-            
-            # Fetch page-date time series for per-page trends
-            try:
-                page_date_data = await self.gsc_client.get_page_date_performance(
-                    ctx.gsc_property,
-                    months_back=6  # 6 months is sufficient for trend analysis
-                )
-                
-                if page_date_data and not page_date_data.empty:
-                    ctx.gsc_data['page_date'] = page_date_data
-                    logger.info(f"Report {ctx.report_id}: Fetched page-date time series")
-                else:
-                    ctx.gsc_data['page_date'] = None
-                    ctx.warnings.append("Page-level time series unavailable - per-page trend analysis will be limited")
-            except Exception as e:
-                logger.warning(f"Report {ctx.report_id}: Could not fetch page-date data: {e}")
-                ctx.gsc_data['page_date'] = None
-                ctx.warnings.append("Page-level time series unavailable - per-page trend analysis will be limited")
-            
-            # Fetch query-page mapping
-            try:
-                query_page_data = await self.gsc_client.get_query_page_performance(
-                    ctx.gsc_property,
-                    months_back=3  # Last 3 months for current state
-                )
-                
-                if query_page_data and not query_page_data.empty:
-                    ctx.gsc_data['query_page'] = query_page_data
-                    logger.info(f"Report {ctx.report_id}: Fetched query-page mapping")
-                else:
-                    ctx.gsc_data['query_page'] = None
-                    ctx.warnings.append("Query-page mapping unavailable - cannibalization detection will be limited")
-            except Exception as e:
-                logger.warning(f"Report {ctx.report_id}: Could not fetch query-page data: {e}")
-                ctx.gsc_data['query_page'] = None
-                ctx.warnings.append("Query-page mapping unavailable - cannibalization detection will be limited")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Report {ctx.report_id}: GSC data fetch failed: {e}")
-            logger.error(traceback.format_exc())
+            rec_stack.remove(name)
             return False
-    
-    async def _fetch_ga4_data(self, ctx: PipelineContext) -> bool:
-        """Fetch all required GA4 data."""
-        try:
-            logger.info(f"Report {ctx.report_id}: Fetching GA4 data")
-            
-            if not self.ga4_client or not ctx.ga4_property:
-                return False
-            
-            # Fetch landing page engagement
-            landing_pages = await self.ga4_client.get_landing_page_engagement(
-                ctx.ga4_property,
-                months_back=6
-            )
-            
-            if not landing_pages or landing_pages.empty:
-                logger.warning(f"Report {ctx.report_id}: No GA4 landing page data")
-                ctx.ga4_data['landing_pages'] = None
-            else:
-                ctx.ga4_data['landing_pages'] = landing_pages
-                logger.info(f"Report {ctx.report_id}: Fetched GA4 data for {len(landing_pages)} landing pages")
-            
-            # Fetch conversion data
-            try:
-                conversions = await self.ga4_client.get_conversions(
-                    ctx.ga4_property,
-                    months_back=6
-                )
-                
-                if conversions and not conversions.empty:
-                    ctx.ga4_data['conversions'] = conversions
-                    logger.info(f"Report {ctx.report_id}: Fetched GA4 conversion data")
-                else:
-                    ctx.ga4_data['conversions'] = None
-                    logger.info(f"Report {ctx.report_id}: No GA4 conversion data available")
-            except Exception as e:
-                logger.warning(f"Report {ctx.report_id}: Could not fetch conversion data: {e}")
-                ctx.ga4_data['conversions'] = None
-            
-            # Fetch traffic sources
-            try:
-                sources = await self.ga4_client.get_traffic_sources(
-                    ctx.ga4_property,
-                    months_back=6
-                )
-                
-                if sources and not sources.empty:
-                    ctx.ga4_data['sources'] = sources
-                    logger.info(f"Report {ctx.report_id}: Fetched GA4 traffic sources")
-                else:
-                    ctx.ga4_data['sources'] = None
-            except Exception as e:
-                logger.warning(f"Report {ctx.report_id}: Could not fetch traffic sources: {e}")
-                ctx.ga4_data['sources'] = None
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Report {ctx.report_id}: GA4 data fetch failed: {e}")
-            logger.error(traceback.format_exc())
-            return False
-    
-    async def _fetch_serp_data(self, ctx: PipelineContext) -> bool:
-        """Fetch SERP data for top keywords (Phase 2 feature)."""
-        try:
-            if not self.dataforseo_client:
-                return False
-            
-            logger.info(f"Report {ctx.report_id}: Fetching SERP data")
-            
-            # Get top keywords from GSC query data
-            if 'queries' not in ctx.gsc_data or ctx.gsc_data['queries'] is None:
-                logger.warning(f"Report {ctx.report_id}: No query data for SERP lookup")
-                return False
-            
-            queries_df = ctx.gsc_data['queries']
-            
-            # Filter and sort to get top non-branded keywords
-            # TODO: Implement brand filtering logic
-            top_keywords = queries_df.nlargest(50, 'impressions')['query'].tolist()
-            
-            if not top_keywords:
-                logger.warning(f"Report {ctx.report_id}: No keywords for SERP lookup")
-                return False
-            
-            # Fetch SERP data for top keywords
-            serp_results = await self.dataforseo_client.get_serp_data(
-                keywords=top_keywords[:30],  # Limit to 30 for cost control
-                location="United States"  # TODO: Make configurable
-            )
-            
-            if not serp_results:
-                logger.warning(f"Report {ctx.report_id}: No SERP data returned")
-                return False
-            
-            ctx.serp_data['keywords'] = serp_results
-            logger.info(f"Report {ctx.report_id}: Fetched SERP data for {len(serp_results)} keywords")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Report {ctx.report_id}: SERP data fetch failed: {e}")
-            logger.error(traceback.format_exc())
-            return False
-    
-    async def _run_analysis_modules(self, ctx: PipelineContext) -> None:
-        """
-        Run all analysis modules in sequence.
-        Each module is independent and failures are isolated.
-        """
-        modules = [
-            ("health_trajectory", self._run_health_trajectory),
-            ("page_triage", self._run_page_triage),
-            ("gameplan", self._run_gameplan),
-        ]
         
-        for i, (module_name, module_func) in enumerate(modules):
-            progress = 33 + int((i / len(modules)) * 33)
+        for module_name in self.modules:
+            if module_name not in visited:
+                if has_cycle(module_name):
+                    raise ValueError("Circular dependency detected in module graph")
+    
+    def set_progress_callback(self, callback: Callable[[str, ModuleStatus, Optional[float]], None]) -> None:
+        """
+        Set callback for progress updates.
+        
+        Args:
+            callback: Function called with (module_name, status, progress_pct)
+        """
+        self.progress_callback = callback
+    
+    def _update_progress(self, module_name: str, status: ModuleStatus, progress_pct: Optional[float] = None) -> None:
+        """Update progress via callback if set."""
+        if self.progress_callback:
+            try:
+                self.progress_callback(module_name, status, progress_pct)
+            except Exception as e:
+                logger.warning(f"Progress callback failed: {e}")
+    
+    def _get_ready_modules(self) -> List[str]:
+        """
+        Get list of modules ready to execute.
+        
+        A module is ready if:
+        - It hasn't been started yet
+        - All its dependencies are complete
+        """
+        ready = []
+        
+        for name, module in self.modules.items():
+            # Skip if already processed
+            if name in self.results:
+                continue
             
-            await self._update_report_status(ctx.report_id, "analyzing", {
-                "stage": "analysis",
-                "progress": progress,
-                "current_module": module_name
-            })
-            
-            result = await self._run_module_with_error_handling(
-                module_name,
-                module_func,
-                ctx
+            # Check if all dependencies are complete
+            deps_complete = all(
+                dep in self.results and 
+                self.results[dep].status == ModuleStatus.COMPLETE
+                for dep in module.dependencies
             )
             
-            ctx.results[module_name] = result
-            
-            if result.error:
-                ctx.errors.append(f"{module_name}: {result.error}")
-            
-            if result.warning:
-                ctx.warnings.append(f"{module_name}: {result.warning}")
+            if deps_complete:
+                ready.append(name)
+        
+        return ready
     
-    async def _run_module_with_error_handling(
+    async def _execute_module(
         self,
         module_name: str,
-        module_func: Any,
-        ctx: PipelineContext
+        shared_data: Dict[str, Any]
     ) -> ModuleResult:
         """
-        Run a single analysis module with comprehensive error handling.
-        """
-        start_time = datetime.now(timezone.utc)
-        
-        try:
-            logger.info(f"Report {ctx.report_id}: Running module {module_name}")
-            
-            result_data = await module_func(ctx)
-            
-            execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-            
-            logger.info(f"Report {ctx.report_id}: Module {module_name} completed in {execution_time:.2f}s")
-            
-            return ModuleResult(
-                module_name=module_name,
-                success=True,
-                data=result_data,
-                execution_time_seconds=execution_time
-            )
-            
-        except Exception as e:
-            execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-            
-            logger.error(f"Report {ctx.report_id}: Module {module_name} failed: {e}")
-            logger.error(traceback.format_exc())
-            
-            return ModuleResult(
-                module_name=module_name,
-                success=False,
-                error=str(e),
-                execution_time_seconds=execution_time
-            )
-    
-    async def _run_health_trajectory(self, ctx: PipelineContext) -> Dict[str, Any]:
-        """Run Module 1: Health & Trajectory Analysis."""
-        if 'daily' not in ctx.gsc_data or ctx.gsc_data['daily'] is None:
-            raise ValueError("No daily data available for health trajectory analysis")
-        
-        return await analyze_health_trajectory(ctx.gsc_data['daily'])
-    
-    async def _run_page_triage(self, ctx: PipelineContext) -> Dict[str, Any]:
-        """Run Module 2: Page-Level Triage."""
-        page_daily = ctx.gsc_data.get('page_date')
-        page_summary = ctx.gsc_data.get('pages')
-        ga4_landing = ctx.ga4_data.get('landing_pages')
-        
-        if page_summary is None:
-            raise ValueError("No page data available for triage analysis")
-        
-        # Page-daily data is optional but valuable
-        if page_daily is None:
-            ctx.warnings.append(
-                "Page-level time series unavailable - trend analysis will be limited to summary data"
-            )
-        
-        return await analyze_page_triage(
-            page_daily_data=page_daily,
-            page_summary_data=page_summary,
-            ga4_landing_data=ga4_landing
-        )
-    
-    async def _run_gameplan(self, ctx: PipelineContext) -> Dict[str, Any]:
-        """Run Module 5: The Gameplan (synthesis of prior modules)."""
-        # Ensure required modules completed successfully
-        health = ctx.results.get('health_trajectory')
-        triage = ctx.results.get('page_triage')
-        
-        if not health or not health.success or not health.data:
-            raise ValueError("Health trajectory module did not complete successfully")
-        
-        if not triage or not triage.success or not triage.data:
-            raise ValueError("Page triage module did not complete successfully")
-        
-        # SERP and content modules are optional (Phase 2)
-        serp_data = None
-        content_data = None
-        
-        return await generate_gameplan(
-            health_data=health.data,
-            triage_data=triage.data,
-            serp_data=serp_data,
-            content_data=content_data
-        )
-    
-    async def _assemble_report(self, ctx: PipelineContext) -> Dict[str, Any]:
-        """
-        Assemble the final report structure from all module results.
-        """
-        execution_time = (datetime.now(timezone.utc) - ctx.start_time).total_seconds()
-        
-        report = {
-            "report_id": ctx.report_id,
-            "user_id": ctx.user_id,
-            "gsc_property": ctx.gsc_property,
-            "ga4_property": ctx.ga4_property,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "execution_time_seconds": execution_time,
-            "data_sources": {
-                "gsc": True,
-                "ga4": bool(ctx.ga4_data and ctx.ga4_data.get('landing_pages') is not None),
-                "serp": bool(ctx.serp_data and ctx.serp_data.get('keywords')),
-            },
-            "warnings": ctx.warnings,
-            "errors": ctx.errors,
-            "modules": {}
-        }
-        
-        # Add each module's results
-        for module_name, result in ctx.results.items():
-            report["modules"][module_name] = {
-                "success": result.success,
-                "execution_time_seconds": result.execution_time_seconds,
-                "data": result.data if result.success else None,
-                "error": result.error,
-                "warning": result.warning
-            }
-        
-        # Calculate completeness score
-        total_modules = len(ctx.results)
-        successful_modules = sum(1 for r in ctx.results.values() if r.success)
-        report["completeness_score"] = successful_modules / total_modules if total_modules > 0 else 0
-        
-        return report
-    
-    async def _retry_with_backoff(
-        self,
-        func: Any,
-        ctx: PipelineContext,
-        operation_name: str
-    ) -> bool:
-        """
-        Retry a function with exponential backoff.
+        Execute a single module.
         
         Args:
-            func: Async function to retry
-            ctx: Pipeline context
-            operation_name: Human-readable name for logging
-            
+            module_name: Name of module to execute
+            shared_data: Shared data context passed to all modules
+        
         Returns:
-            True if operation succeeded, False if all retries exhausted
+            ModuleResult with execution outcome
         """
-        for attempt in range(self.max_retries):
-            try:
-                result = await func(ctx)
-                if result:
-                    return True
-                
-                logger.warning(
-                    f"Report {ctx.report_id}: {operation_name} returned False, "
-                    f"attempt {attempt + 1}/{self.max_retries}"
-                )
-                
-            except Exception as
+        module = self.modules[module_name]
+        result = ModuleResult(
+            module_name=module_name,
+            status=ModuleStatus.RUNNING,
+            started_at=time.time()
+        )
+        
+        logger.info(f"Starting module: {module_name}")
+        self._update_progress(module_name, ModuleStatus.RUNNING, 0.0)
+        
+        try:
+            # Gather dependency results
+            dep_results = {
+                dep: self.results[dep].data
+                for dep in module.dependencies
+                if dep in self.results and self.results[dep].data is not None
+            }
+            
+            # Execute module function with timeout
+            module_data = await asyncio.wait_for(
+                self._run_module_func(module.func, shared_data, dep_results),
+                timeout=module.timeout_seconds
+            )
+            
+            result.status = ModuleStatus.COMPLETE
+            result.data = module_data
+            result.completed_at = time.time()
+            result.duration_seconds = result.completed_at - result.started_at
+            
+            logger.info(
+                f"Completed module: {module_name} "
+                f"in {result.duration_seconds:.2f}s"
+            )
+            self._update_progress(module_name, ModuleStatus.COMPLETE, 100.0)
+            
+        except asyncio.TimeoutError:
+            result.status = ModuleStatus.FAILED
+            result.error = f"Module timed out after {module.timeout_seconds}s"
+            result.completed_at = time.time()
+            result.duration_seconds = result.completed_at - result.started_at
+            logger.error(f"Module {module_name} timed out")
+            self._update_progress(module_name, ModuleStatus.FAILED, None)
+            
+        except Exception as e:
+            result.status = ModuleStatus.FAILED
+            result.error = str(e)
+            result.completed_at = time.time()
+            result.duration_seconds = result.completed_at - result.started_at
+            logger.error(f"Module {module_name} failed: {e}", exc_info=True)
+            self._update_progress(module_name, ModuleStatus.FAILED, None)
+        
+        return result
+    
+    async def _run_module_func(
+        self,
+        func: Callable,
+        shared_data: Dict[str, Any],
+        dep_results: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Run module function, handling both sync and async functions.
+        
+        Args:
+            func: Module function to execute
+            shared_data: Shared data context
+            dep_results: Results from dependency modules
+        
+        Returns:
+            Module result data
+        """
+        # Check if function is async
+        if asyncio.iscoroutinefunction(func):
+            return await func(shared_data, dep_results)
+        else:
+            # Run sync function in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None,
+                func,
+                shared_data,
+                dep_results
+            )
+    
+    async def execute(
+        self,
+        shared_data: Dict[str, Any],
+        max_concurrent: int = 4
+    ) -> Dict[str, ModuleResult]:
+        """
+        Execute all modules with dependency-aware parallelization.
+        
+        Args:
+            shared_data: Shared data context available to all modules
+            max_concurrent: Maximum number of modules to run concurrently
+        
+        Returns:
+            Dict mapping module names to their results
+        """
+        start_time = time.time()
+        logger.info(
+            f"Starting pipeline execution with {len(self.modules)} modules, "
+            f"max_concurrent={max_concurrent}"
+        )
+        
+        # Semaphore to limit concurrent executions
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def run_with_semaphore(module_name: str) -> ModuleResult:
+            async with semaphore:
+                return await self._execute_module(module_name, shared_data)
+        
+        # Execute modules in waves based on dependencies
+        while len(self.results) < len(self.modules):
+            ready_modules = self._get_ready_modules()
+            
+            if not ready_modules:
+                # Check if we're stuck due to failures
+                incomplete = set(self.modules.keys()) - set(self.results.keys())
+                if incomplete:
+                    # Mark remaining modules as skipped
+                    for module_name in incomplete:
+                        self.results[module_name] = ModuleResult(
+                            module_name=module_name,
+                            status=ModuleStatus.SKIPPED,
+                            error="Skipped due to dependency failures"
+                        )
+                        logger.warning(f"Skipping module {module_name} due to dependency failures")
+                break
+            
+            # Execute ready modules concurrently
+            tasks = [
+                run_with_semaphore(module_name)
+                for module_name in ready_modules
+            ]
+            
+            # Wait for this wave to complete
+            wave_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Store results
+            for result in wave_results:
+                if isinstance(result, Exception):
+                    logger.error(f"Unexpected error in module execution: {result}")
+                    continue
+                self.results[result.module_name] = result
+        
+        total_duration = time.time() - start_time
+        
+        # Log summary
+        complete_count = sum(
+            1 for r in self.results.values()
+            if r.status == ModuleStatus.COMPLETE
+        )
+        failed_count = sum(
+            1 for r in self.results.values()
+            if r.status == ModuleStatus.FAILED
+        )
+        skipped_count = sum(
+            1 for r in self.results.values()
+            if r.status == ModuleStatus.SKIPPED
+        )
+        
+        logger.info(
+            f"Pipeline execution complete in {total_duration:.2f}s: "
+            f"{complete_count} complete, {failed_count} failed, {skipped_count} skipped"
+        )
+        
+        return self.results
+    
+    def get_execution_graph(self) -> Dict[str, Any]:
+        """
+        Get execution graph for visualization.
+        
+        Returns:
+            Graph structure with nodes and edges
+        """
+        nodes = []
+        edges = []
+        
+        for name, module in self.modules.items():
+            result = self.results.get(name)
+            
+            node = {
+                "id": name,
+                "status": result.status.value if result else "pending",
+                "duration": result.duration_seconds if result else None,
+            }
+            nodes.append(node)
+            
+            for dep in module.dependencies:
+                edges.append({
+                    "from": dep,
+                    "to": name
+                })
+        
+        return {
+            "nodes": nodes,
+            "edges": edges
+        }
+
+
+def create_standard_pipeline() -> PipelineExecutor:
+    """
+    Create the standard 12-module analysis pipeline.
+    
+    Returns:
+        Configured PipelineExecutor
+    """
+    from . import modules
+    
+    module_defs = [
+        # Module 1: Health & Trajectory (no dependencies)
+        ModuleDefinition(
+            name="health_trajectory",
+            func=modules.analyze_health_trajectory,
+            dependencies=[],
+            timeout_seconds=180
+        ),
+        
+        # Module 2: Page Triage (no dependencies)
+        ModuleDefinition(
+            name="page_triage",
+            func=modules.analyze_page_triage,
+            dependencies=[],
+            timeout_seconds=240
+        ),
+        
+        # Module 6: Algorithm Impact (depends on Module 1 for change points)
+        ModuleDefinition(
+            name="algorithm_impact",
+            func=modules.analyze_algorithm_impacts,
+            dependencies=["health_trajectory"],
+            timeout_seconds=120
+        ),
+        
+        # Module 10: Branded Split (no dependencies)
+        ModuleDefinition(
+            name="branded_split",
+            func=modules.analyze_branded_split,
+            dependencies=[],
+            timeout_seconds=150
+        ),
+        
+        # Module 3: SERP Landscape (no dependencies - uses SERP data)
+        ModuleDefinition(
+            name="serp_landscape",
+            func=modules.analyze_serp_landscape,
+            dependencies=[],
+            timeout_seconds=180
+        ),
+        
+        # Module 4: Content Intelligence (depends on Module 2)
+        ModuleDefinition(
+            name="content_intelligence",
+            func=modules.analyze_content_intelligence,
+            dependencies=["page_triage"],
+            timeout_seconds=200
+        ),
+        
+        # Module 7: Intent Migration (no dependencies)
+        ModuleDefinition(
+            name="intent_migration",
+            func=modules.analyze_intent_migration,
+            dependencies=[],
+            timeout_seconds=240  # LLM calls can be slow
+        ),
+        
+        # Module 8: CTR Modeling (depends on Module 3 for SERP context)
+        ModuleDefinition(
+            name="ctr_modeling",
+            func=modules.model_contextual_ctr,
+            dependencies=["serp_landscape"],
+            timeout_seconds=180
+        ),
+        
+        # Module 9: Site Architecture (no dependencies)
+        ModuleDefinition(
+            name="site_architecture",
+            func=modules.analyze_site_architecture,
+            dependencies=[],
+            timeout_seconds=300  # Graph analysis can be slow
+        ),
+        
+        # Module 11: Competitive Radar (depends on Module 3)
+        ModuleDefinition(
+            name="competitive_radar",
+            func=modules.analyze_competitive_threats,
+            dependencies=["serp_landscape"],
+            timeout_seconds=120
+        ),
+        
+        # Module 12: Revenue Attribution (depends on Module 2, 8)
+        ModuleDefinition(
+            name="revenue_attribution",
+            func=modules.estimate_revenue_attribution,
+            dependencies=["page_triage", "ctr_modeling"],
+            timeout_seconds=150
+        ),
+        
+        # Module 5: Gameplan (depends on modules 1-4, plus others)
+        ModuleDefinition(
+            name="gameplan",
+            func=modules.generate_gameplan,
+            dependencies=[
+                "health_trajectory",
+                "page_triage",
+                "serp_landscape",
+                "content_intelligence"
+            ],
+            timeout_seconds=300  # LLM synthesis can be slow
+        ),
+    ]
+    
+    return PipelineExecutor(module_defs)
+
+
+async def execute_analysis_pipeline(
+    shared_data: Dict[str, Any],
+    progress_callback: Optional[Callable] = None,
+    max_concurrent: int = 4
+) -> Dict[str, ModuleResult]:
+    """
+    Execute the complete analysis pipeline.
+    
+    Args:
+        shared_data: Shared data context with ingested data
+        progress_callback: Optional callback for progress updates
+        max_concurrent: Maximum concurrent module executions
+    
+    Returns:
+        Dict mapping module names to results
+    """
+    pipeline = create_standard_pipeline()
+    
+    if progress_callback:
+        pipeline.set_progress_callback(progress_callback)
+    
+    return await pipeline.execute(shared_data, max_concurrent=max_concurrent)
