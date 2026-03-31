@@ -169,7 +169,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 09** — Module 1 tests: unit tests with 16 months of synthetic daily data. Verify output schema matches spec exactly. Verify change points are detected correctly on known test cases.
 
-- [ ] **DAY 10** — Module 2 (Page Triage) implementation: per-page trend fitting, PyOD Isolation Forest CTR anomaly detection, GA4 engagement cross-reference, priority scoring.
+- [x] **DAY 10** — Module 2 (Page Triage) implementation: per-page trend fitting, PyOD Isolation Forest CTR anomaly detection, GA4 engagement cross-reference, priority scoring.
 
 - [ ] **DAY 11** — Module 2 tests + Module 1→2 integration: verify Module 2 reads Module 1 output correctly. End-to-end pipeline test: GSC data → Module 1 → Module 2 → structured JSON output.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 9
-**Last Task:** Created comprehensive unit tests for Module 1 with synthetic data validation and
+**Current Day:** 10
+**Last Task:** Module 2 (Page Triage) implementation with per-page trend fitting, PyOD Isolatio
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 10 — Module 2 (Page Triage) implementation: per-page trend fittin
+**Next Task:** DAY 11 — Module 2 tests + Module 1→2 integration: verify Module 2 rea
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
