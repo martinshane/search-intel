@@ -183,7 +183,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 15** — Report page scaffold: `/web/pages/report/[id].tsx`. Collapsible card component. TL;DR + visualization placeholder + detail table + actions layout per section. No real data yet — use hardcoded mock report JSON.
 
-- [ ] **DAY 16** — Health & Trajectory visualization: line chart with trend + forecast + confidence interval bands + change point markers. Use Recharts. Wire to real Module 1 output.
+- [x] **DAY 16** — Health & Trajectory visualization: line chart with trend + forecast + confidence interval bands + change point markers. Use Recharts. Wire to real Module 1 output.
 
 - [ ] **DAY 17** — Page Triage visualization: scatter plot (current clicks vs decay rate), color-coded by bucket (growing/stable/decaying/critical). Sortable detail table below. Wire to real Module 2 output.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 15
-**Last Task:** Created report page scaffold with collapsible card component, mock report viewer
+**Current Day:** 16
+**Last Task:** Built Health & Trajectory visualization component with line chart showing histor
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 16 — Health & Trajectory visualization: line chart with trend + f
+**Next Task:** DAY 17 — Page Triage visualization: scatter plot (current clicks vs d
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
