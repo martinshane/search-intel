@@ -1,6 +1,9 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
+import Link from 'next/link';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 interface Property {
   id: string;
@@ -8,215 +11,87 @@ interface Property {
   type: 'gsc' | 'ga4';
 }
 
-interface ConnectionStatus {
-  gsc: boolean;
-  ga4: boolean;
+interface User {
+  email: string;
+  gsc_connected: boolean;
+  ga4_connected: boolean;
+  gsc_properties: Property[];
+  ga4_properties: Property[];
 }
 
-export default function Home() {
+export default function HomePage() {
   const router = useRouter();
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
-    gsc: false,
-    ga4: false,
-  });
-  const [gscProperties, setGscProperties] = useState<Property[]>([]);
-  const [ga4Properties, setGa4Properties] = useState<Property[]>([]);
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedGscProperty, setSelectedGscProperty] = useState<string>('');
   const [selectedGa4Property, setSelectedGa4Property] = useState<string>('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [error, setError] = useState<string>('');
+  const [generatingReport, setGeneratingReport] = useState(false);
 
-  // Check auth status and load properties on mount
   useEffect(() => {
     checkAuthStatus();
   }, []);
 
-  // Handle OAuth callback
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const code = urlParams.get('code');
-    const state = urlParams.get('state');
-    const error = urlParams.get('error');
-
-    if (error) {
-      setError(`OAuth error: ${error}`);
-      setIsLoading(false);
-      return;
-    }
-
-    if (code && state) {
-      handleOAuthCallback(code, state);
-    }
-  }, []);
-
   const checkAuthStatus = async () => {
     try {
-      const response = await fetch('/api/auth/status', {
+      const response = await fetch(`${API_URL}/api/auth/status`, {
         credentials: 'include',
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to check auth status');
-      }
-
-      const data = await response.json();
-      setConnectionStatus({
-        gsc: data.gsc_connected,
-        ga4: data.ga4_connected,
-      });
-
-      if (data.gsc_connected) {
-        await loadGscProperties();
-      }
-      if (data.ga4_connected) {
-        await loadGa4Properties();
+      
+      if (response.ok) {
+        const data = await response.json();
+        setUser(data);
+        
+        // Auto-select first property if only one exists
+        if (data.gsc_properties?.length === 1) {
+          setSelectedGscProperty(data.gsc_properties[0].id);
+        }
+        if (data.ga4_properties?.length === 1) {
+          setSelectedGa4Property(data.ga4_properties[0].id);
+        }
       }
     } catch (err) {
-      console.error('Error checking auth status:', err);
-      setError('Failed to check connection status');
+      console.error('Auth check failed:', err);
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   };
 
-  const handleOAuthCallback = async (code: string, state: string) => {
+  const handleGscConnect = async () => {
     try {
-      setIsLoading(true);
-      const response = await fetch('/api/auth/callback', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({ code, state }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'OAuth callback failed');
-      }
-
-      // Clean up URL
-      window.history.replaceState({}, document.title, '/');
-
-      // Refresh auth status
-      await checkAuthStatus();
-    } catch (err) {
-      console.error('OAuth callback error:', err);
-      setError(err instanceof Error ? err.message : 'OAuth authentication failed');
-      setIsLoading(false);
-    }
-  };
-
-  const loadGscProperties = async () => {
-    try {
-      const response = await fetch('/api/properties/gsc', {
+      const response = await fetch(`${API_URL}/api/auth/gsc/authorize`, {
         credentials: 'include',
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to load GSC properties');
-      }
-
       const data = await response.json();
-      setGscProperties(
-        data.properties.map((prop: any) => ({
-          id: prop.siteUrl,
-          name: prop.siteUrl,
-          type: 'gsc' as const,
-        }))
-      );
+      window.location.href = data.authorization_url;
     } catch (err) {
-      console.error('Error loading GSC properties:', err);
-      setError('Failed to load Search Console properties');
+      setError('Failed to initiate GSC connection');
     }
   };
 
-  const loadGa4Properties = async () => {
+  const handleGa4Connect = async () => {
     try {
-      const response = await fetch('/api/properties/ga4', {
+      const response = await fetch(`${API_URL}/api/auth/ga4/authorize`, {
         credentials: 'include',
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to load GA4 properties');
-      }
-
       const data = await response.json();
-      setGa4Properties(
-        data.properties.map((prop: any) => ({
-          id: prop.property,
-          name: prop.displayName,
-          type: 'ga4' as const,
-        }))
-      );
+      window.location.href = data.authorization_url;
     } catch (err) {
-      console.error('Error loading GA4 properties:', err);
-      setError('Failed to load GA4 properties');
+      setError('Failed to initiate GA4 connection');
     }
   };
 
-  const initiateOAuth = async (provider: 'gsc' | 'ga4') => {
-    try {
-      setError('');
-      const response = await fetch(`/api/auth/authorize/${provider}`, {
-        credentials: 'include',
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to initiate ${provider.toUpperCase()} OAuth`);
-      }
-
-      const data = await response.json();
-      window.location.href = data.auth_url;
-    } catch (err) {
-      console.error('OAuth initiation error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to start OAuth flow');
-    }
-  };
-
-  const disconnectProvider = async (provider: 'gsc' | 'ga4') => {
-    try {
-      setError('');
-      const response = await fetch(`/api/auth/disconnect/${provider}`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to disconnect ${provider.toUpperCase()}`);
-      }
-
-      setConnectionStatus({
-        ...connectionStatus,
-        [provider]: false,
-      });
-
-      if (provider === 'gsc') {
-        setGscProperties([]);
-        setSelectedGscProperty('');
-      } else {
-        setGa4Properties([]);
-        setSelectedGa4Property('');
-      }
-    } catch (err) {
-      console.error('Disconnect error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to disconnect');
-    }
-  };
-
-  const generateReport = async () => {
+  const handleGenerateReport = async () => {
     if (!selectedGscProperty) {
-      setError('Please select a Search Console property');
+      setError('Please select a Google Search Console property');
       return;
     }
 
-    try {
-      setError('');
-      setIsGenerating(true);
+    setGeneratingReport(true);
+    setError(null);
 
-      const response = await fetch('/api/reports/generate', {
+    try {
+      const response = await fetch(`${API_URL}/api/reports/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -234,23 +109,17 @@ export default function Home() {
       }
 
       const data = await response.json();
-      
-      // Redirect to report page
-      router.push(`/report/${data.report_id}`);
-    } catch (err) {
-      console.error('Report generation error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to generate report');
-      setIsGenerating(false);
+      router.push(`/reports/${data.report_id}`);
+    } catch (err: any) {
+      setError(err.message || 'Failed to generate report');
+      setGeneratingReport(false);
     }
   };
 
-  if (isLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
-          <p className="mt-4 text-slate-300">Loading...</p>
-        </div>
+        <div className="text-white text-lg">Loading...</div>
       </div>
     );
   }
@@ -258,251 +127,212 @@ export default function Home() {
   return (
     <>
       <Head>
-        <title>Search Intelligence Report - Free SEO Analysis Tool</title>
-        <meta name="description" content="Generate a comprehensive Search Intelligence Report combining GSC, GA4, and SERP data with advanced statistical analysis" />
+        <title>Search Intelligence Report — Free SEO Analysis Tool</title>
+        <meta name="description" content="Generate a comprehensive SEO intelligence report for your website. Connect Google Search Console and GA4 for deep insights and actionable recommendations." />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       </Head>
 
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-        {/* Hero Section */}
-        <div className="container mx-auto px-4 py-16">
-          <div className="max-w-4xl mx-auto text-center mb-16">
-            <h1 className="text-5xl font-bold text-white mb-6">
-              Search Intelligence Report
-            </h1>
-            <p className="text-xl text-slate-300 mb-4">
-              Connect your Google Search Console and GA4 to generate a comprehensive analysis report
-            </p>
-            <p className="text-lg text-slate-400">
-              12 integrated analysis modules • Statistical modeling • Predictive forecasting • Prioritized action plan
-            </p>
+        {/* Header */}
+        <header className="border-b border-slate-700 bg-slate-900/50 backdrop-blur-sm">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <h1 className="text-xl sm:text-2xl font-bold text-white">
+                Search Intelligence Report
+              </h1>
+              {user && (
+                <div className="flex items-center gap-3 text-sm sm:text-base text-slate-300">
+                  <span className="truncate max-w-[200px]">{user.email}</span>
+                  <Link 
+                    href="/dashboard"
+                    className="px-3 py-1.5 sm:px-4 sm:py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    Dashboard
+                  </Link>
+                </div>
+              )}
+            </div>
           </div>
+        </header>
 
-          {/* Error Display */}
-          {error && (
-            <div className="max-w-2xl mx-auto mb-8 bg-red-900/30 border border-red-500 rounded-lg p-4">
-              <p className="text-red-300">{error}</p>
+        {/* Main Content */}
+        <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12 lg:py-16">
+          {!user ? (
+            /* Landing / Hero Section */
+            <div className="text-center mb-12 sm:mb-16">
+              <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold text-white mb-4 sm:mb-6 leading-tight px-2">
+                Unlock Deep SEO Intelligence
+                <br className="hidden sm:block" />
+                <span className="bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                  {' '}In Minutes, Not Weeks
+                </span>
+              </h2>
+              <p className="text-lg sm:text-xl text-slate-300 mb-8 sm:mb-12 max-w-2xl mx-auto px-4 leading-relaxed">
+                Connect your Google Search Console and GA4 to generate a comprehensive analysis report with algorithmic insights, competitive intelligence, and prioritized action plans.
+              </p>
+
+              {/* Feature Grid */}
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 mb-8 sm:mb-12 px-2">
+                {[
+                  { icon: '📊', title: 'Health & Trajectory', desc: 'MSTL decomposition, change point detection, forecasting' },
+                  { icon: '🎯', title: 'Page-Level Triage', desc: 'Decay detection, CTR anomalies, priority scoring' },
+                  { icon: '🔍', title: 'SERP Intelligence', desc: 'Feature displacement, competitor mapping, intent analysis' },
+                  { icon: '📝', title: 'Content Analysis', desc: 'Cannibalization detection, striking distance opportunities' },
+                  { icon: '🏗️', title: 'Site Architecture', desc: 'PageRank flow, authority distribution, link recommendations' },
+                  { icon: '💰', title: 'Revenue Attribution', desc: 'Position-to-revenue modeling, ROI estimates' },
+                ].map((feature, idx) => (
+                  <div key={idx} className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 sm:p-6 hover:border-slate-600 transition-colors">
+                    <div className="text-3xl sm:text-4xl mb-2 sm:mb-3">{feature.icon}</div>
+                    <h3 className="text-base sm:text-lg font-semibold text-white mb-1 sm:mb-2">{feature.title}</h3>
+                    <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">{feature.desc}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* CTA Button */}
+              <button
+                onClick={handleGscConnect}
+                className="w-full sm:w-auto px-8 sm:px-12 py-4 sm:py-5 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-base sm:text-lg font-semibold rounded-lg shadow-lg hover:shadow-xl transition-all transform hover:scale-105 active:scale-100 touch-manipulation"
+              >
+                Connect Google Search Console — Free
+              </button>
+              <p className="text-xs sm:text-sm text-slate-400 mt-3 sm:mt-4 px-4">
+                No credit card required • Report generated in 2-5 minutes
+              </p>
+            </div>
+          ) : (
+            /* Connected User — Property Selection */
+            <div className="max-w-2xl mx-auto">
+              <h2 className="text-2xl sm:text-3xl font-bold text-white mb-6 sm:mb-8 text-center sm:text-left">
+                Generate Your Report
+              </h2>
+
+              {error && (
+                <div className="mb-4 sm:mb-6 p-3 sm:p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm sm:text-base">
+                  {error}
+                </div>
+              )}
+
+              {/* GSC Connection */}
+              <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 sm:p-6 mb-4 sm:mb-6">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-3 h-3 rounded-full ${user.gsc_connected ? 'bg-green-500' : 'bg-slate-600'}`} />
+                    <h3 className="text-lg sm:text-xl font-semibold text-white">Google Search Console</h3>
+                  </div>
+                  {!user.gsc_connected && (
+                    <button
+                      onClick={handleGscConnect}
+                      className="w-full sm:w-auto px-4 sm:px-6 py-2.5 sm:py-3 bg-blue-600 hover:bg-blue-700 text-white text-sm sm:text-base rounded-lg transition-colors touch-manipulation"
+                    >
+                      Connect GSC
+                    </button>
+                  )}
+                </div>
+
+                {user.gsc_connected && user.gsc_properties && user.gsc_properties.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">
+                      Select Property *
+                    </label>
+                    <select
+                      value={selectedGscProperty}
+                      onChange={(e) => setSelectedGscProperty(e.target.value)}
+                      className="w-full px-3 sm:px-4 py-2.5 sm:py-3 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-blue-500 touch-manipulation"
+                    >
+                      <option value="">Choose a property...</option>
+                      {user.gsc_properties.map((prop) => (
+                        <option key={prop.id} value={prop.id}>
+                          {prop.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {/* GA4 Connection */}
+              <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 sm:p-6 mb-6 sm:mb-8">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-3 h-3 rounded-full ${user.ga4_connected ? 'bg-green-500' : 'bg-slate-600'}`} />
+                    <h3 className="text-lg sm:text-xl font-semibold text-white">Google Analytics 4</h3>
+                  </div>
+                  {!user.ga4_connected && (
+                    <button
+                      onClick={handleGa4Connect}
+                      className="w-full sm:w-auto px-4 sm:px-6 py-2.5 sm:py-3 bg-purple-600 hover:bg-purple-700 text-white text-sm sm:text-base rounded-lg transition-colors touch-manipulation"
+                    >
+                      Connect GA4
+                    </button>
+                  )}
+                </div>
+
+                {user.ga4_connected && user.ga4_properties && user.ga4_properties.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">
+                      Select Property (Optional)
+                    </label>
+                    <select
+                      value={selectedGa4Property}
+                      onChange={(e) => setSelectedGa4Property(e.target.value)}
+                      className="w-full px-3 sm:px-4 py-2.5 sm:py-3 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-purple-500 touch-manipulation"
+                    >
+                      <option value="">Skip for now (GSC-only report)</option>
+                      {user.ga4_properties.map((prop) => (
+                        <option key={prop.id} value={prop.id}>
+                          {prop.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-slate-400 mt-2">
+                      GA4 enables engagement metrics, conversion tracking, and revenue attribution
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Generate Button */}
+              <button
+                onClick={handleGenerateReport}
+                disabled={!selectedGscProperty || generatingReport}
+                className="w-full px-6 sm:px-8 py-3.5 sm:py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed text-white text-base sm:text-lg font-semibold rounded-lg shadow-lg transition-all transform hover:scale-105 active:scale-100 disabled:transform-none disabled:shadow-none touch-manipulation"
+              >
+                {generatingReport ? (
+                  <span className="flex items-center justify-center gap-3">
+                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    Generating Report...
+                  </span>
+                ) : (
+                  'Generate Intelligence Report'
+                )}
+              </button>
+
+              <p className="text-xs sm:text-sm text-slate-400 text-center mt-3 sm:mt-4 px-2">
+                Report generation takes 2-5 minutes. You'll be redirected to the progress page.
+              </p>
             </div>
           )}
+        </main>
 
-          {/* Connection Cards */}
-          <div className="max-w-4xl mx-auto grid md:grid-cols-2 gap-6 mb-12">
-            {/* GSC Connection */}
-            <div className="bg-slate-800/50 backdrop-blur rounded-xl p-6 border border-slate-700">
-              <div className="flex items-start justify-between mb-4">
-                <div>
-                  <h3 className="text-xl font-semibold text-white mb-2">
-                    Google Search Console
-                  </h3>
-                  <p className="text-sm text-slate-400">
-                    Required for performance data
-                  </p>
-                </div>
-                <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-                  connectionStatus.gsc
-                    ? 'bg-green-500/20 text-green-300'
-                    : 'bg-slate-700 text-slate-400'
-                }`}>
-                  {connectionStatus.gsc ? 'Connected' : 'Not connected'}
-                </div>
-              </div>
-
-              {!connectionStatus.gsc ? (
-                <button
-                  onClick={() => initiateOAuth('gsc')}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors"
-                >
-                  Connect Search Console
-                </button>
-              ) : (
-                <div className="space-y-4">
-                  <select
-                    value={selectedGscProperty}
-                    onChange={(e) => setSelectedGscProperty(e.target.value)}
-                    className="w-full bg-slate-700 text-white border border-slate-600 rounded-lg py-2 px-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select a property...</option>
-                    {gscProperties.map((prop) => (
-                      <option key={prop.id} value={prop.id}>
-                        {prop.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => disconnectProvider('gsc')}
-                    className="w-full bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium py-2 px-4 rounded-lg transition-colors text-sm"
-                  >
-                    Disconnect
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* GA4 Connection */}
-            <div className="bg-slate-800/50 backdrop-blur rounded-xl p-6 border border-slate-700">
-              <div className="flex items-start justify-between mb-4">
-                <div>
-                  <h3 className="text-xl font-semibold text-white mb-2">
-                    Google Analytics 4
-                  </h3>
-                  <p className="text-sm text-slate-400">
-                    Optional for engagement data
-                  </p>
-                </div>
-                <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-                  connectionStatus.ga4
-                    ? 'bg-green-500/20 text-green-300'
-                    : 'bg-slate-700 text-slate-400'
-                }`}>
-                  {connectionStatus.ga4 ? 'Connected' : 'Not connected'}
-                </div>
-              </div>
-
-              {!connectionStatus.ga4 ? (
-                <button
-                  onClick={() => initiateOAuth('ga4')}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors"
-                >
-                  Connect GA4
-                </button>
-              ) : (
-                <div className="space-y-4">
-                  <select
-                    value={selectedGa4Property}
-                    onChange={(e) => setSelectedGa4Property(e.target.value)}
-                    className="w-full bg-slate-700 text-white border border-slate-600 rounded-lg py-2 px-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select a property...</option>
-                    {ga4Properties.map((prop) => (
-                      <option key={prop.id} value={prop.id}>
-                        {prop.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => disconnectProvider('ga4')}
-                    className="w-full bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium py-2 px-4 rounded-lg transition-colors text-sm"
-                  >
-                    Disconnect
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Generate Report Button */}
-          <div className="max-w-2xl mx-auto">
-            <button
-              onClick={generateReport}
-              disabled={!connectionStatus.gsc || !selectedGscProperty || isGenerating}
-              className={`w-full py-4 px-6 rounded-xl font-semibold text-lg transition-all ${
-                !connectionStatus.gsc || !selectedGscProperty || isGenerating
-                  ? 'bg-slate-700 text-slate-500 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white shadow-lg shadow-blue-500/50'
-              }`}
-            >
-              {isGenerating ? (
-                <span className="flex items-center justify-center">
-                  <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Generating Report...
-                </span>
-              ) : (
-                'Generate Report'
-              )}
-            </button>
-            
-            {!connectionStatus.gsc && (
-              <p className="text-center text-slate-400 mt-4 text-sm">
-                Connect Search Console to get started
+        {/* Footer */}
+        <footer className="border-t border-slate-700 mt-12 sm:mt-16 lg:mt-20">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 text-sm text-slate-400">
+              <p className="text-center sm:text-left">
+                © 2025 Search Intelligence Report. All rights reserved.
               </p>
-            )}
-            {connectionStatus.gsc && !selectedGscProperty && (
-              <p className="text-center text-slate-400 mt-4 text-sm">
-                Select a property to continue
-              </p>
-            )}
-          </div>
-
-          {/* Features Preview */}
-          <div className="max-w-4xl mx-auto mt-20">
-            <h2 className="text-3xl font-bold text-white text-center mb-12">
-              What's in Your Report
-            </h2>
-            <div className="grid md:grid-cols-3 gap-6">
-              {[
-                {
-                  title: 'Health & Trajectory',
-                  description: 'MSTL decomposition, change point detection, 90-day forecast with confidence intervals',
-                },
-                {
-                  title: 'Page Triage',
-                  description: 'Trend analysis per page, CTR anomaly detection, priority scoring',
-                },
-                {
-                  title: 'SERP Landscape',
-                  description: 'Feature displacement analysis, competitor mapping, click share estimation',
-                },
-                {
-                  title: 'Content Intelligence',
-                  description: 'Cannibalization detection, striking distance opportunities, thin content flagging',
-                },
-                {
-                  title: 'The Gameplan',
-                  description: 'Prioritized action list with traffic impact estimates and effort levels',
-                },
-                {
-                  title: 'Algorithm Impact',
-                  description: 'Update correlation analysis, vulnerability assessment, recovery patterns',
-                },
-                {
-                  title: 'Intent Migration',
-                  description: 'Query intent tracking over time, AI Overview impact estimation',
-                },
-                {
-                  title: 'CTR Modeling',
-                  description: 'Context-aware CTR predictions, SERP feature opportunity scoring',
-                },
-                {
-                  title: 'Site Architecture',
-                  description: 'PageRank analysis, authority flow mapping, optimal link recommendations',
-                },
-                {
-                  title: 'Branded Split',
-                  description: 'Independent trend analysis, dependency risk scoring, growth projections',
-                },
-                {
-                  title: 'Competitive Radar',
-                  description: 'Emerging threat detection, competitor content velocity, vulnerability assessment',
-                },
-                {
-                  title: 'Revenue Attribution',
-                  description: 'Position-to-revenue modeling, ROI estimates for recommended actions',
-                },
-              ].map((feature, index) => (
-                <div
-                  key={index}
-                  className="bg-slate-800/30 backdrop-blur rounded-lg p-6 border border-slate-700/50"
-                >
-                  <h3 className="text-lg font-semibold text-white mb-2">
-                    {feature.title}
-                  </h3>
-                  <p className="text-sm text-slate-400">
-                    {feature.description}
-                  </p>
-                </div>
-              ))}
+              <div className="flex flex-wrap justify-center gap-4 sm:gap-6">
+                <a href="/privacy" className="hover:text-white transition-colors">Privacy Policy</a>
+                <a href="/terms" className="hover:text-white transition-colors">Terms of Service</a>
+                <a href="mailto:support@searchintel.report" className="hover:text-white transition-colors">Contact</a>
+              </div>
             </div>
           </div>
-
-          {/* Footer */}
-          <div className="max-w-4xl mx-auto mt-20 text-center text-slate-400 text-sm">
-            <p>
-              Report generation takes 2-5 minutes • All data processed securely • OAuth read-only access
-            </p>
-          </div>
-        </div>
+        </footer>
       </div>
     </>
   );
