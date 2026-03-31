@@ -15,6 +15,10 @@ from api.analysis.module_5_gameplan import generate_gameplan
 from api.analysis.module_6_algorithm_updates import analyze_algorithm_impacts
 from api.analysis.module_7_intent_migration import analyze_intent_migration
 from api.analysis.module_8_technical_health import analyze_technical_health
+from api.analysis.module_9_site_architecture import analyze_site_architecture
+from api.analysis.module_10_branded_split import analyze_branded_split
+from api.analysis.module_11_competitive_threats import analyze_competitive_threats
+from api.analysis.module_12_revenue_attribution import estimate_revenue_attribution
 from api.helpers.ga4_helper import get_ga4_data
 from api.helpers.gsc_helper import get_gsc_data
 from api.helpers.serp_helper import get_serp_data
@@ -753,6 +757,368 @@ async def run_module_8(
         if 'report' in locals():
             report.status = "error"
             report.error_message = f"Module 8 failed: {str(e)}"
+            db.commit()
+        
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+@router.get("/modules/9")
+async def run_module_9(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Module 9: Site Architecture & Internal Linking
+    
+    Analyzes site structure and internal link optimization:
+    - Internal link graph analysis
+    - PageRank distribution
+    - Conversion path optimization
+    - Orphan page detection
+    - Hub/spoke structure evaluation
+    """
+    try:
+        # Verify report exists and belongs to user
+        report = db.query(Report).filter(
+            Report.id == report_id,
+            Report.user_id == current_user.id
+        ).first()
+        
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        
+        # Update report status
+        report.status = "running"
+        report.current_module = 9
+        db.commit()
+        
+        # Fetch crawl link graph data
+        link_graph = await get_crawl_data(
+            report_id=report_id,
+            data_type="link_graph",
+            db=db
+        )
+        
+        # Fetch page performance data from GSC
+        page_performance = await get_gsc_data(
+            report_id=report_id,
+            data_type="page_performance",
+            db=db
+        )
+        
+        # Fetch sitemap URLs
+        crawl_sitemap = await get_crawl_data(
+            report_id=report_id,
+            data_type="sitemap_urls",
+            db=db
+        )
+        
+        # Fetch GSC query data for intent mapping
+        gsc_query_data = await get_gsc_data(
+            report_id=report_id,
+            data_type="queries",
+            db=db
+        )
+        
+        # Run analysis
+        results = analyze_site_architecture(
+            link_graph=link_graph,
+            page_performance=page_performance,
+            sitemap_urls=crawl_sitemap,
+            query_data=gsc_query_data
+        )
+        
+        # Store results
+        module_result = ReportModule(
+            report_id=report_id,
+            module_number=9,
+            module_name="site_architecture",
+            results=results,
+            status="completed",
+            completed_at=datetime.utcnow()
+        )
+        db.add(module_result)
+        db.commit()
+        
+        return {
+            "status": "success",
+            "module": 9,
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in module 9 for report {report_id}: {str(e)}", exc_info=True)
+        
+        # Update report status
+        if 'report' in locals():
+            report.status = "error"
+            report.error_message = f"Module 9 failed: {str(e)}"
+            db.commit()
+        
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@router.get("/modules/10")
+async def run_module_10(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Module 10: Branded vs Non-Branded Split
+    
+    Analyzes brand dependency and non-branded growth opportunities:
+    - Branded vs non-branded traffic segmentation
+    - Brand dependency risk assessment
+    - Non-branded keyword opportunity analysis
+    - Segment trend analysis over time
+    """
+    try:
+        # Verify report exists and belongs to user
+        report = db.query(Report).filter(
+            Report.id == report_id,
+            Report.user_id == current_user.id
+        ).first()
+        
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        
+        # Update report status
+        report.status = "running"
+        report.current_module = 10
+        db.commit()
+        
+        # Fetch GSC query data
+        gsc_query_data = await get_gsc_data(
+            report_id=report_id,
+            data_type="queries",
+            db=db
+        )
+        
+        # Get brand terms from report configuration
+        brand_terms = report.config.get("brand_terms", []) if report.config else []
+        if not brand_terms and report.domain:
+            # Auto-derive brand terms from domain
+            domain_parts = report.domain.replace("www.", "").split(".")
+            brand_terms = [domain_parts[0]] if domain_parts else []
+        
+        # Run analysis
+        results = analyze_branded_split(
+            gsc_query_data=gsc_query_data,
+            brand_terms=brand_terms
+        )
+        
+        # Store results
+        module_result = ReportModule(
+            report_id=report_id,
+            module_number=10,
+            module_name="branded_split",
+            results=results,
+            status="completed",
+            completed_at=datetime.utcnow()
+        )
+        db.add(module_result)
+        db.commit()
+        
+        return {
+            "status": "success",
+            "module": 10,
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in module 10 for report {report_id}: {str(e)}", exc_info=True)
+        
+        if 'report' in locals():
+            report.status = "error"
+            report.error_message = f"Module 10 failed: {str(e)}"
+            db.commit()
+        
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@router.get("/modules/11")
+async def run_module_11(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Module 11: Competitive Intelligence
+    
+    Analyzes competitive landscape from SERP data:
+    - Primary competitor identification and profiling
+    - Emerging threat detection
+    - Keyword vulnerability assessment
+    - Competitor content velocity estimation
+    - Competitive pressure scoring
+    """
+    try:
+        # Verify report exists and belongs to user
+        report = db.query(Report).filter(
+            Report.id == report_id,
+            Report.user_id == current_user.id
+        ).first()
+        
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        
+        # Update report status
+        report.status = "running"
+        report.current_module = 11
+        db.commit()
+        
+        # Fetch SERP data from DataForSEO
+        serp_data = await get_serp_data(
+            report_id=report_id,
+            db=db
+        )
+        
+        # Fetch GSC data for user performance context
+        gsc_data = await get_gsc_data(
+            report_id=report_id,
+            data_type="queries",
+            db=db
+        )
+        
+        # Get user domain from report
+        user_domain = report.domain or ""
+        
+        # Run analysis
+        results = analyze_competitive_threats(
+            serp_data=serp_data,
+            gsc_data=gsc_data,
+            user_domain=user_domain
+        )
+        
+        # Store results
+        module_result = ReportModule(
+            report_id=report_id,
+            module_number=11,
+            module_name="competitive_intelligence",
+            results=results,
+            status="completed",
+            completed_at=datetime.utcnow()
+        )
+        db.add(module_result)
+        db.commit()
+        
+        return {
+            "status": "success",
+            "module": 11,
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in module 11 for report {report_id}: {str(e)}", exc_info=True)
+        
+        if 'report' in locals():
+            report.status = "error"
+            report.error_message = f"Module 11 failed: {str(e)}"
+            db.commit()
+        
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@router.get("/modules/12")
+async def run_module_12(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Module 12: Revenue Attribution & ROI Modeling
+    
+    Models the revenue impact of search performance:
+    - Search traffic to conversion attribution
+    - Revenue-at-risk from declining pages
+    - Position improvement ROI estimates
+    - Top revenue keyword identification
+    - Action-level ROI projections
+    """
+    try:
+        # Verify report exists and belongs to user
+        report = db.query(Report).filter(
+            Report.id == report_id,
+            Report.user_id == current_user.id
+        ).first()
+        
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        
+        # Update report status
+        report.status = "running"
+        report.current_module = 12
+        db.commit()
+        
+        # Fetch GSC performance data
+        gsc_data = await get_gsc_data(
+            report_id=report_id,
+            data_type="queries",
+            db=db
+        )
+        
+        # Fetch GA4 conversion data
+        ga4_conversions = await get_ga4_data(
+            report_id=report_id,
+            data_type="conversions",
+            db=db
+        )
+        
+        # Fetch GA4 engagement data
+        ga4_engagement = await get_ga4_data(
+            report_id=report_id,
+            data_type="engagement",
+            db=db
+        )
+        
+        # Fetch GA4 ecommerce data (optional)
+        ga4_ecommerce = await get_ga4_data(
+            report_id=report_id,
+            data_type="ecommerce",
+            db=db
+        )
+        
+        # Run analysis
+        results = estimate_revenue_attribution(
+            gsc_data=gsc_data,
+            ga4_conversions=ga4_conversions,
+            ga4_engagement=ga4_engagement,
+            ga4_ecommerce=ga4_ecommerce
+        )
+        
+        # Store results
+        module_result = ReportModule(
+            report_id=report_id,
+            module_number=12,
+            module_name="revenue_attribution",
+            results=results,
+            status="completed",
+            completed_at=datetime.utcnow()
+        )
+        db.add(module_result)
+        db.commit()
+        
+        return {
+            "status": "success",
+            "module": 12,
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in module 12 for report {report_id}: {str(e)}", exc_info=True)
+        
+        if 'report' in locals():
+            report.status = "error"
+            report.error_message = f"Module 12 failed: {str(e)}"
             db.commit()
         
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
