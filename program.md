@@ -203,7 +203,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 24** — DataForSEO integration: implement `ingestion/dataforseo.py`. Pull live SERPs for top 50 non-branded keywords. Handle rate limits. Cache in `serp_snapshots` table. Test with $0.20 budget.
 
-- [ ] **DAY 25** — Algorithm update database: seed `algorithm_updates` table with known updates from 2024-2026. Weekly cron to fetch new updates from public sources.
+- [x] **DAY 25** — Algorithm update database: seed `algorithm_updates` table with known updates from 2024-2026. Weekly cron to fetch new updates from public sources.
 
 - [ ] **DAY 26** — Module 3 stub (SERP Landscape): implement basic version — competitor extraction, SERP feature parsing. Full implementation in Phase 2. Verify it runs without errors.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 24
-**Last Task:** Implemented DataForSEO integration with rate limiting, caching, and keyword sele
+**Current Day:** 25
+**Last Task:** Seed algorithm_updates table with 2024-2026 updates and create weekly cron job t
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 25 — Algorithm update database: seed `algorithm_updates` table wi
+**Next Task:** DAY 26 — Module 3 stub (SERP Landscape): implement basic version — co
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
