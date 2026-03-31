@@ -92,123 +92,97 @@ class AlgorithmImpactAnalyzer:
             page_daily_data['date'] = pd.to_datetime(page_daily_data['date'])
             
             # Match change points to algorithm updates
-            impacting_updates = self._match_changes_to_updates(
-                change_points,
-                daily_data,
-                page_daily_data,
-                page_metadata
-            )
+            matched_impacts = []
+            unexplained_changes = []
             
-            # Identify unexplained changes
-            unexplained = self._identify_unexplained_changes(
-                change_points,
-                impacting_updates
-            )
+            for cp in change_points:
+                cp_date = pd.to_datetime(cp['date'])
+                matched_update = self._find_matching_update(cp_date)
+                
+                if matched_update:
+                    impact = self._assess_update_impact(
+                        matched_update,
+                        cp,
+                        daily_data,
+                        page_daily_data,
+                        page_metadata
+                    )
+                    matched_impacts.append(impact)
+                else:
+                    unexplained_changes.append(cp)
             
             # Calculate vulnerability score
             vulnerability_score, vulnerability_factors = self._calculate_vulnerability(
-                impacting_updates,
-                page_metadata
+                matched_impacts,
+                daily_data
             )
             
-            # Generate strategic recommendation
+            # Generate recommendation
             recommendation = self._generate_recommendation(
-                impacting_updates,
+                matched_impacts,
                 vulnerability_score,
                 vulnerability_factors
             )
             
             return {
-                "updates_impacting_site": [
-                    self._impact_to_dict(impact) for impact in impacting_updates
-                ],
-                "vulnerability_score": round(vulnerability_score, 2),
-                "vulnerability_factors": vulnerability_factors,
-                "recommendation": recommendation,
-                "unexplained_changes": unexplained,
-                "total_updates_tracked": len(self.algorithm_updates),
-                "analysis_period_days": (
-                    daily_data['date'].max() - daily_data['date'].min()
-                ).days
+                'updates_impacting_site': [self._impact_to_dict(imp) for imp in matched_impacts],
+                'vulnerability_score': round(vulnerability_score, 2),
+                'vulnerability_factors': vulnerability_factors,
+                'recommendation': recommendation,
+                'unexplained_changes': unexplained_changes,
+                'total_updates_in_period': len(self.algorithm_updates),
+                'updates_with_site_impact': len(matched_impacts)
             }
             
         except Exception as e:
-            logger.error(f"Error in algorithm impact analysis: {str(e)}", exc_info=True)
+            logger.error(f"Error in algorithm impact analysis: {str(e)}")
             raise
     
-    def _match_changes_to_updates(
+    def _find_matching_update(
         self,
-        change_points: List[Dict[str, Any]],
-        daily_data: pd.DataFrame,
-        page_daily_data: pd.DataFrame,
-        page_metadata: Optional[pd.DataFrame]
-    ) -> List[ImpactAssessment]:
-        """Match detected change points to known algorithm updates."""
-        impacting_updates = []
-        
-        for change_point in change_points:
-            change_date = pd.to_datetime(change_point['date'])
-            
-            # Find algorithm updates within ±7 days
-            matching_update = self._find_nearest_update(change_date, window_days=7)
-            
-            if matching_update:
-                # Assess the impact of this update
-                impact = self._assess_update_impact(
-                    matching_update,
-                    change_date,
-                    change_point,
-                    daily_data,
-                    page_daily_data,
-                    page_metadata
-                )
-                impacting_updates.append(impact)
-        
-        # Also check for any major updates that might have been missed
-        for update in self.algorithm_updates:
-            if not any(imp.update_name == update.name for imp in impacting_updates):
-                # Check if this update had a subtle impact
-                impact = self._check_subtle_impact(
-                    update,
-                    daily_data,
-                    page_daily_data,
-                    page_metadata
-                )
-                if impact and abs(impact.click_change_pct) > 3.0:  # >3% change threshold
-                    impacting_updates.append(impact)
-        
-        return sorted(impacting_updates, key=lambda x: x.update_date, reverse=True)
-    
-    def _find_nearest_update(
-        self,
-        date: datetime,
+        change_point_date: datetime,
         window_days: int = 7
     ) -> Optional[AlgorithmUpdate]:
-        """Find the nearest algorithm update within the time window."""
-        date = pd.to_datetime(date)
+        """
+        Find algorithm update within ±window_days of change point.
         
+        Args:
+            change_point_date: Date of detected change point
+            window_days: Days before/after to search for update
+        
+        Returns:
+            Matching AlgorithmUpdate or None
+        """
         for update in self.algorithm_updates:
-            update_date = pd.to_datetime(update.date)
-            days_diff = abs((date - update_date).days)
-            
+            days_diff = abs((update.date - change_point_date).days)
             if days_diff <= window_days:
                 return update
-        
         return None
     
     def _assess_update_impact(
         self,
         update: AlgorithmUpdate,
-        change_date: datetime,
         change_point: Dict[str, Any],
         daily_data: pd.DataFrame,
         page_daily_data: pd.DataFrame,
         page_metadata: Optional[pd.DataFrame]
     ) -> ImpactAssessment:
-        """Assess the detailed impact of an algorithm update."""
-        update_date = pd.to_datetime(update.date)
+        """
+        Assess the impact of an algorithm update on the site.
         
-        # Define pre/post windows (14 days each)
+        Args:
+            update: The algorithm update
+            change_point: Change point data from Module 1
+            daily_data: Daily aggregate metrics
+            page_daily_data: Per-page daily metrics
+            page_metadata: Optional page metadata
+        
+        Returns:
+            ImpactAssessment object
+        """
+        update_date = update.date
+        
+        # Define pre/post windows (14 days before, 14 days after)
         pre_start = update_date - timedelta(days=14)
         pre_end = update_date - timedelta(days=1)
         post_start = update_date
@@ -225,58 +199,49 @@ class AlgorithmImpactAnalyzer:
         ]
         
         if len(pre_data) == 0 or len(post_data) == 0:
-            # Not enough data for comparison
-            click_change_pct = 0.0
-            impression_change_pct = 0.0
-            position_change_avg = 0.0
+            # Not enough data around this update
+            click_change_pct = 0
+            impression_change_pct = 0
+            position_change_avg = 0
         else:
-            pre_clicks_avg = pre_data['clicks'].mean()
-            post_clicks_avg = post_data['clicks'].mean()
-            click_change_pct = (
-                ((post_clicks_avg - pre_clicks_avg) / pre_clicks_avg * 100)
-                if pre_clicks_avg > 0 else 0.0
-            )
+            pre_clicks = pre_data['clicks'].mean()
+            post_clicks = post_data['clicks'].mean()
+            click_change_pct = ((post_clicks - pre_clicks) / pre_clicks * 100) if pre_clicks > 0 else 0
             
-            pre_impressions_avg = pre_data['impressions'].mean()
-            post_impressions_avg = post_data['impressions'].mean()
-            impression_change_pct = (
-                ((post_impressions_avg - pre_impressions_avg) / pre_impressions_avg * 100)
-                if pre_impressions_avg > 0 else 0.0
-            )
+            pre_impressions = pre_data['impressions'].mean()
+            post_impressions = post_data['impressions'].mean()
+            impression_change_pct = ((post_impressions - pre_impressions) / pre_impressions * 100) if pre_impressions > 0 else 0
             
-            pre_position_avg = pre_data['position'].mean()
-            post_position_avg = post_data['position'].mean()
-            position_change_avg = post_position_avg - pre_position_avg
-        
-        # Identify most affected pages
-        pages_most_affected = self._identify_affected_pages(
-            page_daily_data,
-            pre_start,
-            pre_end,
-            post_start,
-            post_end,
-            limit=10
-        )
-        
-        # Find common characteristics among affected pages
-        common_characteristics = self._find_common_characteristics(
-            pages_most_affected,
-            page_metadata
-        )
+            pre_position = pre_data['position'].mean()
+            post_position = post_data['position'].mean()
+            position_change_avg = post_position - pre_position
         
         # Determine impact direction
-        if click_change_pct > 5.0:
+        if click_change_pct > 5:
             site_impact = "positive"
-        elif click_change_pct < -5.0:
+        elif click_change_pct < -5:
             site_impact = "negative"
         else:
             site_impact = "neutral"
         
+        # Find most affected pages
+        pages_most_affected = self._find_affected_pages(
+            page_daily_data,
+            update_date,
+            top_n=10
+        )
+        
+        # Identify common characteristics
+        common_characteristics = self._identify_common_characteristics(
+            pages_most_affected,
+            page_metadata
+        )
+        
         # Assess recovery status
         recovery_status = self._assess_recovery_status(
-            update_date,
             daily_data,
-            pre_clicks_avg if len(pre_data) > 0 else 0
+            update_date,
+            click_change_pct
         )
         
         days_since_update = (datetime.now() - update_date).days
@@ -295,49 +260,31 @@ class AlgorithmImpactAnalyzer:
             days_since_update=days_since_update
         )
     
-    def _check_subtle_impact(
-        self,
-        update: AlgorithmUpdate,
-        daily_data: pd.DataFrame,
-        page_daily_data: pd.DataFrame,
-        page_metadata: Optional[pd.DataFrame]
-    ) -> Optional[ImpactAssessment]:
-        """Check if an update had a subtle impact not caught by change point detection."""
-        update_date = pd.to_datetime(update.date)
-        
-        # Only check updates within our data range
-        if update_date < daily_data['date'].min() or update_date > daily_data['date'].max():
-            return None
-        
-        # Create a dummy change point
-        change_point = {
-            'date': update_date,
-            'magnitude': 0.0,
-            'direction': 'unknown'
-        }
-        
-        return self._assess_update_impact(
-            update,
-            update_date,
-            change_point,
-            daily_data,
-            page_daily_data,
-            page_metadata
-        )
-    
-    def _identify_affected_pages(
+    def _find_affected_pages(
         self,
         page_daily_data: pd.DataFrame,
-        pre_start: datetime,
-        pre_end: datetime,
-        post_start: datetime,
-        post_end: datetime,
-        limit: int = 10
+        update_date: datetime,
+        top_n: int = 10
     ) -> List[Dict[str, Any]]:
-        """Identify pages most affected by the update."""
-        affected_pages = []
+        """
+        Find pages most affected by an algorithm update.
         
-        # Group by page
+        Args:
+            page_daily_data: Per-page daily metrics
+            update_date: Date of the algorithm update
+            top_n: Number of top affected pages to return
+        
+        Returns:
+            List of page impact dictionaries
+        """
+        pre_start = update_date - timedelta(days=14)
+        pre_end = update_date - timedelta(days=1)
+        post_start = update_date
+        post_end = update_date + timedelta(days=14)
+        
+        # Calculate per-page changes
+        page_impacts = []
+        
         for page in page_daily_data['page'].unique():
             page_data = page_daily_data[page_daily_data['page'] == page]
             
@@ -353,282 +300,310 @@ class AlgorithmImpactAnalyzer:
             if len(pre_page) == 0 or len(post_page) == 0:
                 continue
             
-            pre_clicks = pre_page['clicks'].mean()
-            post_clicks = post_page['clicks'].mean()
-            
-            if pre_clicks == 0:
-                continue
-            
-            click_change_pct = (post_clicks - pre_clicks) / pre_clicks * 100
+            pre_clicks = pre_page['clicks'].sum()
+            post_clicks = post_page['clicks'].sum()
+            click_change = post_clicks - pre_clicks
+            click_change_pct = (click_change / pre_clicks * 100) if pre_clicks > 0 else 0
             
             pre_position = pre_page['position'].mean()
             post_position = post_page['position'].mean()
             position_change = post_position - pre_position
             
-            affected_pages.append({
+            page_impacts.append({
                 'page': page,
-                'pre_clicks_avg': round(pre_clicks, 1),
-                'post_clicks_avg': round(post_clicks, 1),
+                'click_change': int(click_change),
                 'click_change_pct': round(click_change_pct, 1),
-                'pre_position': round(pre_position, 2),
-                'post_position': round(post_position, 2),
                 'position_change': round(position_change, 2),
-                'impact_magnitude': abs(click_change_pct)
+                'pre_clicks': int(pre_clicks),
+                'post_clicks': int(post_clicks)
             })
         
-        # Sort by impact magnitude and return top N
-        affected_pages.sort(key=lambda x: x['impact_magnitude'], reverse=True)
-        return affected_pages[:limit]
+        # Sort by absolute click change
+        page_impacts.sort(key=lambda x: abs(x['click_change']), reverse=True)
+        
+        return page_impacts[:top_n]
     
-    def _find_common_characteristics(
+    def _identify_common_characteristics(
         self,
         affected_pages: List[Dict[str, Any]],
         page_metadata: Optional[pd.DataFrame]
     ) -> List[str]:
-        """Find common characteristics among affected pages."""
-        if not affected_pages or page_metadata is None or len(page_metadata) == 0:
+        """
+        Identify common characteristics among affected pages.
+        
+        Args:
+            affected_pages: List of affected page dictionaries
+            page_metadata: Optional metadata about pages
+        
+        Returns:
+            List of common characteristic strings
+        """
+        if not page_metadata or len(affected_pages) == 0:
             return []
         
         characteristics = []
         
-        # Extract page URLs
-        affected_urls = [p['page'] for p in affected_pages]
+        # Get pages with negative impact
+        negative_pages = [p['page'] for p in affected_pages if p['click_change'] < 0]
         
-        # Merge with metadata
-        affected_meta = page_metadata[page_metadata['page'].isin(affected_urls)]
+        if len(negative_pages) == 0:
+            return characteristics
         
-        if len(affected_meta) == 0:
-            return []
+        # Filter metadata to affected pages
+        affected_metadata = page_metadata[page_metadata['page'].isin(negative_pages)]
         
-        # Check for common patterns
-        # Content type
-        if 'content_type' in affected_meta.columns:
-            content_types = affected_meta['content_type'].value_counts()
-            dominant_type = content_types.idxmax() if len(content_types) > 0 else None
-            if dominant_type and content_types[dominant_type] / len(affected_meta) > 0.6:
-                characteristics.append(f"content_type_{dominant_type}")
+        if len(affected_metadata) == 0:
+            return characteristics
         
-        # Thin content
-        if 'word_count' in affected_meta.columns:
-            avg_words = affected_meta['word_count'].mean()
-            if avg_words < 500:
+        # Check word count
+        if 'word_count' in affected_metadata.columns:
+            avg_word_count = affected_metadata['word_count'].mean()
+            if avg_word_count < 500:
                 characteristics.append("thin_content")
-            elif avg_words < 1000:
-                characteristics.append("medium_content")
+            elif avg_word_count < 1000:
+                characteristics.append("short_content")
         
-        # Schema presence
-        if 'has_schema' in affected_meta.columns:
-            schema_pct = affected_meta['has_schema'].sum() / len(affected_meta)
+        # Check schema presence
+        if 'has_schema' in affected_metadata.columns:
+            schema_pct = affected_metadata['has_schema'].mean()
             if schema_pct < 0.3:
                 characteristics.append("no_schema")
         
-        # URL pattern (blog vs product vs other)
-        blog_count = sum(1 for url in affected_urls if '/blog/' in url.lower())
-        if blog_count / len(affected_urls) > 0.6:
-            characteristics.append("blog_content")
+        # Check content type
+        if 'content_type' in affected_metadata.columns:
+            content_types = affected_metadata['content_type'].value_counts()
+            if len(content_types) > 0:
+                dominant_type = content_types.index[0]
+                if content_types[dominant_type] / len(affected_metadata) > 0.6:
+                    characteristics.append(f"content_type_{dominant_type}")
         
-        product_count = sum(1 for url in affected_urls if any(
-            keyword in url.lower() 
-            for keyword in ['/product/', '/shop/', '/store/']
-        ))
-        if product_count / len(affected_urls) > 0.6:
-            characteristics.append("product_pages")
+        # Check backlinks
+        if 'backlink_count' in affected_metadata.columns:
+            avg_backlinks = affected_metadata['backlink_count'].mean()
+            if avg_backlinks < 5:
+                characteristics.append("low_backlinks")
         
-        return characteristics if characteristics else ["no_clear_pattern"]
+        # Check freshness
+        if 'last_modified' in affected_metadata.columns:
+            affected_metadata['days_since_update'] = (
+                datetime.now() - pd.to_datetime(affected_metadata['last_modified'])
+            ).dt.days
+            avg_age = affected_metadata['days_since_update'].mean()
+            if avg_age > 365:
+                characteristics.append("outdated_content")
+        
+        return characteristics
     
     def _assess_recovery_status(
         self,
-        update_date: datetime,
         daily_data: pd.DataFrame,
-        pre_update_baseline: float
+        update_date: datetime,
+        initial_impact_pct: float
     ) -> str:
-        """Assess whether the site has recovered from the update."""
-        update_date = pd.to_datetime(update_date)
-        days_since = (datetime.now() - update_date).days
+        """
+        Assess whether the site has recovered from an update impact.
         
+        Args:
+            daily_data: Daily aggregate metrics
+            update_date: Date of the update
+            initial_impact_pct: Initial percentage impact
+        
+        Returns:
+            Recovery status string
+        """
+        # If update was recent (< 30 days), status is ongoing
+        days_since = (datetime.now() - update_date).days
         if days_since < 30:
             return "ongoing"
         
-        # Look at most recent 14 days
+        # Compare recent performance to pre-update baseline
+        pre_start = update_date - timedelta(days=14)
+        pre_end = update_date - timedelta(days=1)
+        recent_start = datetime.now() - timedelta(days=14)
+        recent_end = datetime.now()
+        
+        pre_data = daily_data[
+            (daily_data['date'] >= pre_start) &
+            (daily_data['date'] <= pre_end)
+        ]
         recent_data = daily_data[
-            daily_data['date'] >= daily_data['date'].max() - timedelta(days=14)
+            (daily_data['date'] >= recent_start) &
+            (daily_data['date'] <= recent_end)
         ]
         
-        if len(recent_data) == 0:
+        if len(pre_data) == 0 or len(recent_data) == 0:
             return "unknown"
         
-        recent_avg = recent_data['clicks'].mean()
+        pre_clicks = pre_data['clicks'].mean()
+        recent_clicks = recent_data['clicks'].mean()
         
-        if pre_update_baseline == 0:
-            return "unknown"
+        recovery_pct = ((recent_clicks - pre_clicks) / pre_clicks * 100) if pre_clicks > 0 else 0
         
-        recovery_pct = (recent_avg / pre_update_baseline) * 100
-        
-        if recovery_pct >= 95:
-            return "recovered"
-        elif recovery_pct >= 80:
-            return "partial_recovery"
+        # If negative impact
+        if initial_impact_pct < 0:
+            if recovery_pct >= -5:  # Back to within 5% of baseline
+                return "recovered"
+            elif recovery_pct >= initial_impact_pct / 2:  # Recovered more than half
+                return "partial_recovery"
+            else:
+                return "not_recovered"
         else:
-            return "not_recovered"
-    
-    def _identify_unexplained_changes(
-        self,
-        change_points: List[Dict[str, Any]],
-        impacting_updates: List[ImpactAssessment]
-    ) -> List[Dict[str, Any]]:
-        """Identify change points not attributable to algorithm updates."""
-        explained_dates = {
-            pd.to_datetime(impact.update_date).date()
-            for impact in impacting_updates
-        }
-        
-        unexplained = []
-        for cp in change_points:
-            cp_date = pd.to_datetime(cp['date']).date()
-            
-            # Check if any explained update is within 7 days
-            is_explained = any(
-                abs((cp_date - exp_date).days) <= 7
-                for exp_date in explained_dates
-            )
-            
-            if not is_explained:
-                unexplained.append({
-                    'date': cp['date'],
-                    'magnitude': cp.get('magnitude', 0.0),
-                    'direction': cp.get('direction', 'unknown'),
-                    'possible_causes': [
-                        "manual_action",
-                        "technical_issue",
-                        "competitor_movement",
-                        "seasonal_effect",
-                        "external_link_change"
-                    ]
-                })
-        
-        return unexplained
+            # Positive impact - check if gains sustained
+            if recovery_pct >= initial_impact_pct * 0.8:
+                return "recovered"
+            else:
+                return "partial_recovery"
     
     def _calculate_vulnerability(
         self,
-        impacting_updates: List[ImpactAssessment],
-        page_metadata: Optional[pd.DataFrame]
+        matched_impacts: List[ImpactAssessment],
+        daily_data: pd.DataFrame
     ) -> tuple[float, List[str]]:
-        """Calculate algorithmic vulnerability score (0-1) and contributing factors."""
+        """
+        Calculate overall algorithmic vulnerability score.
+        
+        Args:
+            matched_impacts: List of impact assessments
+            daily_data: Daily aggregate metrics
+        
+        Returns:
+            Tuple of (vulnerability_score, vulnerability_factors)
+        """
         factors = []
         score_components = []
         
-        # Factor 1: Frequency of negative impacts (weight: 0.3)
-        negative_impacts = [
-            imp for imp in impacting_updates
-            if imp.site_impact == "negative"
-        ]
+        # Factor 1: Frequency of negative impacts
+        negative_impacts = [imp for imp in matched_impacts if imp.site_impact == "negative"]
+        if len(matched_impacts) > 0:
+            negative_rate = len(negative_impacts) / len(matched_impacts)
+            score_components.append(negative_rate)
+            if negative_rate > 0.5:
+                factors.append("frequent_negative_impacts")
         
-        if len(impacting_updates) > 0:
-            negative_frequency = len(negative_impacts) / len(impacting_updates)
-            score_components.append(negative_frequency * 0.3)
-            
-            if negative_frequency > 0.5:
-                factors.append("high_negative_update_frequency")
-        else:
-            score_components.append(0.0)
-        
-        # Factor 2: Severity of impacts (weight: 0.25)
-        if negative_impacts:
-            avg_negative_impact = np.mean([
-                abs(imp.click_change_pct) for imp in negative_impacts
-            ])
-            severity_score = min(avg_negative_impact / 30.0, 1.0)  # 30% = max
-            score_components.append(severity_score * 0.25)
-            
-            if avg_negative_impact > 15:
+        # Factor 2: Severity of impacts
+        if len(negative_impacts) > 0:
+            avg_negative_impact = np.mean([imp.click_change_pct for imp in negative_impacts])
+            severity_score = min(abs(avg_negative_impact) / 50, 1.0)  # Normalize to 0-1
+            score_components.append(severity_score)
+            if avg_negative_impact < -20:
                 factors.append("severe_impact_history")
-        else:
-            score_components.append(0.0)
         
-        # Factor 3: Recovery rate (weight: 0.25)
-        not_recovered = [
-            imp for imp in negative_impacts
-            if imp.recovery_status == "not_recovered" and imp.days_since_update > 60
-        ]
-        
-        if negative_impacts:
-            non_recovery_rate = len(not_recovered) / len(negative_impacts)
-            score_components.append(non_recovery_rate * 0.25)
-            
-            if non_recovery_rate > 0.5:
+        # Factor 3: Recovery capability
+        if len(negative_impacts) > 0:
+            not_recovered = len([imp for imp in negative_impacts if imp.recovery_status == "not_recovered"])
+            recovery_rate = 1 - (not_recovered / len(negative_impacts))
+            score_components.append(1 - recovery_rate)
+            if recovery_rate < 0.5:
                 factors.append("poor_recovery_rate")
-        else:
-            score_components.append(0.0)
         
-        # Factor 4: Common vulnerability characteristics (weight: 0.2)
-        if page_metadata is not None and len(page_metadata) > 0:
-            vulnerability_chars = 0
-            
-            if 'word_count' in page_metadata.columns:
-                thin_content_pct = (
-                    (page_metadata['word_count'] < 500).sum() / len(page_metadata)
-                )
-                if thin_content_pct > 0.3:
-                    factors.append("high_thin_content_percentage")
-                    vulnerability_chars += 1
-            
-            if 'has_schema' in page_metadata.columns:
-                no_schema_pct = (
-                    (~page_metadata['has_schema']).sum() / len(page_metadata)
-                )
-                if no_schema_pct > 0.7:
-                    factors.append("low_schema_adoption")
-                    vulnerability_chars += 1
-            
-            char_score = min(vulnerability_chars / 2.0, 1.0)
-            score_components.append(char_score * 0.2)
-        else:
-            score_components.append(0.0)
+        # Factor 4: Common vulnerability patterns
+        all_characteristics = []
+        for imp in negative_impacts:
+            all_characteristics.extend(imp.common_characteristics)
         
-        vulnerability_score = sum(score_components)
+        if all_characteristics:
+            char_counts = pd.Series(all_characteristics).value_counts()
+            recurring_issues = char_counts[char_counts >= 2].index.tolist()
+            
+            if recurring_issues:
+                factors.append(f"recurring_issues: {', '.join(recurring_issues[:3])}")
+                score_components.append(0.3 * len(recurring_issues))
         
-        # Add overall assessment
-        if vulnerability_score > 0.7:
-            factors.insert(0, "critically_vulnerable")
-        elif vulnerability_score > 0.5:
-            factors.insert(0, "highly_vulnerable")
-        elif vulnerability_score > 0.3:
-            factors.insert(0, "moderately_vulnerable")
+        # Factor 5: Traffic volatility
+        if len(daily_data) > 30:
+            clicks_std = daily_data['clicks'].std()
+            clicks_mean = daily_data['clicks'].mean()
+            cv = clicks_std / clicks_mean if clicks_mean > 0 else 0
+            if cv > 0.3:
+                factors.append("high_traffic_volatility")
+                score_components.append(min(cv, 1.0))
+        
+        # Calculate final score (average of components, capped at 1.0)
+        if score_components:
+            vulnerability_score = min(np.mean(score_components), 1.0)
         else:
-            factors.insert(0, "low_vulnerability")
+            vulnerability_score = 0.0
         
         return vulnerability_score, factors
     
     def _generate_recommendation(
         self,
-        impacting_updates: List[ImpactAssessment],
+        matched_impacts: List[ImpactAssessment],
         vulnerability_score: float,
         vulnerability_factors: List[str]
     ) -> str:
-        """Generate strategic recommendation based on update history."""
-        if not impacting_updates:
-            return (
-                "Insufficient algorithm update history to generate specific "
-                "recommendations. Continue monitoring for future updates."
-            )
+        """
+        Generate strategic recommendation based on update history.
         
-        recommendations = []
+        Args:
+            matched_impacts: List of impact assessments
+            vulnerability_score: Calculated vulnerability score
+            vulnerability_factors: List of vulnerability factors
         
-        # Analyze recent impacts
-        recent_negative = [
-            imp for imp in impacting_updates[:3]  # Last 3 updates
-            if imp.site_impact == "negative"
-        ]
+        Returns:
+            Recommendation string
+        """
+        if len(matched_impacts) == 0:
+            return "No significant algorithm update impacts detected in the analysis period."
         
-        if recent_negative:
-            # Find most common characteristics across recent negative impacts
-            all_chars = []
-            for imp in recent_negative:
-                all_chars.extend(imp.common_characteristics)
+        # Count characteristics across all negative impacts
+        negative_impacts = [imp for imp in matched_impacts if imp.site_impact == "negative"]
+        
+        if len(negative_impacts) == 0:
+            return "Your site has shown resilience to recent algorithm updates. Continue current content strategy."
+        
+        # Aggregate characteristics
+        char_counter = {}
+        for imp in negative_impacts:
+            for char in imp.common_characteristics:
+                char_counter[char] = char_counter.get(char, 0) + 1
+        
+        # Sort by frequency
+        sorted_chars = sorted(char_counter.items(), key=lambda x: x[1], reverse=True)
+        
+        # Build recommendation
+        rec_parts = []
+        
+        if vulnerability_score > 0.7:
+            rec_parts.append("HIGH VULNERABILITY: Your site is highly susceptible to algorithm updates.")
+        elif vulnerability_score > 0.4:
+            rec_parts.append("MODERATE VULNERABILITY: Your site shows some algorithmic weakness.")
+        
+        # Address most common issues
+        if sorted_chars:
+            most_common = sorted_chars[0][0]
             
-            if all_chars:
-                from collections import Counter
-                char_counts = Counter(all_chars)
-                most_common = char_counts.most_common(3)
-                
-                for char, count in most
+            if "thin_content" in most_common or "short_content" in most_common:
+                rec_parts.append("Focus on content depth: expand thin pages to 1000+ words with comprehensive coverage.")
+            elif "no_schema" in most_common:
+                rec_parts.append("Implement structured data: add relevant schema markup to improve SERP presentation.")
+            elif "low_backlinks" in most_common:
+                rec_parts.append("Build authority: focus link building efforts on algorithmically vulnerable pages.")
+            elif "outdated_content" in most_common:
+                rec_parts.append("Content freshness critical: prioritize updating old pages with current information.")
+            elif "content_type" in most_common:
+                content_type = most_common.split("_")[-1]
+                rec_parts.append(f"Your {content_type} pages are most vulnerable. Review and strengthen this content type.")
+        
+        # Recovery advice
+        not_recovered = [imp for imp in negative_impacts if imp.recovery_status == "not_recovered"]
+        if len(not_recovered) > 0:
+            rec_parts.append(f"{len(not_recovered)} update impact(s) have not recovered. Immediate remediation needed for affected pages.")
+        
+        return " ".join(rec_parts) if rec_parts else "Continue monitoring algorithm updates and maintain content quality standards."
+    
+    def _impact_to_dict(self, impact: ImpactAssessment) -> Dict[str, Any]:
+        """Convert ImpactAssessment to dictionary."""
+        return {
+            'update_name': impact.update_name,
+            'date': impact.update_date.isoformat(),
+            'update_type': impact.update_type,
+            'site_impact': impact.site_impact,
+            'click_change_pct': impact.click_change_pct,
+            'impression_change_pct': impact.impression_change_pct,
+            'position_change_avg': impact.position_change_avg,
+            'pages_most_affected': impact.pages_most_affected,
+            'common_characteristics': impact.common_characteristics,
+            'recovery_status': impact.recovery_status,
+            'days_since_update': impact.days_since_update
+        }
