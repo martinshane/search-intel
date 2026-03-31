@@ -1,25 +1,12 @@
 """
-GA4 Data Ingestion Module
-
-Fetches all 8 report types from GA4 Data API:
-1. Traffic overview (sessions, users, pageviews, bounce, engagement)
-2. Landing pages with engagement metrics
-3. Traffic by channel group
-4. Traffic by source/medium
-5. Conversions (event-based)
-6. Page path × date for per-page daily time series
-7. Page path × session source for source attribution per page
-8. Device breakdown
-
-All with date ranges matching GSC pull (16 months).
-Implements caching via Supabase to avoid re-fetching within 24h.
+GA4 Data API integration for Search Intelligence Report.
+Handles authentication, data fetching, and response processing with graceful degradation.
 """
 
-import hashlib
-import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
 import logging
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+import time
 
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
@@ -29,647 +16,644 @@ from google.analytics.data_v1beta.types import (
     RunReportRequest,
     FilterExpression,
     Filter,
-    OrderBy,
 )
 from google.oauth2.credentials import Credentials
-import pandas as pd
-
-from db.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
 
 class GA4IngestionError(Exception):
-    """Raised when GA4 data ingestion fails"""
+    """Custom exception for GA4 ingestion errors."""
     pass
 
 
-def _generate_cache_key(property_id: str, report_type: str, start_date: str, end_date: str) -> str:
-    """Generate a unique cache key for a GA4 API request"""
-    key_string = f"ga4:{property_id}:{report_type}:{start_date}:{end_date}"
-    return hashlib.sha256(key_string.encode()).hexdigest()
+class GA4Client:
+    """Client for fetching data from Google Analytics 4 Data API."""
 
+    def __init__(self, credentials: Credentials, property_id: str):
+        """
+        Initialize GA4 client.
 
-def _get_cached_response(user_id: str, cache_key: str) -> Optional[Dict]:
-    """Retrieve cached GA4 response if still valid"""
-    try:
-        supabase = get_supabase_client()
-        result = supabase.table("api_cache").select("*").eq(
-            "user_id", user_id
-        ).eq(
-            "cache_key", cache_key
-        ).execute()
-        
-        if result.data and len(result.data) > 0:
-            cache_entry = result.data[0]
-            expires_at = datetime.fromisoformat(cache_entry["expires_at"].replace("Z", "+00:00"))
-            
-            if datetime.utcnow().replace(tzinfo=expires_at.tzinfo) < expires_at:
-                logger.info(f"Cache hit for key: {cache_key}")
-                return cache_entry["response"]
-            else:
-                # Cache expired, delete it
-                supabase.table("api_cache").delete().eq("id", cache_entry["id"]).execute()
-                logger.info(f"Cache expired for key: {cache_key}")
-        
-        return None
-    except Exception as e:
-        logger.warning(f"Error retrieving cache: {e}")
-        return None
+        Args:
+            credentials: Google OAuth2 credentials
+            property_id: GA4 property ID (format: properties/123456789)
+        """
+        self.credentials = credentials
+        self.property_id = property_id if property_id.startswith('properties/') else f'properties/{property_id}'
+        self.client = None
+        self._initialize_client()
 
+    def _initialize_client(self):
+        """Initialize the BetaAnalyticsDataClient."""
+        try:
+            self.client = BetaAnalyticsDataClient(credentials=self.credentials)
+            logger.info(f"GA4 client initialized for property: {self.property_id}")
+        except Exception as e:
+            logger.error(f"Failed to initialize GA4 client: {e}")
+            raise GA4IngestionError(f"GA4 client initialization failed: {e}")
 
-def _cache_response(user_id: str, cache_key: str, response: Dict, ttl_hours: int = 24):
-    """Cache a GA4 API response"""
-    try:
-        supabase = get_supabase_client()
-        expires_at = datetime.utcnow() + timedelta(hours=ttl_hours)
-        
-        # Upsert to handle duplicates
-        supabase.table("api_cache").upsert({
-            "user_id": user_id,
-            "cache_key": cache_key,
-            "response": response,
-            "expires_at": expires_at.isoformat()
-        }, on_conflict="user_id,cache_key").execute()
-        
-        logger.info(f"Cached response for key: {cache_key}")
-    except Exception as e:
-        logger.warning(f"Error caching response: {e}")
+    def _run_report_with_retry(
+        self,
+        request: RunReportRequest,
+        max_retries: int = 3,
+        backoff_factor: float = 2.0
+    ) -> Any:
+        """
+        Run report with exponential backoff retry logic.
 
+        Args:
+            request: The report request
+            max_retries: Maximum number of retry attempts
+            backoff_factor: Multiplier for backoff delay
 
-def _get_date_range(months_back: int = 16) -> tuple[str, str]:
-    """
-    Get date range for GA4 query matching GSC pull.
-    Returns (start_date, end_date) in YYYY-MM-DD format.
-    
-    Default: 16 months of data ending yesterday.
-    """
-    end_date = datetime.now() - timedelta(days=1)
-    start_date = end_date - timedelta(days=months_back * 30)
-    
-    return start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+        Returns:
+            Report response
 
+        Raises:
+            GA4IngestionError: If all retries fail
+        """
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = self.client.run_report(request)
+                return response
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    delay = backoff_factor ** attempt
+                    logger.warning(f"GA4 API request failed (attempt {attempt + 1}/{max_retries}), retrying in {delay}s: {e}")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"GA4 API request failed after {max_retries} attempts: {e}")
 
-def _run_ga4_report(
-    credentials: Credentials,
-    property_id: str,
-    dimensions: List[str],
-    metrics: List[str],
-    start_date: str,
-    end_date: str,
-    limit: int = 100000,
-    order_by: Optional[List[Dict[str, str]]] = None,
-    dimension_filter: Optional[FilterExpression] = None
-) -> Dict[str, Any]:
-    """
-    Run a GA4 report request and return structured results.
-    
-    Args:
-        credentials: Google OAuth2 credentials
-        property_id: GA4 property ID (format: properties/XXXXXX)
-        dimensions: List of dimension names (e.g., ['date', 'pagePath'])
-        metrics: List of metric names (e.g., ['sessions', 'totalUsers'])
-        start_date: Start date in YYYY-MM-DD format
-        end_date: End date in YYYY-MM-DD format
-        limit: Maximum rows to return
-        order_by: Optional list of ordering specs
-        dimension_filter: Optional dimension filter expression
-    
-    Returns:
-        Dict with 'rows' (list of dicts) and 'metadata' (row count, etc.)
-    """
-    try:
-        client = BetaAnalyticsDataClient(credentials=credentials)
+        raise GA4IngestionError(f"GA4 API request failed after {max_retries} retries: {last_error}")
+
+    def _parse_report_response(
+        self,
+        response: Any,
+        dimensions: List[str],
+        metrics: List[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        Parse GA4 report response into structured records.
+
+        Args:
+            response: GA4 API response
+            dimensions: List of dimension names requested
+            metrics: List of metric names requested
+
+        Returns:
+            List of records as dictionaries
+        """
+        records = []
         
-        # Build request
-        request = RunReportRequest(
-            property=property_id,
-            dimensions=[Dimension(name=d) for d in dimensions],
-            metrics=[Metric(name=m) for m in metrics],
-            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-            limit=limit
-        )
-        
-        # Add optional filters
-        if dimension_filter:
-            request.dimension_filter = dimension_filter
-        
-        # Add optional ordering
-        if order_by:
-            request.order_bys = [
-                OrderBy(
-                    dimension=OrderBy.DimensionOrderBy(dimension_name=ob.get("dimension"))
-                ) if "dimension" in ob else OrderBy(
-                    metric=OrderBy.MetricOrderBy(metric_name=ob.get("metric")),
-                    desc=ob.get("desc", False)
-                )
-                for ob in order_by
-            ]
-        
-        # Execute request
-        response = client.run_report(request)
-        
-        # Parse response
-        rows = []
+        if not response.rows:
+            logger.warning("GA4 report returned no rows")
+            return records
+
         for row in response.rows:
-            row_dict = {}
+            record = {}
             
-            # Add dimensions
-            for i, dimension_value in enumerate(row.dimension_values):
-                dimension_name = dimensions[i]
-                row_dict[dimension_name] = dimension_value.value
+            # Parse dimensions
+            for i, dimension in enumerate(dimensions):
+                if i < len(row.dimension_values):
+                    record[dimension] = row.dimension_values[i].value
+                else:
+                    record[dimension] = None
             
-            # Add metrics
-            for i, metric_value in enumerate(row.metric_values):
-                metric_name = metrics[i]
-                row_dict[metric_name] = metric_value.value
+            # Parse metrics
+            for i, metric in enumerate(metrics):
+                if i < len(row.metric_values):
+                    value = row.metric_values[i].value
+                    # Try to convert to appropriate type
+                    try:
+                        # Check if it's an integer
+                        if '.' not in value:
+                            record[metric] = int(value)
+                        else:
+                            record[metric] = float(value)
+                    except (ValueError, AttributeError):
+                        record[metric] = value
+                else:
+                    record[metric] = None
             
-            rows.append(row_dict)
+            records.append(record)
+
+        return records
+
+    def fetch_traffic_overview(
+        self,
+        start_date: str,
+        end_date: str,
+        date_granularity: str = "date"
+    ) -> Dict[str, Any]:
+        """
+        Fetch overall traffic metrics with daily granularity.
+        Gracefully handles missing metrics.
+
+        Args:
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            date_granularity: Date dimension ("date" or "month")
+
+        Returns:
+            Dictionary with daily_data list and summary metrics
+        """
+        logger.info(f"Fetching GA4 traffic overview from {start_date} to {end_date}")
         
-        return {
-            "rows": rows,
-            "row_count": response.row_count,
-            "metadata": {
-                "property_id": property_id,
-                "date_range": f"{start_date} to {end_date}",
-                "dimensions": dimensions,
-                "metrics": metrics
-            }
-        }
-    
-    except Exception as e:
-        logger.error(f"GA4 report execution failed: {e}")
-        raise GA4IngestionError(f"Failed to run GA4 report: {e}")
-
-
-def fetch_traffic_overview(
-    credentials: Credentials,
-    property_id: str,
-    user_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    use_cache: bool = True
-) -> Dict[str, Any]:
-    """
-    Report 1: Traffic overview by date
-    
-    Metrics: sessions, totalUsers, screenPageViews, bounceRate, 
-             averageSessionDuration, engagementRate
-    Dimension: date
-    """
-    if not start_date or not end_date:
-        start_date, end_date = _get_date_range()
-    
-    cache_key = _generate_cache_key(property_id, "traffic_overview", start_date, end_date)
-    
-    if use_cache:
-        cached = _get_cached_response(user_id, cache_key)
-        if cached:
-            return cached
-    
-    result = _run_ga4_report(
-        credentials=credentials,
-        property_id=property_id,
-        dimensions=["date"],
-        metrics=[
+        # Core metrics with fallbacks
+        metric_names = [
             "sessions",
             "totalUsers",
             "screenPageViews",
-            "bounceRate",
+            "engagementRate",
             "averageSessionDuration",
-            "engagementRate"
-        ],
-        start_date=start_date,
-        end_date=end_date,
-        order_by=[{"dimension": "date"}]
-    )
-    
-    if use_cache:
-        _cache_response(user_id, cache_key, result)
-    
-    return result
+            "bounceRate"
+        ]
+        
+        request = RunReportRequest(
+            property=self.property_id,
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            dimensions=[Dimension(name=date_granularity)],
+            metrics=[Metric(name=name) for name in metric_names],
+        )
 
-
-def fetch_landing_pages(
-    credentials: Credentials,
-    property_id: str,
-    user_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    use_cache: bool = True
-) -> Dict[str, Any]:
-    """
-    Report 2: Landing pages with engagement metrics
-    
-    Metrics: sessions, totalUsers, engagementRate, bounceRate, 
-             averageSessionDuration, conversions
-    Dimension: landingPage
-    """
-    if not start_date or not end_date:
-        start_date, end_date = _get_date_range()
-    
-    cache_key = _generate_cache_key(property_id, "landing_pages", start_date, end_date)
-    
-    if use_cache:
-        cached = _get_cached_response(user_id, cache_key)
-        if cached:
-            return cached
-    
-    result = _run_ga4_report(
-        credentials=credentials,
-        property_id=property_id,
-        dimensions=["landingPage"],
-        metrics=[
-            "sessions",
-            "totalUsers",
-            "engagementRate",
-            "bounceRate",
-            "averageSessionDuration",
-            "conversions"
-        ],
-        start_date=start_date,
-        end_date=end_date,
-        order_by=[{"metric": "sessions", "desc": True}]
-    )
-    
-    if use_cache:
-        _cache_response(user_id, cache_key, result)
-    
-    return result
-
-
-def fetch_traffic_by_channel(
-    credentials: Credentials,
-    property_id: str,
-    user_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    use_cache: bool = True
-) -> Dict[str, Any]:
-    """
-    Report 3: Traffic by channel group
-    
-    Metrics: sessions, totalUsers, engagementRate, conversions
-    Dimension: sessionDefaultChannelGroup
-    """
-    if not start_date or not end_date:
-        start_date, end_date = _get_date_range()
-    
-    cache_key = _generate_cache_key(property_id, "traffic_by_channel", start_date, end_date)
-    
-    if use_cache:
-        cached = _get_cached_response(user_id, cache_key)
-        if cached:
-            return cached
-    
-    result = _run_ga4_report(
-        credentials=credentials,
-        property_id=property_id,
-        dimensions=["sessionDefaultChannelGroup"],
-        metrics=[
-            "sessions",
-            "totalUsers",
-            "engagementRate",
-            "conversions"
-        ],
-        start_date=start_date,
-        end_date=end_date,
-        order_by=[{"metric": "sessions", "desc": True}]
-    )
-    
-    if use_cache:
-        _cache_response(user_id, cache_key, result)
-    
-    return result
-
-
-def fetch_traffic_by_source_medium(
-    credentials: Credentials,
-    property_id: str,
-    user_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    use_cache: bool = True
-) -> Dict[str, Any]:
-    """
-    Report 4: Traffic by source/medium
-    
-    Metrics: sessions, totalUsers, engagementRate, conversions
-    Dimensions: sessionSource, sessionMedium
-    """
-    if not start_date or not end_date:
-        start_date, end_date = _get_date_range()
-    
-    cache_key = _generate_cache_key(property_id, "traffic_by_source_medium", start_date, end_date)
-    
-    if use_cache:
-        cached = _get_cached_response(user_id, cache_key)
-        if cached:
-            return cached
-    
-    result = _run_ga4_report(
-        credentials=credentials,
-        property_id=property_id,
-        dimensions=["sessionSource", "sessionMedium"],
-        metrics=[
-            "sessions",
-            "totalUsers",
-            "engagementRate",
-            "conversions"
-        ],
-        start_date=start_date,
-        end_date=end_date,
-        order_by=[{"metric": "sessions", "desc": True}]
-    )
-    
-    if use_cache:
-        _cache_response(user_id, cache_key, result)
-    
-    return result
-
-
-def fetch_conversions(
-    credentials: Credentials,
-    property_id: str,
-    user_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    use_cache: bool = True
-) -> Dict[str, Any]:
-    """
-    Report 5: Conversions by event name
-    
-    Metrics: conversions, totalUsers
-    Dimensions: eventName, date
-    """
-    if not start_date or not end_date:
-        start_date, end_date = _get_date_range()
-    
-    cache_key = _generate_cache_key(property_id, "conversions", start_date, end_date)
-    
-    if use_cache:
-        cached = _get_cached_response(user_id, cache_key)
-        if cached:
-            return cached
-    
-    result = _run_ga4_report(
-        credentials=credentials,
-        property_id=property_id,
-        dimensions=["eventName", "date"],
-        metrics=[
-            "conversions",
-            "totalUsers"
-        ],
-        start_date=start_date,
-        end_date=end_date,
-        order_by=[{"dimension": "date"}, {"metric": "conversions", "desc": True}]
-    )
-    
-    if use_cache:
-        _cache_response(user_id, cache_key, result)
-    
-    return result
-
-
-def fetch_page_date_time_series(
-    credentials: Credentials,
-    property_id: str,
-    user_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    use_cache: bool = True
-) -> Dict[str, Any]:
-    """
-    Report 6: Page path × date for per-page daily time series
-    
-    Metrics: sessions, totalUsers, engagementRate, averageSessionDuration
-    Dimensions: pagePath, date
-    
-    Critical for Module 2 (Page-Level Triage) to track per-page trends.
-    """
-    if not start_date or not end_date:
-        start_date, end_date = _get_date_range()
-    
-    cache_key = _generate_cache_key(property_id, "page_date_series", start_date, end_date)
-    
-    if use_cache:
-        cached = _get_cached_response(user_id, cache_key)
-        if cached:
-            return cached
-    
-    result = _run_ga4_report(
-        credentials=credentials,
-        property_id=property_id,
-        dimensions=["pagePath", "date"],
-        metrics=[
-            "sessions",
-            "totalUsers",
-            "engagementRate",
-            "averageSessionDuration"
-        ],
-        start_date=start_date,
-        end_date=end_date,
-        order_by=[{"dimension": "date"}, {"metric": "sessions", "desc": True}]
-    )
-    
-    if use_cache:
-        _cache_response(user_id, cache_key, result)
-    
-    return result
-
-
-def fetch_page_source_attribution(
-    credentials: Credentials,
-    property_id: str,
-    user_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    use_cache: bool = True
-) -> Dict[str, Any]:
-    """
-    Report 7: Page path × session source for source attribution per page
-    
-    Metrics: sessions, totalUsers, conversions
-    Dimensions: pagePath, sessionSource
-    
-    Allows us to understand which pages attract organic vs other traffic.
-    """
-    if not start_date or not end_date:
-        start_date, end_date = _get_date_range()
-    
-    cache_key = _generate_cache_key(property_id, "page_source_attribution", start_date, end_date)
-    
-    if use_cache:
-        cached = _get_cached_response(user_id, cache_key)
-        if cached:
-            return cached
-    
-    result = _run_ga4_report(
-        credentials=credentials,
-        property_id=property_id,
-        dimensions=["pagePath", "sessionSource"],
-        metrics=[
-            "sessions",
-            "totalUsers",
-            "conversions"
-        ],
-        start_date=start_date,
-        end_date=end_date,
-        order_by=[{"metric": "sessions", "desc": True}]
-    )
-    
-    if use_cache:
-        _cache_response(user_id, cache_key, result)
-    
-    return result
-
-
-def fetch_device_breakdown(
-    credentials: Credentials,
-    property_id: str,
-    user_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    use_cache: bool = True
-) -> Dict[str, Any]:
-    """
-    Report 8: Device breakdown
-    
-    Metrics: sessions, totalUsers, engagementRate, conversions
-    Dimension: deviceCategory
-    """
-    if not start_date or not end_date:
-        start_date, end_date = _get_date_range()
-    
-    cache_key = _generate_cache_key(property_id, "device_breakdown", start_date, end_date)
-    
-    if use_cache:
-        cached = _get_cached_response(user_id, cache_key)
-        if cached:
-            return cached
-    
-    result = _run_ga4_report(
-        credentials=credentials,
-        property_id=property_id,
-        dimensions=["deviceCategory"],
-        metrics=[
-            "sessions",
-            "totalUsers",
-            "engagementRate",
-            "conversions"
-        ],
-        start_date=start_date,
-        end_date=end_date,
-        order_by=[{"metric": "sessions", "desc": True}]
-    )
-    
-    if use_cache:
-        _cache_response(user_id, cache_key, result)
-    
-    return result
-
-
-def fetch_all_ga4_reports(
-    credentials: Credentials,
-    property_id: str,
-    user_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    use_cache: bool = True
-) -> Dict[str, Any]:
-    """
-    Fetch all 8 GA4 report types in a single call.
-    
-    Returns a dict with keys matching report names.
-    Handles errors gracefully - if one report fails, others still return.
-    """
-    if not start_date or not end_date:
-        start_date, end_date = _get_date_range()
-    
-    logger.info(f"Fetching all GA4 reports for property {property_id} from {start_date} to {end_date}")
-    
-    reports = {}
-    errors = {}
-    
-    # Define all report functions
-    report_functions = {
-        "traffic_overview": fetch_traffic_overview,
-        "landing_pages": fetch_landing_pages,
-        "traffic_by_channel": fetch_traffic_by_channel,
-        "traffic_by_source_medium": fetch_traffic_by_source_medium,
-        "conversions": fetch_conversions,
-        "page_date_time_series": fetch_page_date_time_series,
-        "page_source_attribution": fetch_page_source_attribution,
-        "device_breakdown": fetch_device_breakdown,
-    }
-    
-    # Fetch each report
-    for report_name, report_func in report_functions.items():
         try:
-            logger.info(f"Fetching {report_name}...")
-            reports[report_name] = report_func(
-                credentials=credentials,
-                property_id=property_id,
-                user_id=user_id,
-                start_date=start_date,
-                end_date=end_date,
-                use_cache=use_cache
-            )
-            logger.info(f"✓ {report_name}: {reports[report_name]['row_count']} rows")
+            response = self._run_report_with_retry(request)
+            daily_data = self._parse_report_response(response, [date_granularity], metric_names)
+            
+            # Calculate summary statistics with fallbacks
+            summary = {
+                "total_sessions": 0,
+                "total_users": 0,
+                "total_pageviews": 0,
+                "avg_engagement_rate": 0.0,
+                "avg_session_duration": 0.0,
+                "avg_bounce_rate": 0.0,
+                "data_quality": "complete"
+            }
+            
+            if daily_data:
+                valid_sessions = [d.get("sessions", 0) for d in daily_data if d.get("sessions") is not None]
+                valid_users = [d.get("totalUsers", 0) for d in daily_data if d.get("totalUsers") is not None]
+                valid_pageviews = [d.get("screenPageViews", 0) for d in daily_data if d.get("screenPageViews") is not None]
+                valid_engagement = [d.get("engagementRate", 0) for d in daily_data if d.get("engagementRate") is not None]
+                valid_duration = [d.get("averageSessionDuration", 0) for d in daily_data if d.get("averageSessionDuration") is not None]
+                valid_bounce = [d.get("bounceRate", 0) for d in daily_data if d.get("bounceRate") is not None]
+                
+                summary["total_sessions"] = sum(valid_sessions)
+                summary["total_users"] = sum(valid_users)
+                summary["total_pageviews"] = sum(valid_pageviews)
+                summary["avg_engagement_rate"] = sum(valid_engagement) / len(valid_engagement) if valid_engagement else 0.0
+                summary["avg_session_duration"] = sum(valid_duration) / len(valid_duration) if valid_duration else 0.0
+                summary["avg_bounce_rate"] = sum(valid_bounce) / len(valid_bounce) if valid_bounce else 0.0
+                
+                # Assess data quality
+                missing_metrics = []
+                if not valid_sessions:
+                    missing_metrics.append("sessions")
+                if not valid_engagement:
+                    missing_metrics.append("engagementRate")
+                
+                if missing_metrics:
+                    summary["data_quality"] = "partial"
+                    summary["missing_metrics"] = missing_metrics
+                    logger.warning(f"GA4 traffic overview has incomplete data. Missing: {missing_metrics}")
+            
+            return {
+                "daily_data": daily_data,
+                "summary": summary
+            }
+            
         except Exception as e:
-            logger.error(f"✗ {report_name} failed: {e}")
-            errors[report_name] = str(e)
-            reports[report_name] = None
-    
-    return {
-        "reports": reports,
-        "errors": errors,
-        "date_range": {"start": start_date, "end": end_date},
-        "success_count": len([r for r in reports.values() if r is not None]),
-        "total_count": len(report_functions)
-    }
+            logger.error(f"Failed to fetch GA4 traffic overview: {e}")
+            # Return minimal structure with error flag
+            return {
+                "daily_data": [],
+                "summary": {
+                    "total_sessions": 0,
+                    "total_users": 0,
+                    "total_pageviews": 0,
+                    "avg_engagement_rate": 0.0,
+                    "avg_session_duration": 0.0,
+                    "avg_bounce_rate": 0.0,
+                    "data_quality": "unavailable",
+                    "error": str(e)
+                }
+            }
 
+    def fetch_landing_pages(
+        self,
+        start_date: str,
+        end_date: str,
+        limit: int = 1000
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch landing page performance with engagement metrics.
+        Gracefully handles missing metrics.
 
-def get_organic_landing_pages_with_engagement(
-    credentials: Credentials,
-    property_id: str,
-    user_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    use_cache: bool = True
-) -> pd.DataFrame:
-    """
-    Helper function to get landing pages specifically from organic search
-    with engagement metrics. Critical for cross-referencing with GSC data.
-    
-    Returns a DataFrame for easy analysis.
-    """
-    if not start_date or not end_date:
-        start_date, end_date = _get_date_range()
-    
-    cache_key = _generate_cache_key(property_id, "organic_landing_pages", start_date, end_date)
-    
-    if use_cache:
-        cached = _get_cached_response(user_id, cache_key)
-        if cached:
-            return pd.DataFrame(cached["rows"])
-    
-    # Filter for organic search traffic only
-    organic_filter = FilterExpression(
-        filter=Filter(
-            field_name="sessionDefaultChannelGroup",
-            string_filter=Filter.StringFilter(
-                match_type=Filter.StringFilter.MatchType.EXACT,
-                value="Organic Search"
+        Args:
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            limit: Maximum number of pages to return
+
+        Returns:
+            List of landing page records
+        """
+        logger.info(f"Fetching GA4 landing pages from {start_date} to {end_date}")
+        
+        metric_names = [
+            "sessions",
+            "totalUsers",
+            "engagementRate",
+            "bounceRate",
+            "averageSessionDuration",
+            "conversions"
+        ]
+        
+        request = RunReportRequest(
+            property=self.property_id,
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            dimensions=[Dimension(name="landingPage")],
+            metrics=[Metric(name=name) for name in metric_names],
+            limit=limit,
+            order_bys=[{"metric": {"metric_name": "sessions"}, "desc": True}]
+        )
+
+        try:
+            response = self._run_report_with_retry(request)
+            landing_pages = self._parse_report_response(response, ["landingPage"], metric_names)
+            
+            # Add data quality flags per page
+            for page in landing_pages:
+                missing = []
+                if page.get("engagementRate") is None:
+                    missing.append("engagementRate")
+                if page.get("bounceRate") is None:
+                    missing.append("bounceRate")
+                if page.get("conversions") is None:
+                    missing.append("conversions")
+                
+                if missing:
+                    page["data_quality"] = "partial"
+                    page["missing_metrics"] = missing
+                else:
+                    page["data_quality"] = "complete"
+            
+            logger.info(f"Fetched {len(landing_pages)} landing pages")
+            return landing_pages
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch GA4 landing pages: {e}")
+            return []
+
+    def fetch_traffic_by_source(
+        self,
+        start_date: str,
+        end_date: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch traffic breakdown by source/medium.
+
+        Args:
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+
+        Returns:
+            List of source/medium records
+        """
+        logger.info(f"Fetching GA4 traffic by source from {start_date} to {end_date}")
+        
+        metric_names = [
+            "sessions",
+            "totalUsers",
+            "conversions"
+        ]
+        
+        request = RunReportRequest(
+            property=self.property_id,
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            dimensions=[
+                Dimension(name="sessionSource"),
+                Dimension(name="sessionMedium")
+            ],
+            metrics=[Metric(name=name) for name in metric_names],
+            limit=500,
+            order_bys=[{"metric": {"metric_name": "sessions"}, "desc": True}]
+        )
+
+        try:
+            response = self._run_report_with_retry(request)
+            sources = self._parse_report_response(
+                response,
+                ["sessionSource", "sessionMedium"],
+                metric_names
+            )
+            logger.info(f"Fetched {len(sources)} traffic sources")
+            return sources
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch GA4 traffic sources: {e}")
+            return []
+
+    def fetch_traffic_by_channel(
+        self,
+        start_date: str,
+        end_date: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch traffic breakdown by default channel group.
+
+        Args:
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+
+        Returns:
+            List of channel group records
+        """
+        logger.info(f"Fetching GA4 traffic by channel from {start_date} to {end_date}")
+        
+        metric_names = [
+            "sessions",
+            "totalUsers",
+            "engagementRate",
+            "conversions"
+        ]
+        
+        request = RunReportRequest(
+            property=self.property_id,
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            dimensions=[Dimension(name="sessionDefaultChannelGroup")],
+            metrics=[Metric(name=name) for name in metric_names],
+            order_bys=[{"metric": {"metric_name": "sessions"}, "desc": True}]
+        )
+
+        try:
+            response = self._run_report_with_retry(request)
+            channels = self._parse_report_response(
+                response,
+                ["sessionDefaultChannelGroup"],
+                metric_names
+            )
+            logger.info(f"Fetched {len(channels)} channel groups")
+            return channels
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch GA4 channels: {e}")
+            return []
+
+    def fetch_conversions(
+        self,
+        start_date: str,
+        end_date: str
+    ) -> Dict[str, Any]:
+        """
+        Fetch conversion data (event-based).
+
+        Args:
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+
+        Returns:
+            Dictionary with conversion metrics
+        """
+        logger.info(f"Fetching GA4 conversions from {start_date} to {end_date}")
+        
+        metric_names = [
+            "conversions",
+            "sessions"
+        ]
+        
+        request = RunReportRequest(
+            property=self.property_id,
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            dimensions=[Dimension(name="eventName")],
+            metrics=[Metric(name=name) for name in metric_names],
+            dimension_filter=FilterExpression(
+                filter=Filter(
+                    field_name="eventName",
+                    string_filter=Filter.StringFilter(
+                        match_type=Filter.StringFilter.MatchType.EXACT,
+                        value="conversion"
+                    )
+                )
             )
         )
-    )
-    
-    result = _run_ga4_report(
-        credentials=credentials,
-        property_id=property_id,
-        dimensions=["landingPage"],
-        metrics=[
+
+        try:
+            response = self._run_report_with_retry(request)
+            conversions = self._parse_report_response(
+                response,
+                ["eventName"],
+                metric_names
+            )
+            
+            # Calculate overall conversion rate
+            total_conversions = sum(c.get("conversions", 0) for c in conversions)
+            total_sessions = sum(c.get("sessions", 0) for c in conversions)
+            conversion_rate = (total_conversions / total_sessions * 100) if total_sessions > 0 else 0.0
+            
+            return {
+                "total_conversions": total_conversions,
+                "total_sessions": total_sessions,
+                "conversion_rate": conversion_rate,
+                "conversion_events": conversions
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch GA4 conversions: {e}")
+            return {
+                "total_conversions": 0,
+                "total_sessions": 0,
+                "conversion_rate": 0.0,
+                "conversion_events": [],
+                "data_quality": "unavailable",
+                "error": str(e)
+            }
+
+    def fetch_page_time_series(
+        self,
+        start_date: str,
+        end_date: str,
+        limit: int = 1000
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch per-page daily time series.
+
+        Args:
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            limit: Maximum number of rows to return
+
+        Returns:
+            List of page×date records
+        """
+        logger.info(f"Fetching GA4 page time series from {start_date} to {end_date}")
+        
+        metric_names = [
+            "sessions",
+            "engagementRate"
+        ]
+        
+        request = RunReportRequest(
+            property=self.property_id,
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            dimensions=[
+                Dimension(name="pagePath"),
+                Dimension(name="date")
+            ],
+            metrics=[Metric(name=name) for name in metric_names],
+            limit=limit
+        )
+
+        try:
+            response = self._run_report_with_retry(request)
+            time_series = self._parse_report_response(
+                response,
+                ["pagePath", "date"],
+                metric_names
+            )
+            logger.info(f"Fetched {len(time_series)} page×date records")
+            return time_series
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch GA4 page time series: {e}")
+            return []
+
+    def fetch_device_breakdown(
+        self,
+        start_date: str,
+        end_date: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch traffic breakdown by device category.
+
+        Args:
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+
+        Returns:
+            List of device category records
+        """
+        logger.info(f"Fetching GA4 device breakdown from {start_date} to {end_date}")
+        
+        metric_names = [
             "sessions",
             "totalUsers",
-            "engag
+            "engagementRate",
+            "conversions"
+        ]
+        
+        request = RunReportRequest(
+            property=self.property_id,
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            dimensions=[Dimension(name="deviceCategory")],
+            metrics=[Metric(name=name) for name in metric_names]
+        )
+
+        try:
+            response = self._run_report_with_retry(request)
+            devices = self._parse_report_response(
+                response,
+                ["deviceCategory"],
+                metric_names
+            )
+            logger.info(f"Fetched {len(devices)} device categories")
+            return devices
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch GA4 device breakdown: {e}")
+            return []
+
+
+def fetch_all_ga4_data(
+    credentials: Credentials,
+    property_id: str,
+    months_back: int = 16
+) -> Dict[str, Any]:
+    """
+    Fetch all GA4 data needed for the Search Intelligence Report.
+    Implements comprehensive error handling and graceful degradation.
+
+    Args:
+        credentials: Google OAuth2 credentials
+        property_id: GA4 property ID
+        months_back: Number of months of historical data to fetch
+
+    Returns:
+        Dictionary containing all GA4 data with quality indicators
+    """
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=months_back * 30)
+    
+    start_date_str = start_date.strftime("%Y-%m-%d")
+    end_date_str = end_date.strftime("%Y-%m-%d")
+    
+    logger.info(f"Starting GA4 data ingestion for property {property_id}")
+    logger.info(f"Date range: {start_date_str} to {end_date_str}")
+    
+    try:
+        client = GA4Client(credentials, property_id)
+    except GA4IngestionError as e:
+        logger.error(f"Failed to initialize GA4 client: {e}")
+        return {
+            "status": "failed",
+            "error": str(e),
+            "data_quality": "unavailable"
+        }
+    
+    result = {
+        "property_id": property_id,
+        "date_range": {
+            "start": start_date_str,
+            "end": end_date_str
+        },
+        "status": "success",
+        "data_quality": "complete",
+        "warnings": []
+    }
+    
+    # Fetch traffic overview
+    try:
+        traffic_overview = client.fetch_traffic_overview(start_date_str, end_date_str)
+        result["traffic_overview"] = traffic_overview
+        
+        if traffic_overview["summary"].get("data_quality") != "complete":
+            result["warnings"].append("Traffic overview has incomplete data")
+            result["data_quality"] = "partial"
+    except Exception as e:
+        logger.error(f"Error fetching traffic overview: {e}")
+        result["traffic_overview"] = {"error": str(e)}
+        result["warnings"].append(f"Traffic overview unavailable: {e}")
+        result["data_quality"] = "partial"
+    
+    # Fetch landing pages
+    try:
+        landing_pages = client.fetch_landing_pages(start_date_str, end_date_str)
+        result["landing_pages"] = landing_pages
+        
+        partial_count = sum(1 for p in landing_pages if p.get("data_quality") == "partial")
+        if partial_count > 0:
+            result["warnings"].append(f"{partial_count} landing pages have incomplete metrics")
+    except Exception as e:
+        logger.error(f"Error fetching landing pages: {e}")
+        result["landing_pages"] = []
+        result["warnings"].append(f"Landing pages unavailable: {e}")
+        result["data_quality"] = "partial"
+    
+    # Fetch traffic by source
+    try:
+        traffic_sources = client.fetch_traffic_by_source(start_date_str, end_date_str)
+        result["traffic_sources"] = traffic_sources
+    except Exception as e:
+        logger.error(f"Error fetching traffic sources: {e}")
+        result["traffic_sources"] = []
+        result["warnings"].append(f"Traffic sources unavailable: {e}")
+    
+    # Fetch traffic by channel
+    try:
+        traffic_channels = client.fetch_traffic_by_channel(start_date_str, end_date_str)
+        result["traffic_channels"] = traffic_channels
+    except Exception as e:
+        logger.error(f"Error fetching traffic channels: {e}")
+        result["traffic_channels
