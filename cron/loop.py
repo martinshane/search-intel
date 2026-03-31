@@ -289,14 +289,9 @@ def post_to_slack(action: str, status: str, score_before: int, score_after: int,
 
 # ── Agent ──────────────────────────────────────────────────────────────────────
 
-AGENT_SYSTEM = """You are an autonomous software engineer working on the Search Intelligence Report project.
+PLAN_SYSTEM = """You are an autonomous software engineer working on the Search Intelligence Report project.
 
-Each night you receive an evaluation of the current codebase state including:
-- A health score (0-100)
-- A list of problems (syntax errors, missing files, endpoint failures)
-- The technical spec
-
-Your job is to make ONE targeted improvement. You decide what to fix or build.
+Each night you receive a codebase health evaluation. Your job is to decide ONE improvement to make.
 
 Priority order:
 1. Fix syntax errors (code that won't even parse)
@@ -305,89 +300,127 @@ Priority order:
 4. Improve incomplete implementations
 5. Add missing features from the spec
 
-Respond with ONLY a JSON object:
+Respond with ONLY a JSON plan — NO file contents:
 {
     "action": "one-line description of what you are doing",
     "reasoning": "why this is the most important thing to fix right now",
-    "files": [
+    "commit_message": "concise git commit message",
+    "files_to_write": [
         {
             "path": "relative/path/from/repo/root",
-            "content": "COMPLETE file content — never truncated, production quality"
+            "description": "what this file should contain and what problem it fixes"
         }
-    ],
-    "commit_message": "concise git commit message",
-    "expected_improvement": "what metric should improve and by how much"
+    ]
 }
 
 Rules:
-- ONE logical change per run (can span multiple related files)
-- NEVER include cron/loop.py in files
-- File content must be COMPLETE — never truncated
-- Write production-quality Python/TypeScript with proper error handling
-- If fixing a syntax error, rewrite the ENTIRE file correctly, not just the broken part
-- If creating a missing file, implement it fully per the spec
+- Output ONLY valid JSON. NO file contents in this response.
+- NEVER include cron/loop.py
+- Max 2 files per run
+- All files must be under api/, web/, cron/, supabase/, or tests/
+"""
+
+FILE_SYSTEM = """You are writing a single Python or TypeScript file for the Search Intelligence Report project.
+
+Write ONLY the raw file content. No JSON, no markdown fences, no explanation.
+Start with the first character of the file. End with the last character.
+Write complete, production-quality code. Never truncate.
 """
 
 def get_broken_file_contents(problems: list) -> str:
     """Fetch actual content of broken files from GitHub so agent can fix them."""
-    broken = [p for p in problems if p["type"] == "syntax_error"][:2]  # Max 2 at a time
+    broken = [p for p in problems if p["type"] == "syntax_error"][:2]
     if not broken:
         return ""
-    
     result = []
     for p in broken:
         path = p["file"]
-        content = get_file_content(path)
-        if content:
-            result.append(f"\n--- BROKEN FILE: {path} ---\n{content}\n--- END {path} ---")
+        file_content = get_file_content(path)
+        if file_content:
+            result.append(f"\n--- BROKEN FILE: {path} ---\n{file_content}\n--- END {path} ---")
     return "\n".join(result)
 
 def run_agent(evaluation: dict, spec: str) -> dict:
-    """Ask the agent what to do and get back files to write."""
-    
+    """
+    Two-pass agent:
+    Pass 1 — JSON plan (no file contents, always valid JSON)
+    Pass 2 — Raw file content per file (no JSON parsing issues)
+    """
     problems_text = "\n".join([
         f"  [{p['severity'].upper()}] {p['type']}: {p['description']}"
         for p in evaluation["problems"][:10]
     ])
-    
-    # Fetch actual broken file contents so agent fixes the right files
     broken_files_text = get_broken_file_contents(evaluation["problems"])
-    
-    message = f"""Current codebase health: {evaluation['score']}/100
 
-Problems found ({len(evaluation['problems'])} total):
-{problems_text if problems_text else "  No problems detected"}
+    # Pass 1: Plan only — no file contents
+    plan_message = f"""Codebase health: {evaluation['score']}/100
 
-Syntax errors: {evaluation['syntax_errors']}
-Missing files: {evaluation['missing_files']}
-Endpoint failures: {evaluation['endpoint_failures']}
+Problems ({len(evaluation['problems'])} total):
+{problems_text if problems_text else "  None"}
 
-IMPORTANT: Fix problems in the EXISTING files listed above.
-Do NOT create new files in different directories.
-All source files live under api/ or web/ — never backend/, src/, or other paths.
 {broken_files_text}
 
-Technical spec (first 30k chars):
-<spec>
-{spec[:30000]}
-</spec>
+Output JSON plan only — no file contents."""
 
-Fix the broken files above. Output JSON only."""
-
-    response = anthropic.messages.create(
+    plan_response = anthropic.messages.create(
         model="claude-sonnet-4-5",
-        max_tokens=16000,
-        system=AGENT_SYSTEM,
-        messages=[{"role": "user", "content": message}]
+        max_tokens=2000,
+        system=PLAN_SYSTEM,
+        messages=[{"role": "user", "content": plan_message}]
     )
 
-    raw = response.content[0].text.strip()
+    raw = plan_response.content[0].text.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"): raw = raw[4:]
     if raw.endswith("```"): raw = raw[:-3]
-    
-    return json.loads(raw.strip())
+
+    plan = json.loads(raw.strip())
+    action = plan.get("action", "Unknown")
+    print(f"Plan: {action}")
+
+    files_to_write = [f for f in plan.get("files_to_write", [])
+                      if f["path"] != "cron/loop.py"
+                      and any(f["path"].startswith(d) for d in ("api/", "web/", "cron/", "supabase/", "tests/"))]
+    print(f"Files: {[f['path'] for f in files_to_write]}")
+
+    # Pass 2: Write each file as raw content — no JSON parsing
+    files = []
+    for fi in files_to_write:
+        path = fi["path"]
+        desc = fi.get("description", "")
+        current = get_file_content(path)
+        current_section = f"\nCurrent broken content:\n{current[:3000]}" if current else ""
+
+        file_response = anthropic.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=16000,
+            system=FILE_SYSTEM,
+            messages=[{"role": "user", "content":
+                f"Write the complete fixed content for: {path}\n"
+                f"What it should do: {desc}\n"
+                f"Spec reference:\n{spec[:20000]}"
+                f"{current_section}\n\n"
+                f"Write ONLY the raw file content starting now:"}]
+        )
+
+        file_content = file_response.content[0].text
+        # Strip accidental fences
+        if file_content.strip().startswith("```"):
+            lines = file_content.strip().split("\n")
+            file_content = "\n".join(lines[1:])
+            if file_content.strip().endswith("```"):
+                file_content = file_content.strip()[:-3]
+
+        files.append({"path": path, "content": file_content})
+
+    return {
+        "action": action,
+        "reasoning": plan.get("reasoning", ""),
+        "commit_message": plan.get("commit_message", action[:50]),
+        "files": files
+    }
+
 
 ALLOWED_DIRS = ("api/", "web/", "cron/", "supabase/", "tests/")
 
