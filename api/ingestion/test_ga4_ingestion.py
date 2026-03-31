@@ -559,4 +559,14 @@ class TestErrorHandling:
             ga4_client.fetch_traffic_overview(start_date, end_date)
         assert "Failed to fetch traffic overview" in str(exc_info.value)
 
-    def test_network_timeout(
+
+    def test_network_timeout(self, ga4_client, date_range):
+        """Test handling of network timeout error."""
+        start_date, end_date = date_range
+        
+        timeout_error = Exception("Connection timed out")
+        ga4_client.client.run_report = Mock(side_effect=timeout_error)
+        
+        with pytest.raises(GA4IngestionError) as exc_info:
+            ga4_client.fetch_traffic_overview(start_date, end_date)
+        assert "Failed to fetch traffic overview" in str(exc_info.value)
