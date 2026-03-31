@@ -128,18 +128,46 @@ GITHUB_TOKEN=               # For pushing program.md state updates
 
 ## Build Phases
 
-### Phase 1 — MVP (Target: Days 1-28)
+### Phase 1 — MVP ✅ (Largely complete)
 OAuth + data ingestion + modules 1, 2, 5 + basic report UI.
-**This is a useful free tool on its own.**
+Currently fixing syntax errors before moving forward.
 
-### Phase 2 — SERP Intelligence (Days 29-56)
-DataForSEO integration + modules 3, 8, 11.
+### Phase 2 — SERP Intelligence
+**Goal:** The tool can show users what's happening in actual Google SERPs, not just their own GSC data.
 
-### Phase 3 — Deep Analysis (Days 57-84)
-Modules 4, 6, 7, 9. Site crawl infrastructure.
+Required work:
+- DataForSEO ingestion fully wired (api/ingestion/dataforseo.py exists but needs integration)
+- Module 3 (SERP Landscape): competitor mapping, SERP feature displacement, intent classification, click share estimation
+- Module 8 (CTR Modeling): gradient boosting model on user's own data, expected vs actual CTR per keyword, SERP feature opportunity scoring
+- Module 11 (Competitive Radar): competitor frequency matrix, threat levels, keyword overlap dimensions
+- Frontend: SERP Landscape stacked bar chart, CTR scatter plot, competitive radar chart
+- Report pipeline: modules 3, 8, 11 run after modules 1, 2, 5 and feed into module 5 gameplan
 
-### Phase 4 — Revenue & Polish (Days 85-112)
-Modules 10, 12. PDF export. Email delivery. Historical comparison.
+### Phase 3 — Deep Analysis
+**Goal:** The tool understands content quality, algorithm history, and site architecture.
+
+Required work:
+- Module 4 (Content Intelligence): cannibalization detection, striking distance opportunities, thin content flagging, content age vs performance matrix
+- Module 6 (Algorithm Impact): correlate traffic change points with known algorithm updates, vulnerability scoring
+- Module 7 (Intent Migration): track how query intent distribution shifts over time, AI Overview impact estimation
+- Module 9 (Site Architecture): internal link graph via PageRank, orphaned pages, link equity flow, NetworkX force-directed graph visualization
+- Site crawl infrastructure: Scrapy or sitemap-based crawler, adjacency list storage in Supabase
+- Frontend: content age/decay 2x2 matrix, algorithm timeline overlay, network graph (D3 force-directed)
+
+### Phase 4 — Revenue & Polish
+**Goal:** The tool is production-ready, drives consulting leads, and can be used by anyone.
+
+Required work:
+- Module 10 (Branded/Non-Branded Split): track branded vs non-branded trajectory, non-branded growth plan
+- Module 12 (Revenue Attribution): assign monthly revenue value to each keyword, waterfall chart of current vs potential
+- PDF export of complete report
+- Email delivery (scheduled weekly re-runs with comparison to prior run)
+- Historical comparison UI (this month vs last month delta view)
+- Consulting CTAs: after gameplan section and after revenue section
+- Performance: full report generation under 3 minutes
+- Error handling: every API failure has graceful fallback, user sees meaningful messages
+- Mobile responsive frontend
+- Domain: point clankermarketing.com at search-intel-web Railway service
 
 ---
 
