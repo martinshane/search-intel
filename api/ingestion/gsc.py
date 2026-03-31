@@ -1,661 +1,471 @@
 """
-Google Search Console data ingestion module.
+GSC data ingestion with concurrent pagination support.
 
-Handles OAuth authentication, data fetching, pagination, caching, and error handling
-for all GSC API endpoints needed by the Search Intelligence Report.
+Handles date-range chunking for sites exceeding GSC's 25K row limit.
+Uses ThreadPoolExecutor for parallel fetches across date ranges.
 """
 
+import logging
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 import hashlib
 import json
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
 
-import httpx
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+from google.oauth2.credentials import Credentials
+import pandas as pd
 
-from ..core.cache import cache_get, cache_set
-from ..core.errors import GSCAuthError, GSCDataError, GSCQuotaError
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GSCDataRequest:
+    """Configuration for a GSC API request."""
+    property_url: str
+    start_date: str
+    end_date: str
+    dimensions: List[str]
+    row_limit: int = 25000
+    start_row: int = 0
 
 
 class GSCClient:
-    """Google Search Console API client with caching and error handling."""
+    """Google Search Console API client with caching and concurrent pagination."""
     
-    def __init__(self, credentials_dict: Dict[str, Any]):
+    def __init__(self, credentials: Credentials, cache_manager=None):
         """
-        Initialize GSC client with OAuth credentials.
+        Initialize GSC client.
         
         Args:
-            credentials_dict: OAuth token dictionary from Supabase
+            credentials: Google OAuth2 credentials
+            cache_manager: Optional cache manager for storing API responses
         """
-        self.credentials = Credentials.from_authorized_user_info(credentials_dict)
-        self.service = None
-        self._init_service()
+        self.service = build('searchconsole', 'v1', credentials=credentials)
+        self.cache = cache_manager
+        
+    def _generate_cache_key(self, request: GSCDataRequest) -> str:
+        """Generate cache key from request parameters."""
+        key_data = f"{request.property_url}|{request.start_date}|{request.end_date}|{','.join(request.dimensions)}|{request.row_limit}|{request.start_row}"
+        return hashlib.sha256(key_data.encode()).hexdigest()
     
-    def _init_service(self):
-        """Initialize the GSC API service, refreshing token if needed."""
-        try:
-            if self.credentials.expired and self.credentials.refresh_token:
-                self.credentials.refresh(Request())
-            
-            self.service = build('searchconsole', 'v1', credentials=self.credentials)
-        except Exception as e:
-            raise GSCAuthError(f"Failed to initialize GSC service: {str(e)}")
-    
-    def _make_cache_key(self, endpoint: str, params: Dict[str, Any]) -> str:
-        """Generate a consistent cache key for API requests."""
-        key_string = f"gsc:{endpoint}:{json.dumps(params, sort_keys=True)}"
-        return hashlib.sha256(key_string.encode()).hexdigest()
-    
-    async def _cached_request(
-        self,
-        endpoint: str,
-        params: Dict[str, Any],
-        ttl_hours: int = 24
-    ) -> Optional[Dict[str, Any]]:
+    def _fetch_single_request(self, request: GSCDataRequest) -> Dict[str, Any]:
         """
-        Check cache before making API request.
+        Fetch a single GSC API request.
         
         Args:
-            endpoint: API endpoint identifier
-            params: Request parameters
-            ttl_hours: Cache TTL in hours
+            request: GSCDataRequest configuration
             
         Returns:
-            Cached response if available, None otherwise
+            API response as dict
         """
-        cache_key = self._make_cache_key(endpoint, params)
-        cached = await cache_get("gsc", cache_key)
-        return cached
-    
-    async def _cache_response(
-        self,
-        endpoint: str,
-        params: Dict[str, Any],
-        response: Dict[str, Any],
-        ttl_hours: int = 24
-    ):
-        """Cache API response."""
-        cache_key = self._make_cache_key(endpoint, params)
-        await cache_set("gsc", cache_key, response, ttl_hours=ttl_hours)
-    
-    def _handle_api_error(self, error: HttpError):
-        """Convert Google API errors to our custom exceptions."""
-        if error.resp.status == 429:
-            raise GSCQuotaError("GSC API quota exceeded. Try again later.")
-        elif error.resp.status in [401, 403]:
-            raise GSCAuthError(f"GSC authentication failed: {error._get_reason()}")
-        else:
-            raise GSCDataError(f"GSC API error: {error._get_reason()}")
-    
-    async def get_properties(self) -> List[str]:
-        """
-        Fetch list of GSC properties the user has access to.
-        
-        Returns:
-            List of property URLs
-        """
-        try:
-            sites = self.service.sites().list().execute()
-            return [site['siteUrl'] for site in sites.get('siteEntry', [])]
-        except HttpError as e:
-            self._handle_api_error(e)
-    
-    async def fetch_performance_data(
-        self,
-        property_url: str,
-        start_date: str,
-        end_date: str,
-        dimensions: List[str],
-        row_limit: int = 25000,
-        start_row: int = 0,
-        filters: Optional[List[Dict[str, Any]]] = None
-    ) -> Dict[str, Any]:
-        """
-        Fetch performance data from GSC with pagination support.
-        
-        Args:
-            property_url: GSC property URL
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            dimensions: List of dimensions (query, page, date, country, device, searchAppearance)
-            row_limit: Max rows per request (GSC caps at 25K)
-            start_row: Pagination start row
-            filters: Optional dimension filters
-            
-        Returns:
-            Performance data response
-        """
-        cache_params = {
-            'property': property_url,
-            'start_date': start_date,
-            'end_date': end_date,
-            'dimensions': sorted(dimensions),
-            'row_limit': row_limit,
-            'start_row': start_row,
-            'filters': filters or []
-        }
-        
-        # Check cache
-        cached = await self._cached_request('performance', cache_params)
-        if cached:
-            return cached
+        # Check cache first
+        if self.cache:
+            cache_key = self._generate_cache_key(request)
+            cached = self.cache.get(cache_key)
+            if cached:
+                logger.debug(f"Cache hit for {request.start_date} to {request.end_date}")
+                return cached
         
         # Build request body
         request_body = {
-            'startDate': start_date,
-            'endDate': end_date,
-            'dimensions': dimensions,
-            'rowLimit': row_limit,
-            'startRow': start_row
+            'startDate': request.start_date,
+            'endDate': request.end_date,
+            'dimensions': request.dimensions,
+            'rowLimit': request.row_limit,
+            'startRow': request.start_row
         }
         
-        if filters:
-            request_body['dimensionFilterGroups'] = [{'filters': filters}]
+        logger.info(f"Fetching GSC data: {request.start_date} to {request.end_date}, dims={request.dimensions}, start_row={request.start_row}")
         
         try:
             response = self.service.searchanalytics().query(
-                siteUrl=property_url,
+                siteUrl=request.property_url,
                 body=request_body
             ).execute()
             
-            # Cache response
-            await self._cache_response('performance', cache_params, response)
+            # Cache the response
+            if self.cache:
+                cache_key = self._generate_cache_key(request)
+                self.cache.set(cache_key, response, ttl_hours=24)
             
             return response
-        except HttpError as e:
-            self._handle_api_error(e)
+            
+        except Exception as e:
+            logger.error(f"GSC API error for {request.start_date} to {request.end_date}: {str(e)}")
+            raise
     
-    async def fetch_all_performance_data(
-        self,
-        property_url: str,
-        start_date: str,
-        end_date: str,
-        dimensions: List[str],
-        filters: Optional[List[Dict[str, Any]]] = None,
-        max_rows: int = 500000
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch all performance data with automatic pagination.
-        
-        For large sites, this will make multiple requests to get all data.
-        Implements smart pagination by breaking into date chunks if needed.
-        
-        Args:
-            property_url: GSC property URL
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            dimensions: List of dimensions
-            filters: Optional dimension filters
-            max_rows: Safety limit on total rows
-            
-        Returns:
-            List of all rows across all paginated requests
-        """
-        all_rows = []
-        start_row = 0
-        row_limit = 25000
-        
-        # First attempt: try to get all data in one date range
-        while len(all_rows) < max_rows:
-            response = await self.fetch_performance_data(
-                property_url=property_url,
-                start_date=start_date,
-                end_date=end_date,
-                dimensions=dimensions,
-                row_limit=row_limit,
-                start_row=start_row,
-                filters=filters
-            )
-            
-            rows = response.get('rows', [])
-            if not rows:
-                break
-            
-            all_rows.extend(rows)
-            
-            # If we got fewer than row_limit rows, we're done
-            if len(rows) < row_limit:
-                break
-            
-            start_row += row_limit
-            
-            # If we hit 25K rows multiple times, data is too large for single range
-            # Need to chunk by date instead
-            if start_row >= 100000:  # After 4 pagination requests
-                return await self._fetch_with_date_chunking(
-                    property_url=property_url,
-                    start_date=start_date,
-                    end_date=end_date,
-                    dimensions=dimensions,
-                    filters=filters,
-                    max_rows=max_rows
-                )
-        
-        return all_rows
-    
-    async def _fetch_with_date_chunking(
-        self,
-        property_url: str,
-        start_date: str,
-        end_date: str,
-        dimensions: List[str],
-        filters: Optional[List[Dict[str, Any]]] = None,
-        max_rows: int = 500000,
+    def _split_date_range(
+        self, 
+        start_date: str, 
+        end_date: str, 
         chunk_days: int = 30
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Tuple[str, str]]:
         """
-        Fetch data by breaking date range into chunks (for very large sites).
+        Split date range into smaller chunks for pagination.
         
         Args:
-            property_url: GSC property URL
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
-            dimensions: List of dimensions
-            filters: Optional dimension filters
-            max_rows: Safety limit on total rows
-            chunk_days: Days per chunk
+            chunk_days: Number of days per chunk
             
         Returns:
-            Combined list of all rows
+            List of (start_date, end_date) tuples
         """
-        all_rows = []
-        
         start = datetime.strptime(start_date, '%Y-%m-%d')
         end = datetime.strptime(end_date, '%Y-%m-%d')
         
+        chunks = []
         current = start
-        while current <= end and len(all_rows) < max_rows:
+        
+        while current < end:
             chunk_end = min(current + timedelta(days=chunk_days - 1), end)
-            
-            chunk_start_str = current.strftime('%Y-%m-%d')
-            chunk_end_str = chunk_end.strftime('%Y-%m-%d')
-            
-            # Fetch all data for this chunk (with pagination)
-            chunk_rows = await self.fetch_all_performance_data(
-                property_url=property_url,
-                start_date=chunk_start_str,
-                end_date=chunk_end_str,
-                dimensions=dimensions,
-                filters=filters,
-                max_rows=max_rows - len(all_rows)
-            )
-            
-            all_rows.extend(chunk_rows)
+            chunks.append((
+                current.strftime('%Y-%m-%d'),
+                chunk_end.strftime('%Y-%m-%d')
+            ))
             current = chunk_end + timedelta(days=1)
         
-        return all_rows
+        return chunks
     
-    async def fetch_query_data(
+    def fetch_data_concurrent(
         self,
         property_url: str,
         start_date: str,
         end_date: str,
-        include_date: bool = False
-    ) -> List[Dict[str, Any]]:
+        dimensions: List[str],
+        chunk_days: int = 30,
+        max_workers: int = 5
+    ) -> pd.DataFrame:
         """
-        Fetch all query performance data.
+        Fetch GSC data with concurrent date-range chunking.
+        
+        For large sites, GSC limits responses to 25K rows. This method splits
+        the date range into chunks and fetches them concurrently, then merges.
         
         Args:
             property_url: GSC property URL
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
-            include_date: Whether to include date dimension (for time series)
+            dimensions: List of dimensions (e.g., ['query', 'page', 'date'])
+            chunk_days: Days per chunk (default 30 for monthly chunks)
+            max_workers: Max concurrent requests
             
         Returns:
-            List of query performance rows
+            DataFrame with all results merged and deduplicated
         """
-        dimensions = ['query', 'date'] if include_date else ['query']
-        return await self.fetch_all_performance_data(
-            property_url=property_url,
-            start_date=start_date,
-            end_date=end_date,
-            dimensions=dimensions
-        )
+        # Split date range into chunks
+        date_chunks = self._split_date_range(start_date, end_date, chunk_days)
+        logger.info(f"Split date range into {len(date_chunks)} chunks for concurrent fetching")
+        
+        # Create requests for each chunk
+        requests = [
+            GSCDataRequest(
+                property_url=property_url,
+                start_date=chunk_start,
+                end_date=chunk_end,
+                dimensions=dimensions
+            )
+            for chunk_start, chunk_end in date_chunks
+        ]
+        
+        # Fetch concurrently
+        all_rows = []
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all requests
+            future_to_request = {
+                executor.submit(self._fetch_single_request, req): req 
+                for req in requests
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_request):
+                request = future_to_request[future]
+                try:
+                    response = future.result()
+                    rows = response.get('rows', [])
+                    logger.info(f"Fetched {len(rows)} rows for {request.start_date} to {request.end_date}")
+                    all_rows.extend(rows)
+                except Exception as e:
+                    logger.error(f"Failed to fetch chunk {request.start_date} to {request.end_date}: {str(e)}")
+                    # Continue with other chunks rather than failing completely
+        
+        if not all_rows:
+            logger.warning("No data returned from GSC API")
+            return pd.DataFrame()
+        
+        # Convert to DataFrame
+        df = self._rows_to_dataframe(all_rows, dimensions)
+        
+        # Deduplicate and aggregate
+        # If we have overlapping data from chunking, sum metrics by dimension keys
+        if 'date' in dimensions:
+            group_cols = dimensions
+        else:
+            group_cols = dimensions
+        
+        df_grouped = df.groupby(group_cols, as_index=False).agg({
+            'clicks': 'sum',
+            'impressions': 'sum',
+            'ctr': 'mean',  # Recalculate CTR after grouping
+            'position': 'mean'
+        })
+        
+        # Recalculate CTR properly
+        df_grouped['ctr'] = df_grouped['clicks'] / df_grouped['impressions']
+        df_grouped['ctr'] = df_grouped['ctr'].fillna(0)
+        
+        logger.info(f"Final dataset: {len(df_grouped)} rows after deduplication")
+        
+        return df_grouped
     
-    async def fetch_page_data(
+    def _rows_to_dataframe(self, rows: List[Dict], dimensions: List[str]) -> pd.DataFrame:
+        """
+        Convert GSC API rows to DataFrame.
+        
+        Args:
+            rows: List of row dicts from GSC API
+            dimensions: Dimension names
+            
+        Returns:
+            DataFrame with dimensions and metrics
+        """
+        data = []
+        for row in rows:
+            record = {}
+            
+            # Extract dimension keys
+            keys = row.get('keys', [])
+            for i, dim in enumerate(dimensions):
+                record[dim] = keys[i] if i < len(keys) else None
+            
+            # Extract metrics
+            record['clicks'] = row.get('clicks', 0)
+            record['impressions'] = row.get('impressions', 0)
+            record['ctr'] = row.get('ctr', 0.0)
+            record['position'] = row.get('position', 0.0)
+            
+            data.append(record)
+        
+        return pd.DataFrame(data)
+    
+    def fetch_query_data(
         self,
         property_url: str,
         start_date: str,
         end_date: str,
-        include_date: bool = False
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch all page performance data.
-        
-        Args:
-            property_url: GSC property URL
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            include_date: Whether to include date dimension (for time series)
-            
-        Returns:
-            List of page performance rows
-        """
-        dimensions = ['page', 'date'] if include_date else ['page']
-        return await self.fetch_all_performance_data(
+        chunk_days: int = 30
+    ) -> pd.DataFrame:
+        """Fetch all query-level data."""
+        return self.fetch_data_concurrent(
             property_url=property_url,
             start_date=start_date,
             end_date=end_date,
-            dimensions=dimensions
+            dimensions=['query'],
+            chunk_days=chunk_days
         )
     
-    async def fetch_query_page_mapping(
+    def fetch_page_data(
         self,
         property_url: str,
         start_date: str,
-        end_date: str
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch query-page mapping (which queries drive traffic to which pages).
-        
-        Args:
-            property_url: GSC property URL
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            
-        Returns:
-            List of query-page performance rows
-        """
-        return await self.fetch_all_performance_data(
+        end_date: str,
+        chunk_days: int = 30
+    ) -> pd.DataFrame:
+        """Fetch all page-level data."""
+        return self.fetch_data_concurrent(
             property_url=property_url,
             start_date=start_date,
             end_date=end_date,
-            dimensions=['query', 'page']
+            dimensions=['page'],
+            chunk_days=chunk_days
         )
     
-    async def fetch_daily_summary(
+    def fetch_date_data(
         self,
         property_url: str,
         start_date: str,
-        end_date: str
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch daily aggregated performance data.
-        
-        Args:
-            property_url: GSC property URL
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            
-        Returns:
-            List of daily summary rows
-        """
-        return await self.fetch_all_performance_data(
+        end_date: str,
+        chunk_days: int = 30
+    ) -> pd.DataFrame:
+        """Fetch daily time series data."""
+        return self.fetch_data_concurrent(
             property_url=property_url,
             start_date=start_date,
             end_date=end_date,
-            dimensions=['date']
+            dimensions=['date'],
+            chunk_days=chunk_days
         )
     
-    async def fetch_device_breakdown(
+    def fetch_query_page_data(
         self,
         property_url: str,
         start_date: str,
-        end_date: str
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch performance data by device type.
-        
-        Args:
-            property_url: GSC property URL
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            
-        Returns:
-            List of device performance rows
-        """
-        return await self.fetch_all_performance_data(
+        end_date: str,
+        chunk_days: int = 30
+    ) -> pd.DataFrame:
+        """Fetch query-page mapping data."""
+        return self.fetch_data_concurrent(
             property_url=property_url,
             start_date=start_date,
             end_date=end_date,
-            dimensions=['device']
+            dimensions=['query', 'page'],
+            chunk_days=chunk_days
         )
     
-    async def fetch_country_breakdown(
+    def fetch_query_date_data(
         self,
         property_url: str,
         start_date: str,
-        end_date: str
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch performance data by country.
-        
-        Args:
-            property_url: GSC property URL
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            
-        Returns:
-            List of country performance rows
-        """
-        return await self.fetch_all_performance_data(
+        end_date: str,
+        chunk_days: int = 30
+    ) -> pd.DataFrame:
+        """Fetch per-query time series data."""
+        return self.fetch_data_concurrent(
             property_url=property_url,
             start_date=start_date,
             end_date=end_date,
-            dimensions=['country']
+            dimensions=['query', 'date'],
+            chunk_days=chunk_days
         )
     
-    async def get_sitemaps(self, property_url: str) -> List[Dict[str, Any]]:
-        """
-        Get list of sitemaps for the property.
-        
-        Args:
-            property_url: GSC property URL
-            
-        Returns:
-            List of sitemap information
-        """
-        cache_params = {'property': property_url}
-        cached = await self._cached_request('sitemaps', cache_params, ttl_hours=168)  # 1 week
-        if cached:
-            return cached
-        
-        try:
-            response = self.service.sitemaps().list(siteUrl=property_url).execute()
-            sitemaps = response.get('sitemap', [])
-            
-            await self._cache_response('sitemaps', cache_params, sitemaps, ttl_hours=168)
-            return sitemaps
-        except HttpError as e:
-            self._handle_api_error(e)
-    
-    async def inspect_url(
+    def fetch_page_date_data(
         self,
         property_url: str,
-        url: str
-    ) -> Dict[str, Any]:
+        start_date: str,
+        end_date: str,
+        chunk_days: int = 30
+    ) -> pd.DataFrame:
+        """Fetch per-page time series data."""
+        return self.fetch_data_concurrent(
+            property_url=property_url,
+            start_date=start_date,
+            end_date=end_date,
+            dimensions=['page', 'date'],
+            chunk_days=chunk_days
+        )
+    
+    def fetch_all_standard_reports(
+        self,
+        property_url: str,
+        start_date: str,
+        end_date: str,
+        chunk_days: int = 30,
+        max_workers: int = 5
+    ) -> Dict[str, pd.DataFrame]:
         """
-        Inspect a specific URL for indexing status.
+        Fetch all standard GSC reports concurrently.
         
-        Args:
-            property_url: GSC property URL
-            url: URL to inspect
-            
-        Returns:
-            URL inspection results
+        Returns dict with keys: query, page, date, query_page, query_date, page_date
         """
-        cache_params = {'property': property_url, 'url': url}
-        cached = await self._cached_request('url_inspection', cache_params, ttl_hours=24)
-        if cached:
-            return cached
+        reports = {
+            'query': (self.fetch_query_data, ['query']),
+            'page': (self.fetch_page_data, ['page']),
+            'date': (self.fetch_date_data, ['date']),
+            'query_page': (self.fetch_query_page_data, ['query', 'page']),
+            'query_date': (self.fetch_query_date_data, ['query', 'date']),
+            'page_date': (self.fetch_page_date_data, ['page', 'date'])
+        }
         
-        try:
-            request_body = {'inspectionUrl': url, 'siteUrl': property_url}
-            response = self.service.urlInspection().index().inspect(body=request_body).execute()
+        results = {}
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_name = {
+                executor.submit(
+                    self.fetch_data_concurrent,
+                    property_url,
+                    start_date,
+                    end_date,
+                    dims,
+                    chunk_days
+                ): name
+                for name, (_, dims) in reports.items()
+            }
             
-            await self._cache_response('url_inspection', cache_params, response, ttl_hours=24)
-            return response
-        except HttpError as e:
-            # URL inspection can fail for non-indexed URLs, which is not always an error
-            if e.resp.status == 404:
-                return {'error': 'URL not found in index'}
-            self._handle_api_error(e)
+            for future in as_completed(future_to_name):
+                name = future_to_name[future]
+                try:
+                    df = future.result()
+                    results[name] = df
+                    logger.info(f"Completed {name} report: {len(df)} rows")
+                except Exception as e:
+                    logger.error(f"Failed to fetch {name} report: {str(e)}")
+                    results[name] = pd.DataFrame()
+        
+        return results
 
 
-async def ingest_gsc_data(
-    credentials_dict: Dict[str, Any],
-    property_url: str,
-    months_back: int = 16
-) -> Dict[str, Any]:
+class CacheManager:
+    """Simple cache manager for API responses."""
+    
+    def __init__(self, storage_backend=None):
+        """
+        Initialize cache manager.
+        
+        Args:
+            storage_backend: Optional backend (e.g., Supabase client) for persistent cache
+        """
+        self.backend = storage_backend
+        self.memory_cache = {}
+    
+    def get(self, key: str) -> Optional[Dict]:
+        """Get cached value if not expired."""
+        # Try memory cache first
+        if key in self.memory_cache:
+            cached = self.memory_cache[key]
+            if datetime.now() < cached['expires_at']:
+                return cached['data']
+            else:
+                del self.memory_cache[key]
+        
+        # Try persistent backend if available
+        if self.backend:
+            try:
+                result = self.backend.table('api_cache').select('*').eq('cache_key', key).single().execute()
+                if result.data:
+                    expires_at = datetime.fromisoformat(result.data['expires_at'].replace('Z', '+00:00'))
+                    if datetime.now(expires_at.tzinfo) < expires_at:
+                        return result.data['response']
+            except Exception as e:
+                logger.debug(f"Cache backend miss: {str(e)}")
+        
+        return None
+    
+    def set(self, key: str, data: Dict, ttl_hours: int = 24):
+        """Cache value with TTL."""
+        expires_at = datetime.now() + timedelta(hours=ttl_hours)
+        
+        # Store in memory cache
+        self.memory_cache[key] = {
+            'data': data,
+            'expires_at': expires_at
+        }
+        
+        # Store in persistent backend if available
+        if self.backend:
+            try:
+                self.backend.table('api_cache').upsert({
+                    'cache_key': key,
+                    'response': data,
+                    'expires_at': expires_at.isoformat()
+                }).execute()
+            except Exception as e:
+                logger.warning(f"Failed to cache in backend: {str(e)}")
+
+
+def calculate_date_range(months_back: int = 16) -> Tuple[str, str]:
     """
-    Main ingestion function: pull all GSC data needed for the report.
+    Calculate date range for GSC data pull.
     
     Args:
-        credentials_dict: OAuth credentials
-        property_url: GSC property URL
-        months_back: How many months of historical data to pull
+        months_back: Number of months to go back (default 16 for spec)
         
     Returns:
-        Dictionary containing all ingested data:
-        {
-            'daily_summary': [...],
-            'query_data': [...],
-            'query_date_data': [...],
-            'page_data': [...],
-            'page_date_data': [...],
-            'query_page_mapping': [...],
-            'device_breakdown': [...],
-            'country_breakdown': [...],
-            'sitemaps': [...],
-            'metadata': {...}
-        }
+        Tuple of (start_date, end_date) as YYYY-MM-DD strings
     """
-    client = GSCClient(credentials_dict)
-    
-    # Calculate date range
-    end_date = datetime.now().date()
+    end_date = datetime.now().date() - timedelta(days=3)  # GSC has 3-day lag
     start_date = end_date - timedelta(days=months_back * 30)
     
-    start_date_str = start_date.strftime('%Y-%m-%d')
-    end_date_str = end_date.strftime('%Y-%m-%d')
-    
-    # Handle edge case: properties with very low traffic
-    # Try to fetch a small sample first to detect if property has any data
-    try:
-        sample = await client.fetch_daily_summary(
-            property_url=property_url,
-            start_date=(end_date - timedelta(days=7)).strftime('%Y-%m-%d'),
-            end_date=end_date_str
-        )
-        
-        if not sample or all(row.get('clicks', 0) == 0 for row in sample):
-            # Property has no traffic - return minimal dataset
-            return {
-                'daily_summary': [],
-                'query_data': [],
-                'query_date_data': [],
-                'page_data': [],
-                'page_date_data': [],
-                'query_page_mapping': [],
-                'device_breakdown': [],
-                'country_breakdown': [],
-                'sitemaps': [],
-                'metadata': {
-                    'property_url': property_url,
-                    'start_date': start_date_str,
-                    'end_date': end_date_str,
-                    'has_traffic': False,
-                    'ingestion_timestamp': datetime.now().isoformat()
-                }
-            }
-    except Exception as e:
-        # If even sample fetch fails, property might not exist or have permission issues
-        raise GSCDataError(f"Unable to access property data: {str(e)}")
-    
-    # Property has data - proceed with full ingestion
-    results = {
-        'metadata': {
-            'property_url': property_url,
-            'start_date': start_date_str,
-            'end_date': end_date_str,
-            'has_traffic': True,
-            'ingestion_timestamp': datetime.now().isoformat()
-        }
-    }
-    
-    # Fetch all data in parallel where possible
-    # For now, sequential to avoid rate limits
-    
-    # 1. Daily summary (for Module 1: Health & Trajectory)
-    results['daily_summary'] = await client.fetch_daily_summary(
-        property_url=property_url,
-        start_date=start_date_str,
-        end_date=end_date_str
-    )
-    
-    # 2. Query data aggregated (for Module 3, 4, 7, 10)
-    results['query_data'] = await client.fetch_query_data(
-        property_url=property_url,
-        start_date=start_date_str,
-        end_date=end_date_str,
-        include_date=False
-    )
-    
-    # 3. Query data with date dimension (for time series analysis)
-    results['query_date_data'] = await client.fetch_query_data(
-        property_url=property_url,
-        start_date=start_date_str,
-        end_date=end_date_str,
-        include_date=True
-    )
-    
-    # 4. Page data aggregated (for Module 2, 4, 9, 12)
-    results['page_data'] = await client.fetch_page_data(
-        property_url=property_url,
-        start_date=start_date_str,
-        end_date=end_date_str,
-        include_date=False
-    )
-    
-    # 5. Page data with date dimension (for per-page time series)
-    results['page_date_data'] = await client.fetch_page_data(
-        property_url=property_url,
-        start_date=start_date_str,
-        end_date=end_date_str,
-        include_date=True
-    )
-    
-    # 6. Query-page mapping (for Module 4: cannibalization detection)
-    results['query_page_mapping'] = await client.fetch_query_page_mapping(
-        property_url=property_url,
-        start_date=start_date_str,
-        end_date=end_date_str
-    )
-    
-    # 7. Device breakdown
-    results['device_breakdown'] = await client.fetch_device_breakdown(
-        property_url=property_url,
-        start_date=start_date_str,
-        end_date=end_date_str
-    )
-    
-    # 8. Country breakdown
-    results['country_breakdown'] = await client.fetch_country_breakdown(
-        property_url=property_url,
-        start_date=start_date_str,
-        end_date=end_date_str
-    )
-    
-    # 9. Sitemaps
-    results['sitemaps'] = await client.get_sitemaps(property_url=property_url)
-    
-    # Add data quality metrics
-    results['metadata']['row_counts'] = {
-        'daily_summary': len(results['daily_summary']),
-        'query_data': len(results['query_data']),
-        'query_date_data': len(results['query_date_data']),
-        'page_data': len(results['page_data']),
-        'page_date_data': len(results['page_date_data']),
-        'query_page_mapping': len(results['query_page_mapping']),
-        'device_breakdown': len(results['device_breakdown']),
-        'country_breakdown': len(results['country_breakdown']),
-        'sitemaps': len(results['sitemaps'])
-    }
-    
-    # Calculate total clicks and impressions for context
-    if results['daily_summary']:
-        total_clicks = sum(row.get('clicks', 0) for row in results['daily_summary'])
-        total_impressions = sum(row.get('impressions', 0) for
+    return start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
