@@ -90,74 +90,76 @@ def _extract_critical_fixes(
     triage: Dict[str, Any],
     content: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
-    """Extract urgent issues requiring immediate attention."""
-    critical = []
+    """
+    Extract critical fixes (do this week).
     
-    # Critical decaying pages (from triage)
-    if triage.get("pages"):
-        for page in triage["pages"]:
-            if page.get("bucket") == "critical" and page.get("current_monthly_clicks", 0) > 100:
-                critical.append({
-                    "action": f"Emergency intervention required for {page['url']}",
-                    "type": "critical_decay",
-                    "page": page["url"],
-                    "detail": f"Page is in critical decay with {page['current_monthly_clicks']} monthly clicks. "
-                             f"Current trend slope: {page.get('trend_slope', 0):.2f} clicks/day. "
-                             f"Projected to fall below page 1 by {page.get('projected_page1_loss_date', 'soon')}.",
-                    "impact": page.get("current_monthly_clicks", 0),
-                    "effort": "high",
-                    "instructions": _generate_critical_page_instructions(page),
-                    "priority_score": page.get("priority_score", 0)
-                })
+    Criteria:
+    - Pages in "critical" decay bucket with > 100 clicks/month
+    - CTR anomalies on high-impression keywords
+    - Cannibalization causing both pages to underperform
+    """
+    critical_actions = []
     
-    # CTR anomalies on high-traffic keywords
-    if triage.get("pages"):
+    # 1. Critical decaying pages
+    if triage and "pages" in triage:
         for page in triage["pages"]:
-            if page.get("ctr_anomaly") and page.get("current_monthly_clicks", 0) > 50:
-                expected_ctr = page.get("ctr_expected", 0)
-                actual_ctr = page.get("ctr_actual", 0)
-                ctr_gap = (expected_ctr - actual_ctr) * 100
-                potential_clicks = page.get("current_monthly_clicks", 0) * (expected_ctr / actual_ctr if actual_ctr > 0 else 2)
+            if (page.get("bucket") == "critical" and 
+                page.get("current_monthly_clicks", 0) > 100):
                 
-                critical.append({
-                    "action": f"Fix CTR anomaly for {page['url']}",
-                    "type": "ctr_fix",
+                action = {
+                    "type": "critical_page_rescue",
                     "page": page["url"],
-                    "detail": f"CTR is {ctr_gap:.1f}% below expected. "
-                             f"Expected: {expected_ctr*100:.1f}%, Actual: {actual_ctr*100:.1f}%. "
-                             f"This indicates a title/meta description problem.",
-                    "impact": int(potential_clicks - page.get("current_monthly_clicks", 0)),
-                    "effort": "low",
-                    "instructions": [
-                        "Rewrite title tag to be more compelling and include target keyword",
-                        "Update meta description to better match search intent",
-                        "Review SERP preview to ensure it stands out from competitors",
-                        "A/B test different title formats if possible"
-                    ],
-                    "priority_score": (potential_clicks - page.get("current_monthly_clicks", 0)) * 2
-                })
+                    "current_clicks": page["current_monthly_clicks"],
+                    "trend_slope": page.get("trend_slope", 0),
+                    "action": _generate_critical_page_instructions(page),
+                    "impact": int(page["current_monthly_clicks"] * 0.6),
+                    "effort": "medium",
+                    "deadline": "7 days"
+                }
+                critical_actions.append(action)
     
-    # Severe cannibalization
-    if content.get("cannibalization_clusters"):
+    # 2. High-value CTR anomalies
+    if triage and "pages" in triage:
+        for page in triage["pages"]:
+            if (page.get("ctr_anomaly") and 
+                page.get("current_monthly_clicks", 0) > 200):
+                
+                expected_clicks = page.get("ctr_expected", 0) * page.get("impressions", 0)
+                actual_clicks = page.get("ctr_actual", 0) * page.get("impressions", 0)
+                potential_gain = expected_clicks - actual_clicks
+                
+                if potential_gain > 50:
+                    action = {
+                        "type": "ctr_optimization",
+                        "page": page["url"],
+                        "current_ctr": page.get("ctr_actual", 0),
+                        "expected_ctr": page.get("ctr_expected", 0),
+                        "action": "Rewrite title tag and meta description to improve CTR. Current CTR is significantly below expected for position.",
+                        "impact": int(potential_gain * 30),
+                        "effort": "low",
+                        "deadline": "3 days"
+                    }
+                    critical_actions.append(action)
+    
+    # 3. High-impact cannibalization
+    if content and "cannibalization_clusters" in content:
         for cluster in content["cannibalization_clusters"]:
             if cluster.get("total_impressions_affected", 0) > 5000:
-                critical.append({
-                    "action": f"Resolve cannibalization for: {cluster.get('query_group', 'query group')}",
-                    "type": "cannibalization",
-                    "detail": f"{len(cluster.get('pages', []))} pages competing for {cluster.get('shared_queries', 0)} queries. "
-                             f"Total impressions affected: {cluster.get('total_impressions_affected', 0)}. "
-                             f"Recommendation: {cluster.get('recommendation', 'consolidate')}.",
-                    "pages": cluster.get("pages", []),
-                    "impact": int(cluster.get("total_impressions_affected", 0) * 0.05),  # Estimate 5% click gain
-                    "effort": "medium",
-                    "instructions": _generate_cannibalization_instructions(cluster),
-                    "priority_score": cluster.get("total_impressions_affected", 0) * 0.05
-                })
+                action = {
+                    "type": "cannibalization_fix",
+                    "pages": cluster["pages"],
+                    "queries_affected": cluster.get("shared_queries", 0),
+                    "action": _generate_cannibalization_instructions(cluster),
+                    "impact": int(cluster["total_impressions_affected"] * 0.05),
+                    "effort": "high",
+                    "deadline": "14 days"
+                }
+                critical_actions.append(action)
     
-    # Sort by priority score descending
-    critical.sort(key=lambda x: x.get("priority_score", 0), reverse=True)
+    # Sort by impact descending
+    critical_actions.sort(key=lambda x: x.get("impact", 0), reverse=True)
     
-    return critical
+    return critical_actions[:10]
 
 
 def _extract_quick_wins(
@@ -166,99 +168,72 @@ def _extract_quick_wins(
     content: Dict[str, Any],
     ctr: Optional[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
-    """Extract low-effort, high-impact opportunities."""
+    """
+    Extract quick wins (do this month).
+    
+    Criteria:
+    - Striking distance keywords (positions 8-20)
+    - SERP feature optimization opportunities
+    - Minor content updates for decaying pages
+    """
     quick_wins = []
     
-    # Striking distance keywords
-    if content.get("striking_distance"):
-        for keyword_opp in content["striking_distance"][:10]:  # Top 10
-            current_pos = keyword_opp.get("current_position", 20)
-            impressions = keyword_opp.get("impressions", 0)
-            click_gain = keyword_opp.get("estimated_click_gain_if_top5", 0)
-            
-            if click_gain > 50:  # Worth pursuing
-                quick_wins.append({
-                    "action": f"Boost '{keyword_opp.get('query', 'keyword')}' from position {current_pos:.1f} to top 5",
+    # 1. Striking distance keywords
+    if content and "striking_distance" in content:
+        for keyword_opp in content["striking_distance"]:
+            if keyword_opp.get("estimated_click_gain_if_top5", 0) > 50:
+                action = {
                     "type": "striking_distance",
-                    "keyword": keyword_opp.get("query"),
-                    "page": keyword_opp.get("landing_page"),
-                    "detail": f"Currently at position {current_pos:.1f} with {impressions} monthly impressions. "
-                             f"Moving to top 5 could gain {click_gain} clicks/month.",
-                    "impact": click_gain,
-                    "effort": "low" if current_pos <= 12 else "medium",
-                    "instructions": _generate_striking_distance_instructions(keyword_opp),
-                    "priority_score": click_gain
-                })
+                    "keyword": keyword_opp["query"],
+                    "current_position": keyword_opp["current_position"],
+                    "page": keyword_opp["landing_page"],
+                    "action": _generate_striking_distance_instructions(keyword_opp),
+                    "impact": keyword_opp["estimated_click_gain_if_top5"],
+                    "effort": "medium",
+                    "timeframe": "30 days"
+                }
+                quick_wins.append(action)
     
-    # SERP feature opportunities
-    if ctr and ctr.get("feature_opportunities"):
-        for feature_opp in ctr["feature_opportunities"][:5]:  # Top 5
-            if feature_opp.get("estimated_click_gain", 0) > 100:
-                quick_wins.append({
-                    "action": f"Capture {feature_opp.get('feature', 'SERP feature')} for '{feature_opp.get('keyword')}'",
-                    "type": "serp_feature",
-                    "keyword": feature_opp.get("keyword"),
-                    "feature": feature_opp.get("feature"),
-                    "detail": f"Current holder: {feature_opp.get('current_holder', 'competitor')}. "
-                             f"Estimated impact: +{feature_opp.get('estimated_click_gain', 0)} clicks/month. "
-                             f"Difficulty: {feature_opp.get('difficulty', 'medium')}.",
-                    "impact": feature_opp.get("estimated_click_gain", 0),
-                    "effort": "low" if feature_opp.get("difficulty") == "low" else "medium",
-                    "instructions": _generate_serp_feature_instructions(feature_opp),
-                    "priority_score": feature_opp.get("estimated_click_gain", 0)
-                })
-    
-    # Low-hanging CTR improvements
-    if triage.get("pages"):
-        for page in triage["pages"]:
-            if (page.get("ctr_anomaly") and 
-                page.get("current_monthly_clicks", 0) > 20 and 
-                page.get("current_monthly_clicks", 0) <= 100):  # Mid-range traffic
-                
-                expected_ctr = page.get("ctr_expected", 0)
-                actual_ctr = page.get("ctr_actual", 0)
-                potential_gain = page.get("current_monthly_clicks", 0) * (expected_ctr / actual_ctr - 1) if actual_ctr > 0 else 0
-                
-                if potential_gain > 20:
-                    quick_wins.append({
-                        "action": f"Quick title optimization for {page['url']}",
-                        "type": "ctr_optimization",
-                        "page": page["url"],
-                        "detail": f"Simple title/meta fix could gain {int(potential_gain)} clicks/month.",
-                        "impact": int(potential_gain),
-                        "effort": "low",
-                        "instructions": [
-                            "Rewrite title tag with stronger benefit statement",
-                            "Add current year if time-sensitive content",
-                            "Test emotional triggers or numbers in title"
-                        ],
-                        "priority_score": potential_gain * 1.5  # Bonus for low effort
-                    })
-    
-    # Internal link additions
-    if content.get("thin_content"):
-        for thin_page in content["thin_content"][:5]:  # Top 5
-            if thin_page.get("impressions", 0) > 500:
-                quick_wins.append({
-                    "action": f"Add internal links to {thin_page.get('url')}",
-                    "type": "internal_linking",
-                    "page": thin_page.get("url"),
-                    "detail": f"Page has {thin_page.get('impressions', 0)} impressions but may lack authority. "
-                             f"Quick internal link additions from related high-authority pages.",
-                    "impact": int(thin_page.get("impressions", 0) * 0.02),  # Conservative 2% click gain
+    # 2. SERP feature opportunities
+    if serp and "serp_feature_displacement" in serp:
+        for keyword_data in serp["serp_feature_displacement"]:
+            if abs(keyword_data.get("estimated_ctr_impact", 0)) > 0.03:
+                action = {
+                    "type": "serp_feature_optimization",
+                    "keyword": keyword_data["keyword"],
+                    "features_to_target": keyword_data.get("features_above", []),
+                    "action": _generate_serp_feature_instructions(keyword_data),
+                    "impact": int(keyword_data.get("impressions", 0) * abs(keyword_data.get("estimated_ctr_impact", 0))),
                     "effort": "low",
-                    "instructions": [
-                        "Identify 3-5 high-authority pages with related content",
-                        "Add contextual internal links with descriptive anchor text",
-                        "Ensure links are naturally placed within content body"
-                    ],
-                    "priority_score": thin_page.get("impressions", 0) * 0.02
-                })
+                    "timeframe": "14 days"
+                }
+                quick_wins.append(action)
     
-    # Sort by priority score descending
+    # 3. Decaying pages with low effort fixes
+    if triage and "pages" in triage:
+        for page in triage["pages"]:
+            if (page.get("bucket") == "decaying" and 
+                page.get("current_monthly_clicks", 0) > 50 and
+                page.get("engagement_flag") == "low_engagement"):
+                
+                action = {
+                    "type": "content_refresh",
+                    "page": page["url"],
+                    "action": "Update content to better match search intent. Add recent statistics, examples, or case studies. Current content shows low engagement.",
+                    "impact": int(page["current_monthly_clicks"] * 0.3),
+                    "effort": "medium",
+                    "timeframe": "21 days"
+                }
+                quick_wins.append(action)
+    
+    # Sort by impact/effort ratio
+    for action in quick_wins:
+        effort_multiplier = {"low": 1, "medium": 2, "high": 4}
+        action["priority_score"] = action.get("impact", 0) / effort_multiplier.get(action.get("effort", "medium"), 2)
+    
     quick_wins.sort(key=lambda x: x.get("priority_score", 0), reverse=True)
     
-    return quick_wins
+    return quick_wins[:15]
 
 
 def _extract_strategic_plays(
@@ -268,123 +243,93 @@ def _extract_strategic_plays(
     intent: Optional[Dict[str, Any]],
     branded: Optional[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
-    """Extract longer-term strategic initiatives."""
-    strategic = []
+    """
+    Extract strategic plays (this quarter).
     
-    # Content consolidation projects
-    if content.get("cannibalization_clusters"):
-        for cluster in content["cannibalization_clusters"]:
-            if cluster.get("recommendation") == "consolidate":
-                strategic.append({
-                    "action": f"Content consolidation project: {cluster.get('query_group', 'query group')}",
-                    "type": "consolidation",
-                    "detail": f"Merge {len(cluster.get('pages', []))} competing pages into one authoritative resource.",
-                    "pages": cluster.get("pages", []),
-                    "impact": int(cluster.get("total_impressions_affected", 0) * 0.08),
-                    "effort": "high",
-                    "timeline": "this_quarter",
-                    "instructions": _generate_consolidation_instructions(cluster),
-                    "priority_score": cluster.get("total_impressions_affected", 0) * 0.08
-                })
+    Criteria:
+    - Content gap opportunities
+    - Major consolidation projects
+    - Content refreshes for aged content
+    - Algorithm recovery initiatives
+    """
+    strategic_actions = []
     
-    # Content refresh campaigns
-    if content.get("update_priority_matrix", {}).get("urgent_update"):
-        urgent_updates = content["update_priority_matrix"]["urgent_update"][:10]
-        if urgent_updates:
-            total_impact = sum(page.get("current_monthly_clicks", 0) for page in urgent_updates)
-            strategic.append({
-                "action": f"Content refresh campaign: {len(urgent_updates)} aging pages",
-                "type": "content_refresh",
-                "detail": f"Systematic update of {len(urgent_updates)} pages showing age-related decay. "
-                         f"Combined current traffic: {total_impact} clicks/month.",
-                "pages": [page.get("url") for page in urgent_updates],
-                "impact": int(total_impact * 0.15),  # 15% recovery estimate
-                "effort": "high",
-                "timeline": "this_quarter",
-                "instructions": [
-                    "Update statistics and data to current year",
-                    "Add new examples and case studies",
-                    "Expand thin sections with more detail",
-                    "Update images and screenshots",
-                    "Add FAQ sections for common questions",
-                    "Refresh meta descriptions and titles"
-                ],
-                "priority_score": total_impact * 0.15
-            })
-    
-    # Non-branded growth strategy
-    if branded and branded.get("branded_ratio", 0) > 0.7:
-        non_branded_opportunity = branded.get("non_branded_opportunity", {})
-        gap = non_branded_opportunity.get("gap", 0)
+    # 1. Major consolidation projects
+    if content and "cannibalization_clusters" in content:
+        clusters_to_consolidate = [
+            c for c in content["cannibalization_clusters"]
+            if c.get("recommendation") == "consolidate" and
+            c.get("total_impressions_affected", 0) > 1000
+        ]
         
-        if gap > 500:
-            strategic.append({
-                "action": "Non-branded traffic growth initiative",
-                "type": "non_branded_growth",
-                "detail": f"Your site is {branded.get('branded_ratio', 0)*100:.0f}% dependent on branded search. "
-                         f"Non-branded opportunity: {gap} clicks/month. "
-                         f"Time to meaningful non-branded traffic: {non_branded_opportunity.get('months_to_meaningful_with_actions', 12)} months.",
-                "impact": int(gap * 0.3),  # 30% of gap achievable in quarter
+        if clusters_to_consolidate:
+            total_impact = sum(c.get("total_impressions_affected", 0) for c in clusters_to_consolidate)
+            action = {
+                "type": "consolidation_project",
+                "clusters_count": len(clusters_to_consolidate),
+                "action": _generate_consolidation_instructions(clusters_to_consolidate),
+                "impact": int(total_impact * 0.08),
                 "effort": "high",
-                "timeline": "this_quarter",
-                "instructions": [
-                    "Audit top non-branded keywords for content gaps",
-                    "Create comprehensive guides for high-volume informational queries",
-                    "Build comparison pages for commercial keywords",
-                    "Implement FAQ schema for featured snippet opportunities",
-                    "Launch monthly content calendar targeting non-branded terms",
-                    "Build topical clusters around core non-branded themes"
-                ],
-                "priority_score": gap * 0.3
-            })
+                "timeframe": "90 days"
+            }
+            strategic_actions.append(action)
     
-    # Competitor response strategy
-    if serp.get("competitors"):
-        top_competitor = serp["competitors"][0] if serp["competitors"] else None
-        if top_competitor and top_competitor.get("keywords_shared", 0) > 20:
-            strategic.append({
-                "action": f"Competitive response: {top_competitor.get('domain')}",
-                "type": "competitive_strategy",
-                "detail": f"Primary competitor appears in {top_competitor.get('keywords_shared', 0)} of your keywords "
-                         f"at avg position {top_competitor.get('avg_position', 0):.1f}. "
-                         f"Develop targeted response strategy.",
-                "impact": int(top_competitor.get("keywords_shared", 0) * 50),  # Rough estimate
+    # 2. Content refresh program (aged content)
+    if content and "update_priority_matrix" in content:
+        urgent_updates = content["update_priority_matrix"].get("urgent_update", [])
+        if len(urgent_updates) > 5:
+            total_clicks = sum(p.get("current_monthly_clicks", 0) for p in urgent_updates[:10])
+            action = {
+                "type": "content_refresh_program",
+                "pages_count": len(urgent_updates),
+                "action": f"Systematically refresh {len(urgent_updates)} aged pages showing decay. Prioritize pages with highest current traffic. Update statistics, add new sections, improve formatting.",
+                "impact": int(total_clicks * 0.4),
                 "effort": "high",
-                "timeline": "this_quarter",
-                "instructions": [
-                    f"Conduct content gap analysis vs {top_competitor.get('domain')}",
-                    "Identify their top-performing content formats",
-                    "Find keywords where you're close behind and prioritize",
-                    "Analyze their backlink strategy",
-                    "Monitor for new content launches and respond quickly"
-                ],
-                "priority_score": top_competitor.get("keywords_shared", 0) * 50
-            })
+                "timeframe": "90 days"
+            }
+            strategic_actions.append(action)
     
-    # Algorithm recovery (if recent negative impact)
-    if algorithm and algorithm.get("updates_impacting_site"):
-        for update in algorithm["updates_impacting_site"]:
-            if (update.get("site_impact") == "negative" and 
-                update.get("recovery_status") == "not_recovered" and
-                abs(update.get("click_change_pct", 0)) > 10):
-                
-                strategic.append({
-                    "action": f"Algorithm recovery: {update.get('update_name')}",
-                    "type": "algorithm_recovery",
-                    "detail": f"{update.get('update_name')} caused {update.get('click_change_pct', 0):.1f}% traffic drop. "
-                             f"Most affected: {', '.join(update.get('pages_most_affected', [])[:3])}. "
-                             f"Common issues: {', '.join(update.get('common_characteristics', []))}.",
-                    "impact": int(abs(update.get("click_change_pct", 0)) * 100),  # Rough monthly click estimate
-                    "effort": "high",
-                    "timeline": "this_quarter",
-                    "instructions": _generate_algorithm_recovery_instructions(update),
-                    "priority_score": abs(update.get("click_change_pct", 0)) * 100
-                })
+    # 3. Algorithm recovery
+    if algorithm and "updates_impacting_site" in algorithm:
+        unrecovered_updates = [
+            u for u in algorithm["updates_impacting_site"]
+            if u.get("recovery_status") == "not_recovered" and
+            abs(u.get("click_change_pct", 0)) > 5
+        ]
+        
+        if unrecovered_updates:
+            action = {
+                "type": "algorithm_recovery",
+                "updates_affected": len(unrecovered_updates),
+                "action": _generate_algorithm_recovery_instructions(unrecovered_updates),
+                "impact": int(sum(abs(u.get("click_change_pct", 0)) for u in unrecovered_updates) * 100),
+                "effort": "high",
+                "timeframe": "90 days"
+            }
+            strategic_actions.append(action)
     
-    # Sort by priority score descending
-    strategic.sort(key=lambda x: x.get("priority_score", 0), reverse=True)
+    # 4. Intent migration response
+    if intent and "migrations" in intent:
+        significant_migrations = [
+            m for m in intent["migrations"]
+            if m.get("traffic_impact_pct", 0) < -10
+        ]
+        
+        if significant_migrations:
+            action = {
+                "type": "intent_realignment",
+                "keywords_affected": len(significant_migrations),
+                "action": f"Realign content for {len(significant_migrations)} keywords showing intent shifts. Focus on matching new SERP patterns and user expectations.",
+                "impact": int(sum(abs(m.get("traffic_impact_pct", 0)) for m in significant_migrations) * 50),
+                "effort": "high",
+                "timeframe": "60 days"
+            }
+            strategic_actions.append(action)
     
-    return strategic
+    # Sort by impact
+    strategic_actions.sort(key=lambda x: x.get("impact", 0), reverse=True)
+    
+    return strategic_actions[:8]
 
 
 def _extract_structural_improvements(
@@ -392,72 +337,319 @@ def _extract_structural_improvements(
     health: Dict[str, Any],
     branded: Optional[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
-    """Extract ongoing structural/architectural improvements."""
-    structural = []
+    """
+    Extract structural improvements (ongoing).
     
-    # Internal link architecture fixes
-    if architecture:
-        authority_flow = architecture.get("authority_flow_to_conversion", 0)
-        if authority_flow < 0.1:  # Less than 10% reaching conversion pages
-            structural.append({
-                "action": "Internal link architecture overhaul",
-                "type": "link_architecture",
-                "detail": f"Only {authority_flow*100:.1f}% of internal link authority reaches conversion pages. "
-                         f"Restructure to improve authority distribution.",
-                "timeline": "ongoing",
-                "instructions": [
-                    "Map out conversion funnel and key pages",
-                    "Implement hub-and-spoke model from homepage to hubs to conversion pages",
-                    "Add contextual links from blog content to related product/service pages",
-                    "Remove or nofollow unnecessary footer/sidebar links",
-                    "Create internal linking guidelines for content team"
-                ]
-            })
-        
-        # Orphan page fixes
-        orphan_pages = architecture.get("orphan_pages", [])
-        if len(orphan_pages) > 10:
-            structural.append({
-                "action": f"Connect {len(orphan_pages)} orphaned pages",
-                "type": "orphan_resolution",
-                "detail": f"{len(orphan_pages)} pages have no internal links but appear in GSC data.",
-                "timeline": "ongoing",
-                "instructions": [
-                    "Review each orphan page for value",
-                    "Delete or 301 redirect low-value pages",
-                    "Add internal links to valuable orphan pages",
-                    "Add to sitemap if not already included",
-                    "Create process to prevent future orphan pages"
-                ]
-            })
-        
-        # Link insertion recommendations
-        link_recs = architecture.get("link_recommendations", [])[:10]
-        if link_recs:
-            structural.append({
-                "action": "Implement high-value internal link recommendations",
-                "type": "link_insertion",
-                "detail": f"{len(link_recs)} specific link placements identified with measurable impact.",
-                "timeline": "ongoing",
-                "recommendations": link_recs,
-                "instructions": [
-                    "Implement recommended links in priority order",
-                    "Use suggested anchor text but ensure natural flow",
-                    "Place links contextually within content body",
-                    "Monitor impact on target page rankings",
-                    "Continue identifying new opportunities monthly"
-                ]
-            })
+    Criteria:
+    - Internal linking architecture changes
+    - Seasonal content calendar
+    - Monitoring and alerting setup
+    """
+    structural_actions = []
     
-    # Seasonal content calendar
-    if health.get("seasonality", {}).get("monthly_cycle"):
-        seasonal_desc = health["seasonality"].get("cycle_description", "")
-        structural.append({
-            "action": "Implement seasonal content calendar",
-            "type": "seasonal_optimization",
-            "detail": f"Site shows clear seasonal pattern: {seasonal_desc}. "
-                     f"Optimize content publication timing.",
-            "timeline": "ongoing",
-            "instructions": [
-                "Schedule content updates before peak periods",
-                "Prepare seasonal campaigns 2-4 weeks
+    # 1. Internal linking improvements
+    if architecture and "orphan_pages" in architecture:
+        orphan_count = len(architecture["orphan_pages"])
+        if orphan_count > 0:
+            action = {
+                "type": "internal_linking",
+                "action": f"Integrate {orphan_count} orphan pages into internal link structure. Add contextual links from related content.",
+                "impact": "ongoing",
+                "effort": "medium"
+            }
+            structural_actions.append(action)
+    
+    if architecture and "hub_opportunities" in architecture:
+        if architecture["hub_opportunities"]:
+            action = {
+                "type": "hub_development",
+                "action": f"Develop {len(architecture['hub_opportunities'])} content hubs to strengthen topical authority. Create pillar pages and strengthen internal linking.",
+                "impact": "ongoing",
+                "effort": "high"
+            }
+            structural_actions.append(action)
+    
+    # 2. Seasonal calendar
+    if health and "seasonality" in health:
+        if health["seasonality"].get("monthly_cycle"):
+            action = {
+                "type": "seasonal_calendar",
+                "action": f"Implement content publishing calendar aligned with traffic patterns. Best day: {health['seasonality'].get('best_day', 'Unknown')}. {health['seasonality'].get('cycle_description', '')}",
+                "impact": "ongoing",
+                "effort": "low"
+            }
+            structural_actions.append(action)
+    
+    # 3. Branded search monitoring
+    if branded:
+        action = {
+            "type": "brand_monitoring",
+            "action": f"Set up alerts for branded search performance. Current branded ratio: {branded.get('branded_ratio', 0):.1%}. Monitor for reputation issues and brand strength changes.",
+            "impact": "ongoing",
+            "effort": "low"
+        }
+        structural_actions.append(action)
+    
+    # 4. Competitive monitoring
+    action = {
+        "type": "competitive_monitoring",
+        "action": "Establish quarterly competitive analysis routine. Track competitor movements on priority keywords and identify new threats early.",
+        "impact": "ongoing",
+        "effort": "low"
+    }
+    structural_actions.append(action)
+    
+    return structural_actions
+
+
+def _generate_critical_page_instructions(page: Dict[str, Any]) -> str:
+    """Generate specific instructions for critical page rescue."""
+    instructions = []
+    
+    if page.get("ctr_anomaly"):
+        instructions.append("Rewrite title tag and meta description")
+    
+    if page.get("engagement_flag") == "low_engagement":
+        instructions.append("Improve content quality and search intent match")
+    
+    if page.get("trend_slope", 0) < -0.5:
+        instructions.append("Add fresh content, update statistics, improve comprehensiveness")
+    
+    if not instructions:
+        instructions.append("Comprehensive content audit and optimization needed")
+    
+    return ". ".join(instructions) + "."
+
+
+def _generate_cannibalization_instructions(cluster: Dict[str, Any]) -> str:
+    """Generate specific instructions for cannibalization fix."""
+    recommendation = cluster.get("recommendation", "consolidate")
+    keep_page = cluster.get("keep_page", cluster["pages"][0])
+    
+    if recommendation == "consolidate":
+        return f"Consolidate content into {keep_page}. Set up 301 redirects from other pages. Ensure comprehensive coverage of all queries."
+    elif recommendation == "differentiate":
+        return f"Differentiate pages by targeting distinct search intents. Update titles and content to clearly signal different purposes."
+    else:
+        return f"Set canonical tag on duplicate pages pointing to {keep_page}."
+
+
+def _generate_striking_distance_instructions(keyword_opp: Dict[str, Any]) -> str:
+    """Generate specific instructions for striking distance keyword."""
+    intent = keyword_opp.get("intent", "informational")
+    current_pos = keyword_opp.get("current_position", 15)
+    
+    instructions = []
+    
+    if intent == "commercial":
+        instructions.append("Add comparison tables and product/service details")
+    elif intent == "informational":
+        instructions.append("Expand with comprehensive how-to content and examples")
+    
+    if current_pos > 15:
+        instructions.append("Build internal links from related content")
+    else:
+        instructions.append("Optimize existing content depth and structure")
+    
+    instructions.append("Add relevant schema markup")
+    
+    return ". ".join(instructions) + "."
+
+
+def _generate_serp_feature_instructions(keyword_data: Dict[str, Any]) -> str:
+    """Generate specific instructions for SERP feature optimization."""
+    features = keyword_data.get("features_above", [])
+    instructions = []
+    
+    for feature in features:
+        if "featured_snippet" in feature.lower():
+            instructions.append("Format content for featured snippet (use clear definitions, lists, tables)")
+        elif "paa" in feature.lower() or "people_also_ask" in feature.lower():
+            instructions.append("Add FAQ schema and answer related questions in content")
+        elif "video" in feature.lower():
+            instructions.append("Consider adding video content and video schema")
+        elif "local" in feature.lower():
+            instructions.append("Optimize local SEO signals (NAP, local schema)")
+    
+    if not instructions:
+        instructions.append("Optimize for SERP features present on this keyword")
+    
+    return ". ".join(instructions) + "."
+
+
+def _generate_consolidation_instructions(clusters: List[Dict[str, Any]]) -> str:
+    """Generate instructions for consolidation project."""
+    total_pages = sum(len(c.get("pages", [])) for c in clusters)
+    
+    return f"Consolidation project for {len(clusters)} query clusters affecting {total_pages} pages. For each cluster: 1) Choose strongest page as consolidation target, 2) Merge unique content from other pages, 3) Set up 301 redirects, 4) Update internal links, 5) Monitor rankings for 30 days post-consolidation."
+
+
+def _generate_algorithm_recovery_instructions(updates: List[Dict[str, Any]]) -> str:
+    """Generate instructions for algorithm recovery."""
+    common_characteristics = []
+    for update in updates:
+        chars = update.get("common_characteristics", [])
+        common_characteristics.extend(chars)
+    
+    # Find most common characteristics
+    from collections import Counter
+    char_counts = Counter(common_characteristics)
+    top_chars = [char for char, count in char_counts.most_common(3)]
+    
+    if "thin_content" in top_chars:
+        return "Algorithm recovery focused on content depth. Expand thin pages with comprehensive information, examples, and expert insights. Target 1500+ words for key pages."
+    elif "no_schema" in top_chars:
+        return "Algorithm recovery focused on structured data. Implement comprehensive schema markup across affected pages. Focus on Article, FAQ, and HowTo schemas."
+    else:
+        return f"Algorithm recovery plan: Analyze {len(updates)} update impacts and address common patterns. Focus on E-E-A-T signals, content quality, and user experience improvements."
+
+
+def _summarize_health(health: Dict[str, Any]) -> str:
+    """Generate concise health summary."""
+    direction = health.get("overall_direction", "unknown")
+    slope = health.get("trend_slope_pct_per_month", 0)
+    
+    if direction == "strong_growth":
+        return f"Strong growth trajectory at {slope:+.1f}% per month"
+    elif direction == "growth":
+        return f"Growing at {slope:+.1f}% per month"
+    elif direction == "flat":
+        return "Stable performance with flat trend"
+    elif direction == "decline":
+        return f"Declining at {slope:.1f}% per month"
+    elif direction == "strong_decline":
+        return f"Significant decline at {slope:.1f}% per month"
+    else:
+        return "Performance trend unclear"
+
+
+def _calculate_recovery_potential(
+    critical: List[Dict[str, Any]],
+    quick_wins: List[Dict[str, Any]],
+    triage: Dict[str, Any]
+) -> int:
+    """Calculate total estimated monthly click recovery."""
+    total = 0
+    
+    # From critical actions
+    for action in critical:
+        total += action.get("impact", 0)
+    
+    # From quick wins (count only non-growth actions)
+    for action in quick_wins:
+        if action.get("type") in ["ctr_optimization", "content_refresh"]:
+            total += action.get("impact", 0)
+    
+    return int(total)
+
+
+def _calculate_growth_potential(
+    quick_wins: List[Dict[str, Any]],
+    strategic: List[Dict[str, Any]],
+    content: Dict[str, Any],
+    serp: Dict[str, Any]
+) -> int:
+    """Calculate total estimated monthly click growth from new opportunities."""
+    total = 0
+    
+    # From striking distance keywords
+    for action in quick_wins:
+        if action.get("type") == "striking_distance":
+            total += action.get("impact", 0)
+    
+    # From strategic plays
+    for action in strategic:
+        if isinstance(action.get("impact"), int):
+            total += action.get("impact", 0)
+    
+    return int(total)
+
+
+def _generate_narrative_with_fallback(synthesis_data: Dict[str, Any]) -> str:
+    """
+    Generate executive narrative using Claude API with fallback to template-based generation.
+    """
+    try:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            return _generate_fallback_narrative(synthesis_data)
+        
+        client = anthropic.Anthropic(api_key=api_key)
+        
+        prompt = f"""You are writing the executive summary for a Search Intelligence Report. 
+
+Based on this data, write a compelling 3-paragraph narrative:
+
+Site Health: {synthesis_data['health_summary']}
+Critical Issues: {synthesis_data['critical_count']}
+Quick Win Opportunities: {synthesis_data['quick_wins_count']}
+Strategic Initiatives: {synthesis_data['strategic_count']}
+Estimated Monthly Click Recovery: {synthesis_data['total_recovery']:,}
+Estimated Monthly Click Growth Potential: {synthesis_data['total_growth']:,}
+
+Top Critical Issues:
+{json.dumps(synthesis_data['top_critical'], indent=2)}
+
+Top Quick Wins:
+{json.dumps(synthesis_data['top_quick_wins'], indent=2)}
+
+Write in a direct, consultant-grade tone. No fluff. Focus on:
+1. Current state and trajectory
+2. Immediate priorities and their impact
+3. Strategic roadmap and total opportunity
+
+Keep it under 300 words."""
+
+        message = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=1024,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+        
+        return message.content[0].text
+        
+    except Exception as e:
+        print(f"Claude API failed, using fallback narrative: {e}")
+        return _generate_fallback_narrative(synthesis_data)
+
+
+def _generate_fallback_narrative(synthesis_data: Dict[str, Any]) -> str:
+    """Generate narrative using templates when API fails."""
+    
+    health = synthesis_data['health_summary']
+    critical_count = synthesis_data['critical_count']
+    quick_wins_count = synthesis_data['quick_wins_count']
+    total_recovery = synthesis_data['total_recovery']
+    total_growth = synthesis_data['total_growth']
+    
+    # Paragraph 1: Current state
+    p1 = f"{health}. "
+    
+    if critical_count > 0:
+        p1 += f"Our analysis identified {critical_count} critical issues requiring immediate attention. "
+    else:
+        p1 += "No critical issues detected. "
+    
+    if synthesis_data.get('algorithm_impacts'):
+        p1 += f"Recent algorithm updates have impacted performance. "
+    
+    # Paragraph 2: Immediate priorities
+    p2 = f"We've identified {quick_wins_count} quick-win opportunities "
+    p2 += f"that can recover an estimated {total_recovery:,} clicks per month. "
+    
+    if synthesis_data['top_critical']:
+        top_issue = synthesis_data['top_critical'][0]
+        p2 += f"The highest priority is {top_issue.get('type', 'optimization').replace('_', ' ')}, "
+        p2 += f"which affects {top_issue.get('impact', 0):,} monthly clicks. "
+    
+    # Paragraph 3: Strategic roadmap
+    p3 = f"Beyond immediate fixes, we've mapped {synthesis_data['strategic_count']} strategic initiatives "
+    p3 += f"with a combined growth potential of {total_growth:,} monthly clicks. "
+    
+    if total_recovery + total_growth > 1000:
+        p3 += f"Total upside opportunity: {total_recovery + total_growth:,} clicks per month."
+    
+    return f"{p1}\n\n{p2}\n\n{p3}"
+
