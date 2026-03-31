@@ -591,3 +591,63 @@ def calculate_page_trends(gsc_query_page: pd.DataFrame) -> pd.DataFrame:
     Calculate trend for each page (simplified version).
     In production, this would use actual time series data.
     
+    Groups query-page data by page, aggregates clicks/impressions,
+    and computes a simple trend score based on click-through performance.
+    
+    Args:
+        gsc_query_page: DataFrame with columns [query, page, clicks, impressions, position]
+    
+    Returns:
+        DataFrame with columns [page, trend] where trend is a float score
+        (positive = growing, negative = declining)
+    """
+    try:
+        if gsc_query_page.empty:
+            return pd.DataFrame(columns=['page', 'trend'])
+        
+        # Aggregate metrics per page
+        page_metrics = gsc_query_page.groupby('page').agg(
+            total_clicks=('clicks', 'sum'),
+            total_impressions=('impressions', 'sum'),
+            avg_position=('position', 'mean'),
+            query_count=('query', 'nunique')
+        ).reset_index()
+        
+        # Calculate CTR
+        page_metrics['ctr'] = np.where(
+            page_metrics['total_impressions'] > 0,
+            page_metrics['total_clicks'] / page_metrics['total_impressions'],
+            0
+        )
+        
+        # Calculate expected CTR for the average position
+        page_metrics['expected_ctr'] = page_metrics['avg_position'].apply(
+            get_expected_ctr_for_position
+        )
+        
+        # Trend score: positive means performing above expected, negative means below
+        # Factor in query diversity as a signal of content breadth
+        page_metrics['ctr_delta'] = page_metrics['ctr'] - page_metrics['expected_ctr']
+        
+        # Normalize query count (more queries captured = stronger content signal)
+        max_queries = page_metrics['query_count'].max() if page_metrics['query_count'].max() > 0 else 1
+        page_metrics['query_diversity_score'] = page_metrics['query_count'] / max_queries
+        
+        # Composite trend: CTR performance (70%) + query diversity (30%)
+        page_metrics['trend'] = (
+            page_metrics['ctr_delta'] * 0.7 +
+            page_metrics['query_diversity_score'] * 0.3
+        )
+        
+        # Normalize trend to roughly -1 to 1 range
+        max_abs_trend = page_metrics['trend'].abs().max()
+        if max_abs_trend > 0:
+            page_metrics['trend'] = page_metrics['trend'] / max_abs_trend
+        
+        logger.info(f"Calculated trends for {len(page_metrics)} pages")
+        
+        return page_metrics[['page', 'trend']]
+        
+    except Exception as e:
+        logger.error(f"Error calculating page trends: {str(e)}", exc_info=True)
+        return pd.DataFrame(columns=['page', 'trend'])
