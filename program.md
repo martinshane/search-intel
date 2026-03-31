@@ -171,7 +171,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 10** — Module 2 (Page Triage) implementation: per-page trend fitting, PyOD Isolation Forest CTR anomaly detection, GA4 engagement cross-reference, priority scoring.
 
-- [ ] **DAY 11** — Module 2 tests + Module 1→2 integration: verify Module 2 reads Module 1 output correctly. End-to-end pipeline test: GSC data → Module 1 → Module 2 → structured JSON output.
+- [x] **DAY 11** — Module 2 tests + Module 1→2 integration: verify Module 2 reads Module 1 output correctly. End-to-end pipeline test: GSC data → Module 1 → Module 2 → structured JSON output.
 
 - [ ] **DAY 12** — Module 5 (Gameplan) implementation: synthesize Module 1 + Module 2 outputs into prioritized action list (critical, quick wins, strategic, structural). Claude API call for narrative generation. Test with mock module outputs.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 10
-**Last Task:** Module 2 (Page Triage) implementation with per-page trend fitting, PyOD Isolatio
+**Current Day:** 11
+**Last Task:** Module 2 tests + Module 1→2 integration with end-to-end pipeline test
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 11 — Module 2 tests + Module 1→2 integration: verify Module 2 rea
+**Next Task:** DAY 12 — Module 5 (Gameplan) implementation: synthesize Module 1 + Mo
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
