@@ -159,7 +159,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 05** — Google OAuth flow (frontend): build the connect screen on the Next.js index page. "Connect Google Search Console" button → triggers OAuth flow → on success shows connected property list. Basic styling only.
 
-- [ ] **DAY 06** — GSC data ingestion: implement `ingestion/gsc.py`. Pull performance data by query, by page, by date. Handle 25K row pagination with monthly chunking. Cache responses in `api_cache` table with 24h TTL. Test against a real GSC property (use tradeify.co or kixie.com for dev testing).
+- [x] **DAY 06** — GSC data ingestion: implement `ingestion/gsc.py`. Pull performance data by query, by page, by date. Handle 25K row pagination with monthly chunking. Cache responses in `api_cache` table with 24h TTL. Test against a real GSC property (use tradeify.co or kixie.com for dev testing).
 
 - [ ] **DAY 07** — GA4 data ingestion: implement `ingestion/ga4.py`. Pull all 8 report types from spec. Match date ranges to GSC pull. Cache responses. Test against a real GA4 property.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 5
-**Last Task:** Built Google OAuth frontend connect flow on Next.js index page with Connect butt
-**Last Run:** 2026-03-30 — ✅ Pass
-**Next Task:** DAY 06 — GSC data ingestion: implement `ingestion/gsc.py`. Pull perfo
+**Current Day:** 6
+**Last Task:** Implemented GSC data ingestion with query/page/date performance pulls, 25K row p
+**Last Run:** 2026-03-31 — ✅ Pass
+**Next Task:** DAY 07 — GA4 data ingestion: implement `ingestion/ga4.py`. Pull all 8
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
