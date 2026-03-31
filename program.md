@@ -175,7 +175,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 12** — Module 5 (Gameplan) implementation: synthesize Module 1 + Module 2 outputs into prioritized action list (critical, quick wins, strategic, structural). Claude API call for narrative generation. Test with mock module outputs.
 
-- [ ] **DAY 13** — Async job pipeline: implement `worker/pipeline.py`. Report generation runs as async job: status tracked in `reports` table (pending → ingesting → analyzing → generating → complete). API endpoint to poll status.
+- [x] **DAY 13** — Async job pipeline: implement `worker/pipeline.py`. Report generation runs as async job: status tracked in `reports` table (pending → ingesting → analyzing → generating → complete). API endpoint to poll status.
 
 - [ ] **DAY 14** — End-to-end Phase 1 pipeline test: connect a real GSC+GA4 property, trigger full report generation, verify all 3 modules run, verify report JSON is written to Supabase, verify job status polling works.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 12
-**Last Task:** Module 5 (Gameplan) implementation with Claude API synthesis and tests using moc
+**Current Day:** 13
+**Last Task:** Implemented async job pipeline with worker/pipeline.py for report generation, st
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 13 — Async job pipeline: implement `worker/pipeline.py`. Report g
+**Next Task:** DAY 14 — End-to-end Phase 1 pipeline test: connect a real GSC+GA4 pro
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
