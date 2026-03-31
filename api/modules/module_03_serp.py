@@ -1,504 +1,501 @@
 """
 Module 3: SERP Landscape Analysis
 
-Analyzes the competitive SERP landscape for top keywords, including:
-- SERP feature displacement analysis
-- Competitor mapping and threat assessment
-- Intent classification based on SERP composition
-- Click share estimation with position-adjusted CTR
+Analyzes SERP features, competitor presence, intent classification, and click share estimation.
 """
 
-from typing import Dict, List, Any, Optional
-import pandas as pd
 import logging
-from collections import defaultdict
+from typing import Dict, List, Any, Optional
+from collections import defaultdict, Counter
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
 class SERPLandscapeAnalyzer:
-    """Analyzes SERP features, competitors, and click share opportunities."""
+    """Analyzes SERP landscape including features, competitors, and intent."""
+    
+    # SERP feature weights for visual position calculation
+    SERP_FEATURE_WEIGHTS = {
+        'featured_snippet': 2.0,
+        'knowledge_panel': 1.5,
+        'ai_overview': 2.5,
+        'local_pack': 3.0,
+        'people_also_ask': 0.5,  # per question
+        'video_carousel': 1.0,
+        'image_pack': 0.5,
+        'shopping_results': 1.0,
+        'top_stories': 1.0,
+        'reddit_threads': 0.3,  # per thread
+    }
+    
+    # Position-based CTR curves (generic baseline)
+    GENERIC_CTR_BY_POSITION = {
+        1: 0.284, 2: 0.147, 3: 0.082, 4: 0.053, 5: 0.038,
+        6: 0.030, 7: 0.024, 8: 0.020, 9: 0.017, 10: 0.015
+    }
     
     def __init__(self):
-        # SERP feature visual position weights (approximate positions they consume)
-        self.feature_weights = {
-            'featured_snippet': 2.0,
-            'knowledge_panel': 1.5,
-            'ai_overview': 2.5,
-            'local_pack': 3.0,
-            'people_also_ask': 0.5,  # per question
-            'video_carousel': 1.0,
-            'image_pack': 0.5,
-            'shopping_results': 1.0,
-            'top_stories': 1.0,
-            'site_links': 0.3,
-            'ads': 1.0  # per ad
-        }
+        self.serp_data = []
+        self.gsc_keyword_data = pd.DataFrame()
         
-        # Intent classification rules based on SERP composition
-        self.intent_signals = {
-            'informational': ['knowledge_panel', 'people_also_ask', 'featured_snippet'],
-            'commercial': ['shopping_results', 'product_listings', 'reviews'],
-            'navigational': ['site_links', 'knowledge_panel'],
-            'transactional': ['shopping_results', 'local_pack', 'ads']
-        }
-    
-    def analyze(
-        self,
-        serp_data: List[Dict[str, Any]],
-        gsc_keyword_data: pd.DataFrame
-    ) -> Dict[str, Any]:
+    def analyze(self, serp_data: List[Dict[str, Any]], gsc_keyword_data: pd.DataFrame) -> Dict[str, Any]:
         """
-        Main analysis entry point.
+        Main analysis method.
         
         Args:
-            serp_data: List of SERP results from DataForSEO with features
-            gsc_keyword_data: DataFrame with columns: query, position, clicks, impressions, ctr
-        
+            serp_data: List of SERP results from DataForSEO
+            gsc_keyword_data: GSC data with keyword performance
+            
         Returns:
-            Dictionary containing:
-            - keywords_analyzed: int
-            - serp_feature_displacement: list of displacement analysis per keyword
-            - competitors: list of competitor analysis
-            - intent_mismatches: list of intent mismatch flags
-            - total_click_share: float (0-1)
-            - click_share_opportunity: float (0-1)
+            Analysis results dictionary
         """
         try:
-            logger.info(f"Analyzing SERP landscape for {len(serp_data)} keywords")
+            self.serp_data = serp_data
+            self.gsc_keyword_data = gsc_keyword_data
             
-            # Merge SERP data with GSC data
-            enriched_data = self._merge_serp_gsc_data(serp_data, gsc_keyword_data)
+            if not serp_data:
+                logger.warning("No SERP data provided, returning empty analysis")
+                return self._empty_result()
             
-            # Run sub-analyses
-            displacement_analysis = self._analyze_displacement(enriched_data)
-            competitor_analysis = self._analyze_competitors(enriched_data)
-            intent_analysis = self._analyze_intent(enriched_data)
-            click_share_analysis = self._estimate_click_share(enriched_data)
+            # 1. SERP feature displacement analysis
+            feature_displacement = self._analyze_serp_feature_displacement()
+            
+            # 2. Competitor mapping
+            competitors = self._analyze_competitors()
+            
+            # 3. Intent classification
+            intent_analysis = self._classify_serp_intents()
+            
+            # 4. Click share estimation
+            click_share = self._estimate_click_share()
             
             result = {
-                'keywords_analyzed': len(enriched_data),
-                'serp_feature_displacement': displacement_analysis,
-                'competitors': competitor_analysis,
-                'intent_mismatches': intent_analysis,
-                'total_click_share': click_share_analysis['total_click_share'],
-                'click_share_opportunity': click_share_analysis['opportunity']
+                'keywords_analyzed': len(serp_data),
+                'serp_feature_displacement': feature_displacement,
+                'competitors': competitors,
+                'intent_analysis': intent_analysis,
+                'click_share': click_share,
+                'summary': self._generate_summary(feature_displacement, competitors, click_share)
             }
             
-            logger.info(f"SERP landscape analysis complete. Click share: {result['total_click_share']:.2%}")
+            logger.info(f"SERP landscape analysis complete: {len(serp_data)} keywords analyzed")
             return result
             
         except Exception as e:
-            logger.error(f"Error in SERP landscape analysis: {str(e)}")
-            raise
+            logger.error(f"Error in SERP landscape analysis: {str(e)}", exc_info=True)
+            return self._empty_result()
     
-    def _merge_serp_gsc_data(
-        self,
-        serp_data: List[Dict[str, Any]],
-        gsc_data: pd.DataFrame
-    ) -> List[Dict[str, Any]]:
-        """Merge SERP API data with GSC performance data."""
-        enriched = []
-        
-        # Create lookup dict from GSC data
-        gsc_lookup = {}
-        if not gsc_data.empty:
-            for _, row in gsc_data.iterrows():
-                gsc_lookup[row['query'].lower()] = {
-                    'position': row.get('position', 0),
-                    'clicks': row.get('clicks', 0),
-                    'impressions': row.get('impressions', 0),
-                    'ctr': row.get('ctr', 0)
-                }
-        
-        for serp in serp_data:
-            keyword = serp.get('keyword', '').lower()
-            gsc_metrics = gsc_lookup.get(keyword, {
-                'position': 0,
-                'clicks': 0,
-                'impressions': 0,
-                'ctr': 0
-            })
-            
-            enriched.append({
-                'keyword': keyword,
-                'organic_position': gsc_metrics['position'],
-                'clicks': gsc_metrics['clicks'],
-                'impressions': gsc_metrics['impressions'],
-                'actual_ctr': gsc_metrics['ctr'],
-                'serp_features': serp.get('features', []),
-                'organic_results': serp.get('organic_results', []),
-                'serp_data': serp
-            })
-        
-        return enriched
-    
-    def _analyze_displacement(
-        self,
-        enriched_data: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Analyze SERP feature displacement - how features push organic results down.
-        """
+    def _analyze_serp_feature_displacement(self) -> List[Dict[str, Any]]:
+        """Analyze how SERP features displace organic results."""
         displacement_results = []
         
-        for item in enriched_data:
-            features = item.get('serp_features', [])
-            organic_position = item.get('organic_position', 0)
-            
-            if organic_position == 0:
-                continue
-            
-            # Calculate visual position based on features above the user's result
-            visual_position = self._calculate_visual_position(
-                organic_position,
-                features,
-                item.get('organic_results', [])
-            )
-            
-            # Estimate CTR impact
-            ctr_impact = self._estimate_ctr_impact(organic_position, visual_position)
-            
-            # Only flag significant displacement (> 3 position equivalent)
-            if visual_position > organic_position + 3:
-                displacement_results.append({
-                    'keyword': item['keyword'],
-                    'organic_position': organic_position,
-                    'visual_position': round(visual_position, 1),
-                    'features_above': self._extract_features_above(
-                        features,
-                        organic_position,
-                        item.get('organic_results', [])
-                    ),
-                    'estimated_ctr_impact': round(ctr_impact, 4),
-                    'impressions': item.get('impressions', 0)
-                })
-        
-        # Sort by impact (impressions * ctr_impact)
-        displacement_results.sort(
-            key=lambda x: x['impressions'] * abs(x['estimated_ctr_impact']),
-            reverse=True
-        )
-        
-        return displacement_results
-    
-    def _calculate_visual_position(
-        self,
-        organic_position: float,
-        features: List[Dict[str, Any]],
-        organic_results: List[Dict[str, Any]]
-    ) -> float:
-        """
-        Calculate the visual position accounting for SERP features.
-        """
-        visual_offset = 0.0
-        
-        # Parse features that appear above the organic result
-        for feature in features:
-            feature_type = feature.get('type', '').lower()
-            position = feature.get('position', 999)
-            
-            # Only count features above the organic result
-            if position < organic_position:
-                if feature_type in self.feature_weights:
-                    weight = self.feature_weights[feature_type]
-                    
-                    # Special handling for countable features
-                    if feature_type == 'people_also_ask':
-                        count = feature.get('items', 0)
-                        visual_offset += weight * count
-                    elif feature_type == 'ads':
-                        count = feature.get('count', 0)
-                        visual_offset += weight * count
-                    else:
-                        visual_offset += weight
-        
-        return organic_position + visual_offset
-    
-    def _extract_features_above(
-        self,
-        features: List[Dict[str, Any]],
-        organic_position: float,
-        organic_results: List[Dict[str, Any]]
-    ) -> List[str]:
-        """Extract names of features appearing above the user's organic result."""
-        features_above = []
-        
-        for feature in features:
-            feature_type = feature.get('type', '')
-            position = feature.get('position', 999)
-            
-            if position < organic_position:
-                # Format feature name with count for countable features
-                if feature_type == 'people_also_ask':
-                    count = feature.get('items', 0)
-                    features_above.append(f"paa_x{count}")
-                elif feature_type == 'ads':
-                    count = feature.get('count', 0)
-                    features_above.append(f"ads_x{count}")
-                else:
-                    features_above.append(feature_type)
-        
-        return features_above
-    
-    def _estimate_ctr_impact(
-        self,
-        organic_position: float,
-        visual_position: float
-    ) -> float:
-        """
-        Estimate CTR impact from position displacement.
-        Uses simplified CTR curve estimation.
-        """
-        # Simplified CTR curve (position -> expected CTR)
-        def position_to_ctr(pos: float) -> float:
-            if pos <= 1:
-                return 0.30
-            elif pos <= 3:
-                return 0.30 * (0.6 ** (pos - 1))
-            elif pos <= 10:
-                return 0.18 * (0.75 ** (pos - 3))
-            else:
-                return 0.02 * (0.8 ** (pos - 10))
-        
-        organic_ctr = position_to_ctr(organic_position)
-        visual_ctr = position_to_ctr(visual_position)
-        
-        return visual_ctr - organic_ctr
-    
-    def _analyze_competitors(
-        self,
-        enriched_data: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Map competitor domains and their threat levels.
-        """
-        # Track competitor appearances
-        competitor_stats = defaultdict(lambda: {
-            'keywords': [],
-            'positions': [],
-            'url_count': 0
-        })
-        
-        for item in enriched_data:
-            organic_results = item.get('organic_results', [])
-            keyword = item['keyword']
-            
-            for result in organic_results[:10]:  # Top 10 only
-                domain = self._extract_domain(result.get('url', ''))
-                position = result.get('position', 999)
+        for serp in self.serp_data:
+            try:
+                keyword = serp.get('keyword', '')
+                user_position = self._find_user_position(serp)
                 
-                if domain:
-                    competitor_stats[domain]['keywords'].append(keyword)
-                    competitor_stats[domain]['positions'].append(position)
-                    competitor_stats[domain]['url_count'] += 1
+                if user_position is None:
+                    continue
+                
+                features_above = self._extract_features_above_position(serp, user_position)
+                visual_position = self._calculate_visual_position(user_position, features_above)
+                
+                # Calculate CTR impact if visual position is significantly different
+                if visual_position > user_position + 2:
+                    generic_ctr = self.GENERIC_CTR_BY_POSITION.get(user_position, 0.01)
+                    adjusted_ctr = self.GENERIC_CTR_BY_POSITION.get(
+                        min(int(visual_position), 10), 0.01
+                    )
+                    ctr_impact = adjusted_ctr - generic_ctr
+                    
+                    displacement_results.append({
+                        'keyword': keyword,
+                        'organic_position': user_position,
+                        'visual_position': round(visual_position, 1),
+                        'displacement': round(visual_position - user_position, 1),
+                        'features_above': features_above,
+                        'estimated_ctr_impact': round(ctr_impact, 3)
+                    })
+                    
+            except Exception as e:
+                logger.warning(f"Error analyzing displacement for keyword: {str(e)}")
+                continue
         
-        # Convert to list and calculate metrics
+        # Sort by displacement magnitude
+        displacement_results.sort(key=lambda x: x['displacement'], reverse=True)
+        
+        return displacement_results[:50]  # Return top 50 most displaced
+    
+    def _analyze_competitors(self) -> List[Dict[str, Any]]:
+        """Map competitor presence across keywords."""
+        competitor_frequency = Counter()
+        competitor_positions = defaultdict(list)
+        
+        for serp in self.serp_data:
+            try:
+                organic_results = serp.get('organic_results', [])
+                
+                for result in organic_results[:10]:  # Top 10 only
+                    domain = self._extract_domain(result.get('url', ''))
+                    if domain and not self._is_user_domain(domain, serp):
+                        competitor_frequency[domain] += 1
+                        competitor_positions[domain].append(result.get('position', 100))
+                        
+            except Exception as e:
+                logger.warning(f"Error analyzing competitors: {str(e)}")
+                continue
+        
+        # Build competitor analysis
         competitors = []
-        for domain, stats in competitor_stats.items():
-            keywords_shared = len(set(stats['keywords']))
-            avg_position = sum(stats['positions']) / len(stats['positions']) if stats['positions'] else 0
+        total_keywords = len(self.serp_data)
+        
+        for domain, count in competitor_frequency.most_common(20):
+            avg_position = sum(competitor_positions[domain]) / len(competitor_positions[domain])
+            overlap_pct = (count / total_keywords) * 100
             
-            # Calculate threat level
-            threat_level = self._calculate_threat_level(
-                keywords_shared,
-                avg_position,
-                len(enriched_data)
-            )
+            # Determine threat level
+            threat_level = 'low'
+            if overlap_pct > 40 and avg_position < 5:
+                threat_level = 'critical'
+            elif overlap_pct > 30 and avg_position < 7:
+                threat_level = 'high'
+            elif overlap_pct > 20 or avg_position < 5:
+                threat_level = 'medium'
             
             competitors.append({
                 'domain': domain,
-                'keywords_shared': keywords_shared,
+                'keywords_shared': count,
+                'overlap_percentage': round(overlap_pct, 1),
                 'avg_position': round(avg_position, 1),
-                'appearances': stats['url_count'],
                 'threat_level': threat_level
             })
         
-        # Sort by keywords shared (frequency)
-        competitors.sort(key=lambda x: x['keywords_shared'], reverse=True)
-        
-        # Return top 20 competitors
-        return competitors[:20]
+        return competitors
     
-    def _extract_domain(self, url: str) -> Optional[str]:
+    def _classify_serp_intents(self) -> Dict[str, Any]:
+        """Classify intent based on SERP composition."""
+        intent_distribution = {
+            'informational': 0,
+            'commercial': 0,
+            'navigational': 0,
+            'transactional': 0
+        }
+        
+        intent_mismatches = []
+        
+        for serp in self.serp_data:
+            try:
+                keyword = serp.get('keyword', '').lower()
+                
+                # Classify based on SERP features and keyword patterns
+                intent = self._classify_keyword_intent(keyword, serp)
+                intent_distribution[intent] += 1
+                
+                # Check for potential mismatches
+                user_result = self._find_user_result(serp)
+                if user_result:
+                    page_type = self._infer_page_type(user_result.get('url', ''))
+                    if self._is_intent_mismatch(intent, page_type):
+                        intent_mismatches.append({
+                            'keyword': keyword,
+                            'serp_intent': intent,
+                            'page_type': page_type,
+                            'user_position': user_result.get('position', 0),
+                            'recommendation': self._get_mismatch_recommendation(intent, page_type)
+                        })
+                        
+            except Exception as e:
+                logger.warning(f"Error classifying intent: {str(e)}")
+                continue
+        
+        total = sum(intent_distribution.values())
+        if total > 0:
+            for intent in intent_distribution:
+                intent_distribution[intent] = round(intent_distribution[intent] / total, 3)
+        
+        return {
+            'intent_distribution': intent_distribution,
+            'intent_mismatches': intent_mismatches[:20]  # Top 20 mismatches
+        }
+    
+    def _estimate_click_share(self) -> Dict[str, Any]:
+        """Estimate click share across keyword portfolio."""
+        total_estimated_clicks = 0
+        total_potential_clicks = 0
+        user_clicks = 0
+        
+        keyword_click_shares = []
+        
+        for serp in self.serp_data:
+            try:
+                keyword = serp.get('keyword', '')
+                
+                # Get GSC impressions for this keyword
+                gsc_row = self.gsc_keyword_data[
+                    self.gsc_keyword_data['query'] == keyword
+                ] if not self.gsc_keyword_data.empty else pd.DataFrame()
+                
+                if gsc_row.empty:
+                    continue
+                
+                impressions = gsc_row.iloc[0].get('impressions', 0)
+                clicks = gsc_row.iloc[0].get('clicks', 0)
+                position = gsc_row.iloc[0].get('position', 100)
+                
+                # Estimate total clicks available for this keyword
+                # Use position 1 CTR as proxy for total available clicks
+                potential_clicks = impressions * self.GENERIC_CTR_BY_POSITION.get(1, 0.28)
+                
+                # Adjust for SERP features
+                features_above = self._extract_features_above_position(serp, position)
+                if features_above:
+                    # Reduce potential by 30% if heavy features present
+                    feature_weight = sum([1 for f in features_above if f != 'people_also_ask'])
+                    if feature_weight > 2:
+                        potential_clicks *= 0.7
+                
+                click_share = (clicks / potential_clicks) if potential_clicks > 0 else 0
+                
+                total_estimated_clicks += clicks
+                total_potential_clicks += potential_clicks
+                user_clicks += clicks
+                
+                keyword_click_shares.append({
+                    'keyword': keyword,
+                    'clicks': clicks,
+                    'potential_clicks': round(potential_clicks, 1),
+                    'click_share': round(click_share, 3),
+                    'position': round(position, 1)
+                })
+                
+            except Exception as e:
+                logger.warning(f"Error estimating click share: {str(e)}")
+                continue
+        
+        overall_click_share = (total_estimated_clicks / total_potential_clicks) if total_potential_clicks > 0 else 0
+        
+        # Calculate opportunity
+        click_opportunity = total_potential_clicks - total_estimated_clicks
+        
+        return {
+            'total_click_share': round(overall_click_share, 3),
+            'current_monthly_clicks': int(user_clicks),
+            'potential_monthly_clicks': int(total_potential_clicks),
+            'click_opportunity': int(click_opportunity),
+            'keyword_breakdown': sorted(keyword_click_shares, key=lambda x: x['clicks'], reverse=True)[:30]
+        }
+    
+    def _find_user_position(self, serp: Dict[str, Any]) -> Optional[int]:
+        """Find user's organic position in SERP."""
+        user_result = self._find_user_result(serp)
+        return user_result.get('position') if user_result else None
+    
+    def _find_user_result(self, serp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Find user's result in organic results."""
+        organic_results = serp.get('organic_results', [])
+        user_domain = serp.get('user_domain', '')
+        
+        for result in organic_results:
+            domain = self._extract_domain(result.get('url', ''))
+            if domain and user_domain and domain == user_domain:
+                return result
+        
+        return None
+    
+    def _extract_features_above_position(self, serp: Dict[str, Any], position: int) -> List[str]:
+        """Extract SERP features appearing above given position."""
+        features = []
+        
+        # Check for various SERP features
+        if serp.get('featured_snippet') and serp['featured_snippet'].get('position', 100) < position:
+            features.append('featured_snippet')
+        
+        if serp.get('knowledge_panel'):
+            features.append('knowledge_panel')
+        
+        if serp.get('ai_overview'):
+            features.append('ai_overview')
+        
+        if serp.get('local_pack') and serp['local_pack'].get('position', 100) < position:
+            features.append('local_pack')
+        
+        # People Also Ask - count how many above position
+        paa = serp.get('people_also_ask', [])
+        paa_above = sum(1 for q in paa if q.get('position', 100) < position)
+        if paa_above > 0:
+            features.extend(['people_also_ask'] * paa_above)
+        
+        if serp.get('video_results') and any(
+            v.get('position', 100) < position for v in serp.get('video_results', [])
+        ):
+            features.append('video_carousel')
+        
+        if serp.get('images_pack') and serp['images_pack'].get('position', 100) < position:
+            features.append('image_pack')
+        
+        if serp.get('shopping_results') and any(
+            s.get('position', 100) < position for s in serp.get('shopping_results', [])
+        ):
+            features.append('shopping_results')
+        
+        return features
+    
+    def _calculate_visual_position(self, organic_position: int, features_above: List[str]) -> float:
+        """Calculate visual position accounting for SERP features."""
+        displacement = 0.0
+        
+        for feature in features_above:
+            displacement += self.SERP_FEATURE_WEIGHTS.get(feature, 0.5)
+        
+        return organic_position + displacement
+    
+    def _extract_domain(self, url: str) -> str:
         """Extract domain from URL."""
         try:
             from urllib.parse import urlparse
             parsed = urlparse(url)
-            domain = parsed.netloc or parsed.path
-            # Remove www. prefix
-            domain = domain.replace('www.', '')
-            return domain if domain else None
+            domain = parsed.netloc.lower()
+            # Remove www.
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            return domain
         except Exception:
-            return None
+            return ''
     
-    def _calculate_threat_level(
-        self,
-        keywords_shared: int,
-        avg_position: float,
-        total_keywords: int
-    ) -> str:
-        """Calculate threat level based on competitor metrics."""
-        keyword_overlap_ratio = keywords_shared / total_keywords if total_keywords > 0 else 0
-        
-        # High overlap + high positions = high threat
-        if keyword_overlap_ratio > 0.3 and avg_position < 5:
-            return 'high'
-        elif keyword_overlap_ratio > 0.2 and avg_position < 7:
-            return 'high'
-        elif keyword_overlap_ratio > 0.15 or avg_position < 5:
-            return 'medium'
-        else:
-            return 'low'
+    def _is_user_domain(self, domain: str, serp: Dict[str, Any]) -> bool:
+        """Check if domain belongs to user."""
+        user_domain = serp.get('user_domain', '').lower()
+        if user_domain.startswith('www.'):
+            user_domain = user_domain[4:]
+        return domain == user_domain
     
-    def _analyze_intent(
-        self,
-        enriched_data: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Classify query intent based on SERP composition and flag mismatches.
-        """
-        intent_mismatches = []
+    def _classify_keyword_intent(self, keyword: str, serp: Dict[str, Any]) -> str:
+        """Classify keyword intent based on patterns and SERP features."""
+        keyword_lower = keyword.lower()
         
-        for item in enriched_data:
-            features = item.get('serp_features', [])
-            
-            # Classify intent based on feature composition
-            intent = self._classify_intent(features)
-            
-            # Check if user's content type matches intent
-            # (This would require page type data - simplified for now)
-            organic_results = item.get('organic_results', [])
-            user_result = self._find_user_result(organic_results, item['organic_position'])
-            
-            if user_result:
-                content_type = self._infer_content_type(user_result)
-                
-                # Flag mismatches
-                if self._is_intent_mismatch(intent, content_type):
-                    intent_mismatches.append({
-                        'keyword': item['keyword'],
-                        'detected_intent': intent,
-                        'content_type': content_type,
-                        'position': item['organic_position'],
-                        'recommendation': self._get_intent_recommendation(intent, content_type)
-                    })
+        # Navigational signals
+        if any(word in keyword_lower for word in ['login', 'sign in', 'account', 'dashboard']):
+            return 'navigational'
         
-        return intent_mismatches
-    
-    def _classify_intent(self, features: List[Dict[str, Any]]) -> str:
-        """Classify search intent based on SERP features present."""
-        feature_types = [f.get('type', '').lower() for f in features]
+        # Transactional signals
+        if any(word in keyword_lower for word in ['buy', 'purchase', 'price', 'deal', 'discount', 'coupon', 'order']):
+            return 'transactional'
         
-        # Count signals for each intent type
-        intent_scores = defaultdict(int)
-        for intent, signals in self.intent_signals.items():
-            for signal in signals:
-                if signal in feature_types:
-                    intent_scores[intent] += 1
+        # Commercial investigation signals
+        if any(word in keyword_lower for word in ['best', 'top', 'review', 'compare', 'vs', 'alternative']):
+            return 'commercial'
         
-        # Return intent with highest score, default to informational
-        if not intent_scores:
+        # Check SERP features for additional signals
+        if serp.get('shopping_results'):
+            return 'transactional'
+        
+        if serp.get('knowledge_panel') or len(serp.get('people_also_ask', [])) > 3:
             return 'informational'
         
-        return max(intent_scores.items(), key=lambda x: x[1])[0]
-    
-    def _find_user_result(
-        self,
-        organic_results: List[Dict[str, Any]],
-        position: float
-    ) -> Optional[Dict[str, Any]]:
-        """Find the user's result in organic results."""
-        for result in organic_results:
-            if abs(result.get('position', 0) - position) < 0.5:
-                return result
-        return None
-    
-    def _infer_content_type(self, result: Dict[str, Any]) -> str:
-        """Infer content type from URL and snippet."""
-        url = result.get('url', '').lower()
+        # Default to informational for question words
+        if any(keyword_lower.startswith(word) for word in ['how', 'what', 'why', 'when', 'who', 'where']):
+            return 'informational'
         
-        if '/blog/' in url or '/article/' in url:
-            return 'blog_post'
-        elif '/product/' in url or '/shop/' in url:
-            return 'product_page'
-        elif '/category/' in url or '/collection/' in url:
-            return 'category_page'
-        elif url.endswith('/'):
-            return 'landing_page'
-        else:
-            return 'unknown'
+        return 'informational'
     
-    def _is_intent_mismatch(self, intent: str, content_type: str) -> bool:
-        """Check if content type matches search intent."""
+    def _infer_page_type(self, url: str) -> str:
+        """Infer page type from URL."""
+        url_lower = url.lower()
+        
+        if any(word in url_lower for word in ['/blog/', '/article/', '/guide/', '/learn/']):
+            return 'blog'
+        
+        if any(word in url_lower for word in ['/product/', '/pricing/', '/buy/', '/shop/']):
+            return 'product'
+        
+        if any(word in url_lower for word in ['/category/', '/collection/']):
+            return 'category'
+        
+        if url_lower.count('/') <= 3:
+            return 'homepage'
+        
+        return 'other'
+    
+    def _is_intent_mismatch(self, serp_intent: str, page_type: str) -> bool:
+        """Check if there's a mismatch between SERP intent and page type."""
         mismatches = {
-            'transactional': ['blog_post'],
-            'informational': ['product_page'],
-            'commercial': ['blog_post']
+            'transactional': ['blog'],
+            'commercial': ['blog'],
+            'informational': ['product']
         }
         
-        return content_type in mismatches.get(intent, [])
+        return page_type in mismatches.get(serp_intent, [])
     
-    def _get_intent_recommendation(self, intent: str, content_type: str) -> str:
-        """Generate recommendation for intent mismatch."""
-        recommendations = {
-            ('transactional', 'blog_post'): 'Consider creating a product/pricing page for this transactional query',
-            ('informational', 'product_page'): 'Consider creating an informational guide instead of pushing product',
-            ('commercial', 'blog_post'): 'Add comparison tables and CTAs to convert commercial intent'
-        }
+    def _get_mismatch_recommendation(self, serp_intent: str, page_type: str) -> str:
+        """Get recommendation for intent mismatch."""
+        if serp_intent in ['transactional', 'commercial'] and page_type == 'blog':
+            return "Consider creating a dedicated product/comparison page for this keyword"
         
-        return recommendations.get((intent, content_type), 'Review content alignment with search intent')
+        if serp_intent == 'informational' and page_type == 'product':
+            return "Consider adding educational content or creating a supporting blog post"
+        
+        return "Review content alignment with search intent"
     
-    def _estimate_click_share(
+    def _generate_summary(
         self,
-        enriched_data: List[Dict[str, Any]]
-    ) -> Dict[str, float]:
-        """
-        Estimate total click share and opportunity.
-        """
-        total_available_clicks = 0
-        total_captured_clicks = 0
-        
-        for item in enriched_data:
-            impressions = item.get('impressions', 0)
-            actual_ctr = item.get('actual_ctr', 0)
-            organic_position = item.get('organic_position', 0)
-            
-            if impressions == 0 or organic_position == 0:
-                continue
-            
-            # Estimate total available clicks for this keyword
-            # Assume average CTR across top 10 positions is ~15%
-            available_clicks = impressions * 0.15
-            captured_clicks = impressions * actual_ctr
-            
-            total_available_clicks += available_clicks
-            total_captured_clicks += captured_clicks
-        
-        click_share = total_captured_clicks / total_available_clicks if total_available_clicks > 0 else 0
-        opportunity = 1.0 - click_share
-        
+        displacement: List[Dict[str, Any]],
+        competitors: List[Dict[str, Any]],
+        click_share: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Generate summary statistics."""
         return {
-            'total_click_share': round(click_share, 4),
-            'opportunity': round(opportunity, 4),
-            'total_captured': int(total_captured_clicks),
-            'total_available': int(total_available_clicks)
+            'keywords_with_significant_displacement': len(displacement),
+            'avg_visual_displacement': round(
+                sum(d['displacement'] for d in displacement) / len(displacement), 1
+            ) if displacement else 0,
+            'primary_competitors_count': sum(1 for c in competitors if c['threat_level'] in ['high', 'critical']),
+            'total_click_share': click_share.get('total_click_share', 0),
+            'click_opportunity_size': click_share.get('click_opportunity', 0)
+        }
+    
+    def _empty_result(self) -> Dict[str, Any]:
+        """Return empty result structure."""
+        return {
+            'keywords_analyzed': 0,
+            'serp_feature_displacement': [],
+            'competitors': [],
+            'intent_analysis': {
+                'intent_distribution': {
+                    'informational': 0,
+                    'commercial': 0,
+                    'navigational': 0,
+                    'transactional': 0
+                },
+                'intent_mismatches': []
+            },
+            'click_share': {
+                'total_click_share': 0,
+                'current_monthly_clicks': 0,
+                'potential_monthly_clicks': 0,
+                'click_opportunity': 0,
+                'keyword_breakdown': []
+            },
+            'summary': {
+                'keywords_with_significant_displacement': 0,
+                'avg_visual_displacement': 0,
+                'primary_competitors_count': 0,
+                'total_click_share': 0,
+                'click_opportunity_size': 0
+            }
         }
 
 
-def analyze_serp_landscape(
-    serp_data: List[Dict[str, Any]],
-    gsc_keyword_data: pd.DataFrame
-) -> Dict[str, Any]:
+def analyze_serp_landscape(serp_data: List[Dict[str, Any]], gsc_keyword_data: pd.DataFrame) -> Dict[str, Any]:
     """
     Main entry point for SERP landscape analysis.
     
     Args:
         serp_data: List of SERP results from DataForSEO
-        gsc_keyword_data: GSC performance data per keyword
-    
+        gsc_keyword_data: GSC keyword performance data
+        
     Returns:
-        Dictionary containing complete SERP landscape analysis
+        Complete SERP landscape analysis
     """
     analyzer = SERPLandscapeAnalyzer()
     return analyzer.analyze(serp_data, gsc_keyword_data)
