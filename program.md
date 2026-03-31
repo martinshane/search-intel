@@ -165,7 +165,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 ### Core Modules (Days 8-14)
 
-- [ ] **DAY 08** — Module 1 (Health & Trajectory) implementation: MSTL decomposition, change point detection (PELT/ruptures), STUMPY matrix profile on residuals. Write to report JSON schema from spec.
+- [x] **DAY 08** — Module 1 (Health & Trajectory) implementation: MSTL decomposition, change point detection (PELT/ruptures), STUMPY matrix profile on residuals. Write to report JSON schema from spec.
 
 - [ ] **DAY 09** — Module 1 tests: unit tests with 16 months of synthetic daily data. Verify output schema matches spec exactly. Verify change points are detected correctly on known test cases.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 7
-**Last Task:** Implemented GA4 data ingestion with 8 report types, caching, error handling, and
+**Current Day:** 8
+**Last Task:** Implemented Module 1 (Health & Trajectory) with MSTL decomposition, PELT change 
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 08 — Module 1 (Health & Trajectory) implementation: MSTL decompos
+**Next Task:** DAY 09 — Module 1 tests: unit tests with 16 months of synthetic daily
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
