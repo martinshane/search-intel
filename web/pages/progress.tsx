@@ -1,319 +1,326 @@
-import { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
 import Head from 'next/head';
 
-interface BuildLog {
-  id: number;
-  run_date: string;
-  task: string;
-  status: 'success' | 'failure' | 'running' | 'pending';
-  notes: string | null;
-  created_at: string;
+interface ProgressState {
+  status: 'pending' | 'ingesting' | 'analyzing' | 'generating' | 'complete' | 'failed';
+  progress: {
+    module_1?: 'pending' | 'running' | 'complete' | 'failed';
+    module_2?: 'pending' | 'running' | 'complete' | 'failed';
+    module_3?: 'pending' | 'running' | 'complete' | 'failed';
+    module_4?: 'pending' | 'running' | 'complete' | 'failed';
+    module_5?: 'pending' | 'running' | 'complete' | 'failed';
+    module_6?: 'pending' | 'running' | 'complete' | 'failed';
+    module_7?: 'pending' | 'running' | 'complete' | 'failed';
+    module_8?: 'pending' | 'running' | 'complete' | 'failed';
+    module_9?: 'pending' | 'running' | 'complete' | 'failed';
+    module_10?: 'pending' | 'running' | 'complete' | 'failed';
+    module_11?: 'pending' | 'running' | 'complete' | 'failed';
+    module_12?: 'pending' | 'running' | 'complete' | 'failed';
+  };
+  error?: string;
 }
 
-interface GroupedLogs {
-  [date: string]: BuildLog[];
-}
+const MODULE_NAMES: Record<string, string> = {
+  module_1: 'Health & Trajectory Analysis',
+  module_2: 'Page-Level Triage',
+  module_3: 'SERP Landscape Analysis',
+  module_4: 'Content Intelligence',
+  module_5: 'Strategic Gameplan',
+  module_6: 'Algorithm Update Impact',
+  module_7: 'Query Intent Migration',
+  module_8: 'CTR Modeling by SERP Context',
+  module_9: 'Site Architecture & Authority Flow',
+  module_10: 'Branded vs Non-Branded Health',
+  module_11: 'Competitive Threat Radar',
+  module_12: 'Revenue Attribution',
+};
+
+const PHASE_DESCRIPTIONS: Record<string, string> = {
+  pending: 'Initializing report generation...',
+  ingesting: 'Fetching data from Google Search Console, GA4, and DataForSEO...',
+  analyzing: 'Running analysis modules...',
+  generating: 'Synthesizing insights and generating report...',
+  complete: 'Report ready!',
+  failed: 'Report generation failed',
+};
 
 export default function ProgressPage() {
-  const [logs, setLogs] = useState<BuildLog[]>([]);
-  const [loading, setLoading] = useState(true);
+  const router = useRouter();
+  const { jobId } = router.query;
+  const [progressState, setProgressState] = useState<ProgressState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [groupByDate, setGroupByDate] = useState(true);
+  const [elapsedTime, setElapsedTime] = useState(0);
 
   useEffect(() => {
-    fetchLogs();
-  }, []);
+    if (!jobId) return;
 
-  const fetchLogs = async () => {
-    try {
-      setLoading(true);
-      setError(null);
+    let pollInterval: NodeJS.Timeout;
+    let timeInterval: NodeJS.Timeout;
 
-      const response = await fetch('/api/build-logs');
-      
-      if (!response.ok) {
-        throw new Error(`Failed to fetch logs: ${response.statusText}`);
+    const pollJobStatus = async () => {
+      try {
+        const response = await fetch(`/api/jobs/${jobId}/status`, {
+          credentials: 'include',
+        });
+
+        if (!response.ok) {
+          if (response.status === 404) {
+            setError('Job not found. It may have expired or been deleted.');
+            return;
+          }
+          throw new Error(`Failed to fetch job status: ${response.statusText}`);
+        }
+
+        const data: ProgressState = await response.json();
+        setProgressState(data);
+
+        if (data.status === 'complete') {
+          clearInterval(pollInterval);
+          clearInterval(timeInterval);
+          // Redirect to report page
+          router.push(`/report/${jobId}`);
+        } else if (data.status === 'failed') {
+          clearInterval(pollInterval);
+          clearInterval(timeInterval);
+          setError(data.error || 'Report generation failed. Please try again.');
+        }
+      } catch (err) {
+        console.error('Error polling job status:', err);
+        setError(err instanceof Error ? err.message : 'Failed to check job status');
+        clearInterval(pollInterval);
+        clearInterval(timeInterval);
       }
+    };
 
-      const data = await response.json();
-      setLogs(data.logs || []);
-    } catch (err) {
-      console.error('Error fetching build logs:', err);
-      setError(err instanceof Error ? err.message : 'Unknown error occurred');
-    } finally {
-      setLoading(false);
-    }
+    // Initial poll
+    pollJobStatus();
+
+    // Poll every 5 seconds
+    pollInterval = setInterval(pollJobStatus, 5000);
+
+    // Update elapsed time every second
+    timeInterval = setInterval(() => {
+      setElapsedTime((prev) => prev + 1);
+    }, 1000);
+
+    return () => {
+      clearInterval(pollInterval);
+      clearInterval(timeInterval);
+    };
+  }, [jobId, router]);
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const groupLogsByDate = (logs: BuildLog[]): GroupedLogs => {
-    return logs.reduce((acc, log) => {
-      const date = log.run_date;
-      if (!acc[date]) {
-        acc[date] = [];
-      }
-      acc[date].push(log);
-      return acc;
-    }, {} as GroupedLogs);
+  const getModuleStatus = (moduleKey: string): 'pending' | 'running' | 'complete' | 'failed' => {
+    if (!progressState?.progress) return 'pending';
+    return progressState.progress[moduleKey as keyof typeof progressState.progress] || 'pending';
   };
 
-  const getStatusColor = (status: BuildLog['status']) => {
+  const getModuleIcon = (status: string): string => {
     switch (status) {
-      case 'success':
-        return 'text-green-600 bg-green-50';
-      case 'failure':
-        return 'text-red-600 bg-red-50';
-      case 'running':
-        return 'text-blue-600 bg-blue-50';
-      case 'pending':
-        return 'text-gray-600 bg-gray-50';
-      default:
-        return 'text-gray-600 bg-gray-50';
-    }
-  };
-
-  const getStatusIcon = (status: BuildLog['status']) => {
-    switch (status) {
-      case 'success':
+      case 'complete':
         return '✓';
-      case 'failure':
-        return '✗';
       case 'running':
-        return '↻';
-      case 'pending':
-        return '○';
+        return '⟳';
+      case 'failed':
+        return '✗';
       default:
-        return '?';
+        return '○';
     }
   };
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { 
-      weekday: 'short', 
-      year: 'numeric', 
-      month: 'short', 
-      day: 'numeric' 
-    });
+  const getModuleColor = (status: string): string => {
+    switch (status) {
+      case 'complete':
+        return 'text-green-600';
+      case 'running':
+        return 'text-blue-600 animate-spin';
+      case 'failed':
+        return 'text-red-600';
+      default:
+        return 'text-gray-400';
+    }
   };
 
-  const formatTime = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date.toLocaleTimeString('en-US', { 
-      hour: '2-digit', 
-      minute: '2-digit'
-    });
+  const calculateOverallProgress = (): number => {
+    if (!progressState?.progress) return 0;
+    
+    const modules = Object.keys(MODULE_NAMES);
+    const completedCount = modules.filter(
+      (key) => getModuleStatus(key) === 'complete'
+    ).length;
+    
+    return Math.round((completedCount / modules.length) * 100);
   };
 
-  const renderLogRow = (log: BuildLog) => (
-    <tr key={log.id} className="border-b border-gray-200 hover:bg-gray-50">
-      {!groupByDate && (
-        <td className="px-4 py-3 text-sm text-gray-700">
-          {formatDate(log.run_date)}
-        </td>
-      )}
-      <td className="px-4 py-3 text-sm text-gray-700">{log.task}</td>
-      <td className="px-4 py-3">
-        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(log.status)}`}>
-          <span className="mr-1">{getStatusIcon(log.status)}</span>
-          {log.status}
-        </span>
-      </td>
-      <td className="px-4 py-3 text-sm text-gray-600">
-        {log.notes || '—'}
-      </td>
-      <td className="px-4 py-3 text-xs text-gray-500">
-        {formatTime(log.created_at)}
-      </td>
-    </tr>
-  );
-
-  const renderGroupedView = () => {
-    const grouped = groupLogsByDate(logs);
-    const dates = Object.keys(grouped).sort().reverse();
-
+  if (error) {
     return (
-      <div className="space-y-6">
-        {dates.map(date => (
-          <div key={date} className="border border-gray-200 rounded-lg overflow-hidden">
-            <div className="bg-gray-100 px-4 py-2 border-b border-gray-200">
-              <h3 className="text-sm font-semibold text-gray-800">
-                {formatDate(date)}
-              </h3>
-            </div>
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Task
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Notes
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Time
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {grouped[date].map(renderLogRow)}
-              </tbody>
-            </table>
-          </div>
-        ))}
-      </div>
-    );
-  };
-
-  const renderFlatView = () => (
-    <div className="border border-gray-200 rounded-lg overflow-hidden">
-      <table className="min-w-full divide-y divide-gray-200">
-        <thead className="bg-gray-50">
-          <tr>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Date
-            </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Task
-            </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Status
-            </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Notes
-            </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Time
-            </th>
-          </tr>
-        </thead>
-        <tbody className="bg-white divide-y divide-gray-200">
-          {logs.map(renderLogRow)}
-        </tbody>
-      </table>
-    </div>
-  );
-
-  const getStatusSummary = () => {
-    const summary = logs.reduce((acc, log) => {
-      acc[log.status] = (acc[log.status] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-
-    return summary;
-  };
-
-  const statusSummary = getStatusSummary();
-
-  return (
-    <>
-      <Head>
-        <title>Build Progress Dashboard | Search Intelligence</title>
-        <meta name="description" content="Nightly build progress tracker for Search Intelligence Report" />
-      </Head>
-
-      <div className="min-h-screen bg-gray-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          {/* Header */}
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold text-gray-900 mb-2">
-              Build Progress Dashboard
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+        <Head>
+          <title>Error - Search Intelligence Report</title>
+        </Head>
+        <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8">
+          <div className="text-center">
+            <div className="text-red-600 text-5xl mb-4">✗</div>
+            <h1 className="text-2xl font-bold text-gray-900 mb-4">
+              Generation Failed
             </h1>
-            <p className="text-gray-600">
-              Tracking nightly build tasks and their status
-            </p>
-          </div>
-
-          {/* Summary Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            <div className="bg-white rounded-lg shadow p-4 border-l-4 border-gray-400">
-              <div className="text-sm text-gray-600 mb-1">Total Runs</div>
-              <div className="text-2xl font-bold text-gray-900">{logs.length}</div>
-            </div>
-            <div className="bg-white rounded-lg shadow p-4 border-l-4 border-green-500">
-              <div className="text-sm text-gray-600 mb-1">Success</div>
-              <div className="text-2xl font-bold text-green-600">{statusSummary.success || 0}</div>
-            </div>
-            <div className="bg-white rounded-lg shadow p-4 border-l-4 border-red-500">
-              <div className="text-sm text-gray-600 mb-1">Failures</div>
-              <div className="text-2xl font-bold text-red-600">{statusSummary.failure || 0}</div>
-            </div>
-            <div className="bg-white rounded-lg shadow p-4 border-l-4 border-blue-500">
-              <div className="text-sm text-gray-600 mb-1">Running</div>
-              <div className="text-2xl font-bold text-blue-600">{statusSummary.running || 0}</div>
-            </div>
-          </div>
-
-          {/* Controls */}
-          <div className="flex justify-between items-center mb-6">
-            <div className="flex items-center space-x-4">
-              <button
-                onClick={fetchLogs}
-                disabled={loading}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {loading ? 'Refreshing...' : 'Refresh'}
-              </button>
-              <button
-                onClick={() => setGroupByDate(!groupByDate)}
-                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
-              >
-                {groupByDate ? 'Show Flat View' : 'Group by Date'}
-              </button>
-            </div>
-            <div className="text-sm text-gray-500">
-              Last updated: {new Date().toLocaleTimeString()}
-            </div>
-          </div>
-
-          {/* Content */}
-          {loading && logs.length === 0 ? (
-            <div className="bg-white rounded-lg shadow p-8 text-center">
-              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-4"></div>
-              <p className="text-gray-600">Loading build logs...</p>
-            </div>
-          ) : error ? (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-6">
-              <div className="flex items-start">
-                <div className="flex-shrink-0">
-                  <span className="text-red-600 text-xl">⚠</span>
-                </div>
-                <div className="ml-3">
-                  <h3 className="text-sm font-medium text-red-800 mb-2">
-                    Error loading logs
-                  </h3>
-                  <p className="text-sm text-red-700">{error}</p>
-                  <button
-                    onClick={fetchLogs}
-                    className="mt-3 text-sm text-red-600 hover:text-red-800 underline"
-                  >
-                    Try again
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : logs.length === 0 ? (
-            <div className="bg-white rounded-lg shadow p-8 text-center">
-              <p className="text-gray-600 mb-4">No build logs found</p>
-              <p className="text-sm text-gray-500">
-                Build logs will appear here after the first nightly run
-              </p>
-            </div>
-          ) : (
-            <div className="bg-white rounded-lg shadow">
-              {groupByDate ? renderGroupedView() : renderFlatView()}
-            </div>
-          )}
-
-          {/* Footer */}
-          <div className="mt-8 text-center text-sm text-gray-500">
-            <p>This dashboard updates automatically with each nightly build run.</p>
-            <p className="mt-1">Built for Shane's morning check-in ritual ☕</p>
+            <p className="text-gray-600 mb-6">{error}</p>
+            <button
+              onClick={() => router.push('/dashboard')}
+              className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Return to Dashboard
+            </button>
           </div>
         </div>
       </div>
-    </>
+    );
+  }
+
+  if (!progressState) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <Head>
+          <title>Loading - Search Intelligence Report</title>
+        </Head>
+        <div className="text-center">
+          <div className="animate-spin text-6xl text-blue-600 mb-4">⟳</div>
+          <p className="text-gray-600">Initializing...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const overallProgress = calculateOverallProgress();
+
+  return (
+    <div className="min-h-screen bg-gray-50 py-12 px-4">
+      <Head>
+        <title>Generating Report - Search Intelligence Report</title>
+      </Head>
+      
+      <div className="max-w-4xl mx-auto">
+        {/* Header */}
+        <div className="bg-white rounded-lg shadow-lg p-8 mb-8">
+          <div className="text-center mb-6">
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">
+              Generating Your Search Intelligence Report
+            </h1>
+            <p className="text-gray-600">
+              {PHASE_DESCRIPTIONS[progressState.status]}
+            </p>
+          </div>
+
+          {/* Overall Progress Bar */}
+          <div className="mb-4">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-sm font-medium text-gray-700">
+                Overall Progress
+              </span>
+              <span className="text-sm font-medium text-gray-700">
+                {overallProgress}%
+              </span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+              <div
+                className="bg-blue-600 h-full transition-all duration-500 ease-out"
+                style={{ width: `${overallProgress}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Elapsed Time */}
+          <div className="text-center text-sm text-gray-500 mt-4">
+            Elapsed time: {formatTime(elapsedTime)}
+            <span className="ml-4 text-gray-400">
+              (Estimated: 2-5 minutes)
+            </span>
+          </div>
+        </div>
+
+        {/* Module Progress */}
+        <div className="bg-white rounded-lg shadow-lg p-8">
+          <h2 className="text-xl font-bold text-gray-900 mb-6">
+            Analysis Modules
+          </h2>
+          
+          <div className="space-y-4">
+            {Object.entries(MODULE_NAMES).map(([moduleKey, moduleName]) => {
+              const status = getModuleStatus(moduleKey);
+              const icon = getModuleIcon(status);
+              const colorClass = getModuleColor(status);
+              
+              return (
+                <div
+                  key={moduleKey}
+                  className={`flex items-center justify-between p-4 rounded-lg border-2 transition-all ${
+                    status === 'running'
+                      ? 'border-blue-300 bg-blue-50'
+                      : status === 'complete'
+                      ? 'border-green-300 bg-green-50'
+                      : status === 'failed'
+                      ? 'border-red-300 bg-red-50'
+                      : 'border-gray-200 bg-gray-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-4">
+                    <span className={`text-2xl ${colorClass}`}>
+                      {icon}
+                    </span>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">
+                        {moduleName}
+                      </h3>
+                      <p className="text-sm text-gray-500 capitalize">
+                        {status}
+                      </p>
+                    </div>
+                  </div>
+                  
+                  {status === 'running' && (
+                    <div className="flex items-center gap-2 text-blue-600">
+                      <div className="animate-pulse">●</div>
+                      <span className="text-sm font-medium">
+                        Processing...
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Info Box */}
+        <div className="mt-8 bg-blue-50 border-2 border-blue-200 rounded-lg p-6">
+          <div className="flex items-start gap-4">
+            <div className="text-blue-600 text-2xl">ℹ</div>
+            <div>
+              <h3 className="font-semibold text-blue-900 mb-2">
+                What's happening behind the scenes?
+              </h3>
+              <ul className="text-sm text-blue-800 space-y-1">
+                <li>• Fetching 16 months of data from Google Search Console & GA4</li>
+                <li>• Pulling live SERP data for your top keywords</li>
+                <li>• Running statistical analysis and machine learning models</li>
+                <li>• Analyzing site architecture and internal link graph</li>
+                <li>• Synthesizing insights across 12 analysis dimensions</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        {/* Safe to close notice */}
+        <div className="mt-6 text-center text-sm text-gray-500">
+          You can safely close this page. We'll email you when the report is ready.
+        </div>
+      </div>
+    </div>
   );
 }
