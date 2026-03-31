@@ -1,14 +1,17 @@
 """
-Report generation and management router.
+Report generation, management, and PDF export router.
 """
 import os
 import uuid
+import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Body
+from fastapi.responses import Response
 from pydantic import BaseModel
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -84,6 +87,93 @@ async def get_report(report_id: str) -> Dict[str, Any]:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch report: {str(e)}")
+
+
+@router.get("/{report_id}/pdf")
+async def export_report_pdf(report_id: str) -> Response:
+    """
+    Export a completed report as a PDF document.
+
+    Returns a downloadable PDF containing the executive summary,
+    all module results, metrics, and recommendations.
+    """
+    supabase = _get_supabase()
+
+    # 1. Fetch report metadata
+    try:
+        result = supabase.table("reports").select("*").eq("id", report_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Report not found")
+        report_data = result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch report: {str(e)}")
+
+    if report_data.get("status") not in ("completed", "done", "ready"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Report is not yet completed (status: {report_data.get('status')}). "
+                   "PDF export is only available for finished reports.",
+        )
+
+    # 2. Fetch all module results for this report
+    try:
+        modules_result = (
+            supabase.table("report_modules")
+            .select("module_number, results")
+            .eq("report_id", report_id)
+            .order("module_number")
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch module results: {str(e)}",
+        )
+
+    module_results: Dict[int, Dict[str, Any]] = {}
+    for row in modules_result.data or []:
+        num = row.get("module_number")
+        data = row.get("results")
+        if num is not None and data:
+            module_results[int(num)] = data if isinstance(data, dict) else {}
+
+    if not module_results:
+        raise HTTPException(
+            status_code=400,
+            detail="No module results found for this report. Run the analysis first.",
+        )
+
+    # 3. Generate PDF
+    try:
+        from api.services.pdf_export import generate_pdf_report
+        pdf_bytes = generate_pdf_report(report_data, module_results)
+    except ImportError as e:
+        logger.error(f"PDF export dependency missing: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="PDF generation is not available. Missing dependency: reportlab.",
+        )
+    except Exception as e:
+        logger.exception("PDF generation failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate PDF: {str(e)}",
+        )
+
+    # 4. Return PDF as downloadable response
+    domain = report_data.get("domain", "report").replace(".", "_")
+    filename = f"search_intelligence_{domain}_{datetime.utcnow().strftime('%Y%m%d')}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(pdf_bytes)),
+        },
+    )
 
 
 @router.get("/user/{user_id}")
