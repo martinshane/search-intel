@@ -1,5 +1,5 @@
-import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
 import Head from 'next/head';
 import {
   LineChart,
@@ -19,455 +19,134 @@ import {
   ReferenceLine,
   Cell,
 } from 'recharts';
-import { supabase } from '../../lib/supabase';
-
-interface Report {
-  id: string;
-  status: string;
-  progress: Record<string, string>;
-  report_data: ReportData | null;
-  gsc_property: string;
-  ga4_property: string | null;
-  created_at: string;
-  completed_at: string | null;
-}
+import { Menu, X, ChevronDown, ChevronUp, ExternalLink, Download, Calendar, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Target, Zap } from 'lucide-react';
 
 interface ReportData {
-  health_trajectory?: HealthTrajectory;
-  page_triage?: PageTriage;
-  serp_landscape?: SerpLandscape;
-  content_intelligence?: ContentIntelligence;
-  gameplan?: Gameplan;
-  algorithm_impacts?: AlgorithmImpacts;
-  intent_migration?: IntentMigration;
-  ctr_modeling?: CtrModeling;
-  site_architecture?: SiteArchitecture;
-  branded_split?: BrandedSplit;
-  competitive_threats?: CompetitiveThreats;
-  revenue_attribution?: RevenueAttribution;
-}
-
-interface HealthTrajectory {
-  overall_direction: string;
-  trend_slope_pct_per_month: number;
-  change_points: ChangePoint[];
-  seasonality: Seasonality;
-  anomalies: Anomaly[];
-  forecast: Forecast;
-}
-
-interface ChangePoint {
-  date: string;
-  magnitude: number;
-  direction: string;
-}
-
-interface Seasonality {
-  best_day: string;
-  worst_day: string;
-  monthly_cycle: boolean;
-  cycle_description: string;
-}
-
-interface Anomaly {
-  date: string;
-  type: string;
-  magnitude: number;
-}
-
-interface Forecast {
-  '30d': ForecastPeriod;
-  '60d': ForecastPeriod;
-  '90d': ForecastPeriod;
-}
-
-interface ForecastPeriod {
-  clicks: number;
-  ci_low: number;
-  ci_high: number;
-}
-
-interface PageTriage {
-  pages: PageAnalysis[];
-  summary: PageSummary;
-}
-
-interface PageAnalysis {
-  url: string;
-  bucket: string;
-  current_monthly_clicks: number;
-  trend_slope: number;
-  projected_page1_loss_date?: string;
-  ctr_anomaly: boolean;
-  ctr_expected?: number;
-  ctr_actual?: number;
-  engagement_flag?: string;
-  priority_score: number;
-  recommended_action: string;
-}
-
-interface PageSummary {
-  total_pages_analyzed: number;
-  growing: number;
-  stable: number;
-  decaying: number;
-  critical: number;
-  total_recoverable_clicks_monthly: number;
-}
-
-interface SerpLandscape {
-  keywords_analyzed: number;
-  serp_feature_displacement: SerpDisplacement[];
-  competitors: Competitor[];
-  intent_mismatches: IntentMismatch[];
-  total_click_share: number;
-  click_share_opportunity: number;
-}
-
-interface SerpDisplacement {
-  keyword: string;
-  organic_position: number;
-  visual_position: number;
-  features_above: string[];
-  estimated_ctr_impact: number;
-}
-
-interface Competitor {
-  domain: string;
-  keywords_shared: number;
-  avg_position: number;
-  threat_level: string;
-}
-
-interface IntentMismatch {
-  keyword: string;
-  serp_intent: string;
-  page_type: string;
-  recommendation: string;
-}
-
-interface ContentIntelligence {
-  cannibalization_clusters: CannibalizationCluster[];
-  striking_distance: StrikingDistance[];
-  thin_content: ThinContent[];
-  update_priority_matrix: UpdatePriorityMatrix;
-}
-
-interface CannibalizationCluster {
-  query_group: string;
-  pages: string[];
-  shared_queries: number;
-  total_impressions_affected: number;
-  recommendation: string;
-  keep_page?: string;
-}
-
-interface StrikingDistance {
-  query: string;
-  current_position: number;
-  impressions: number;
-  estimated_click_gain_if_top5: number;
-  intent: string;
-  landing_page: string;
-}
-
-interface ThinContent {
-  url: string;
-  word_count: number;
-  impressions: number;
-  bounce_rate: number;
-  recommendation: string;
-}
-
-interface UpdatePriorityMatrix {
-  urgent_update: string[];
-  leave_alone: string[];
-  structural_problem: string[];
-  double_down: string[];
-}
-
-interface Gameplan {
-  critical: Action[];
-  quick_wins: Action[];
-  strategic: Action[];
-  structural: Action[];
-  total_estimated_monthly_click_recovery: number;
-  total_estimated_monthly_click_growth: number;
-  narrative: string;
-}
-
-interface Action {
-  action: string;
-  pages_affected?: string[];
-  keywords_affected?: string[];
-  impact: number;
-  effort: string;
-  dependencies?: string[];
-}
-
-interface AlgorithmImpacts {
-  updates_impacting_site: AlgorithmUpdate[];
-  vulnerability_score: number;
-  recommendation: string;
-}
-
-interface AlgorithmUpdate {
-  update_name: string;
-  date: string;
-  site_impact: string;
-  click_change_pct: number;
-  pages_most_affected: string[];
-  common_characteristics: string[];
-  recovery_status: string;
-}
-
-interface IntentMigration {
-  intent_distribution_current: IntentDistribution;
-  intent_distribution_6mo_ago: IntentDistribution;
-  ai_overview_impact: AIOverviewImpact;
-  strategic_recommendation: string;
-}
-
-interface IntentDistribution {
-  informational: number;
-  commercial: number;
-  navigational: number;
-  transactional: number;
-}
-
-interface AIOverviewImpact {
-  queries_affected: number;
-  estimated_monthly_clicks_lost: number;
-  affected_queries: string[];
-}
-
-interface CtrModeling {
-  ctr_model_accuracy: number;
-  keyword_ctr_analysis: KeywordCtrAnalysis[];
-  feature_opportunities: FeatureOpportunity[];
-}
-
-interface KeywordCtrAnalysis {
-  keyword: string;
-  position: number;
-  expected_ctr_generic: number;
-  expected_ctr_contextual: number;
-  actual_ctr: number;
-  performance: string;
-  serp_features_present: string[];
-}
-
-interface FeatureOpportunity {
-  keyword: string;
-  feature: string;
-  current_holder?: string;
-  estimated_click_gain: number;
-  difficulty: string;
-}
-
-interface SiteArchitecture {
-  pagerank_distribution: PageRankDistribution;
-  authority_flow_to_conversion: number;
-  orphan_pages: string[];
-  content_silos: ContentSilo[];
-  link_recommendations: LinkRecommendation[];
-  network_graph_data?: NetworkGraphData;
-}
-
-interface PageRankDistribution {
-  top_authority_pages: AuthorityPage[];
-  starved_pages: AuthorityPage[];
-  authority_sinks: AuthorityPage[];
-}
-
-interface AuthorityPage {
-  url: string;
-  pagerank: number;
-  clicks?: number;
-}
-
-interface ContentSilo {
-  name: string;
-  pages: number;
-  internal_pagerank_share: number;
-}
-
-interface LinkRecommendation {
-  target_page: string;
-  link_from: string;
-  suggested_anchor: string;
-  estimated_pagerank_boost: number;
-}
-
-interface NetworkGraphData {
-  nodes: NetworkNode[];
-  edges: NetworkEdge[];
-}
-
-interface NetworkNode {
   id: string;
-  pagerank: number;
-  clicks: number;
-}
-
-interface NetworkEdge {
-  source: string;
-  target: string;
-  anchor?: string;
-}
-
-interface BrandedSplit {
-  branded_ratio: number;
-  dependency_level: string;
-  branded_trend: TrendSummary;
-  non_branded_trend: TrendSummary;
-  non_branded_opportunity: NonBrandedOpportunity;
-}
-
-interface TrendSummary {
-  direction: string;
-  slope: number;
-}
-
-interface NonBrandedOpportunity {
-  current_monthly_clicks: number;
-  potential_monthly_clicks: number;
-  gap: number;
-  months_to_meaningful_at_current_rate: number;
-  months_to_meaningful_with_actions: number;
-}
-
-interface CompetitiveThreats {
-  primary_competitors: PrimaryCompetitor[];
-  emerging_threats: EmergingThreat[];
-  keyword_vulnerability: KeywordVulnerability[];
-}
-
-interface PrimaryCompetitor {
-  domain: string;
-  keyword_overlap: number;
-  avg_position: number;
-}
-
-interface EmergingThreat {
-  domain: string;
-  first_seen: string;
-  keywords_entered: number;
-  avg_entry_position: number;
-  current_avg_position: number;
-  trajectory: string;
-  threat_level: string;
-}
-
-interface KeywordVulnerability {
-  keyword: string;
-  your_position: number;
-  competitors_within_3: number;
-  gap_trend: string;
-}
-
-interface RevenueAttribution {
-  total_search_attributed_revenue_monthly: number;
-  revenue_at_risk_90d: number;
-  top_revenue_keywords: RevenueKeyword[];
-  action_roi: ActionROI;
-}
-
-interface RevenueKeyword {
-  keyword: string;
-  current_revenue_monthly: number;
-  potential_revenue_if_top3: number;
-  gap: number;
-}
-
-interface ActionROI {
-  critical_fixes_monthly_value: number;
-  quick_wins_monthly_value: number;
-  strategic_plays_monthly_value: number;
-  total_opportunity: number;
+  user_id: string;
+  gsc_property: string;
+  ga4_property: string | null;
+  status: string;
+  progress: Record<string, string>;
+  report_data: {
+    health_trajectory?: any;
+    page_triage?: any;
+    serp_landscape?: any;
+    content_intelligence?: any;
+    gameplan?: any;
+    algorithm_impact?: any;
+    intent_migration?: any;
+    ctr_modeling?: any;
+    site_architecture?: any;
+    branded_split?: any;
+    competitive_threats?: any;
+    revenue_attribution?: any;
+  };
+  created_at: string;
+  completed_at: string | null;
 }
 
 export default function ReportPage() {
   const router = useRouter();
   const { id } = router.query;
-  const [report, setReport] = useState<Report | null>(null);
+  const [report, setReport] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['health']));
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['health', 'gameplan']));
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
-    if (!id || typeof id !== 'string') return;
+    if (!id) return;
 
     const fetchReport = async () => {
       try {
-        setLoading(true);
-        setError(null);
-
-        const { data, error: fetchError } = await supabase
-          .from('reports')
-          .select('*')
-          .eq('id', id)
-          .single();
-
-        if (fetchError) throw fetchError;
-
+        const response = await fetch(`/api/reports/${id}`);
+        if (!response.ok) {
+          throw new Error('Failed to fetch report');
+        }
+        const data = await response.json();
         setReport(data);
       } catch (err) {
-        console.error('Error fetching report:', err);
-        setError(err instanceof Error ? err.message : 'Failed to load report');
+        setError(err instanceof Error ? err.message : 'An error occurred');
       } finally {
         setLoading(false);
       }
     };
 
     fetchReport();
-
-    // Poll for updates if report is in progress
-    const pollInterval = setInterval(() => {
-      if (report && ['pending', 'ingesting', 'analyzing', 'generating'].includes(report.status)) {
-        fetchReport();
-      }
-    }, 5000);
-
-    return () => clearInterval(pollInterval);
-  }, [id, report?.status]);
+  }, [id]);
 
   const toggleSection = (section: string) => {
     setExpandedSections((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(section)) {
-        newSet.delete(section);
+      const next = new Set(prev);
+      if (next.has(section)) {
+        next.delete(section);
       } else {
-        newSet.add(section);
+        next.add(section);
       }
-      return newSet;
+      return next;
     });
   };
 
-  const formatNumber = (num: number | null | undefined): string => {
-    if (num === null || num === undefined || isNaN(num)) return 'N/A';
-    return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(num);
+  const formatNumber = (num: number, decimals = 0): string => {
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    }).format(num);
   };
 
-  const formatPercent = (num: number | null | undefined): string => {
-    if (num === null || num === undefined || isNaN(num)) return 'N/A';
-    return `${(num * 100).toFixed(1)}%`;
-  };
-
-  const formatCurrency = (num: number | null | undefined): string => {
-    if (num === null || num === undefined || isNaN(num)) return 'N/A';
+  const formatCurrency = (num: number): string => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
+      minimumFractionDigits: 0,
       maximumFractionDigits: 0,
     }).format(num);
+  };
+
+  const formatDate = (dateStr: string): string => {
+    return new Date(dateStr).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  };
+
+  const getTrendIcon = (direction: string) => {
+    switch (direction) {
+      case 'strong_growth':
+      case 'growth':
+      case 'growing':
+        return <TrendingUp className="w-5 h-5 text-green-500" />;
+      case 'strong_decline':
+      case 'decline':
+      case 'declining':
+        return <TrendingDown className="w-5 h-5 text-red-500" />;
+      default:
+        return <Minus className="w-5 h-5 text-gray-500" />;
+    }
+  };
+
+  const getBucketColor = (bucket: string): string => {
+    switch (bucket) {
+      case 'growing':
+        return '#10b981';
+      case 'stable':
+        return '#6b7280';
+      case 'decaying':
+        return '#f59e0b';
+      case 'critical':
+        return '#ef4444';
+      default:
+        return '#6b7280';
+    }
   };
 
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
           <p className="text-gray-600">Loading report...</p>
         </div>
       </div>
@@ -476,15 +155,16 @@ export default function ReportPage() {
 
   if (error || !report) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Error Loading Report</h2>
-          <p className="text-gray-600">{error || 'Report not found'}</p>
+          <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Report Not Found</h1>
+          <p className="text-gray-600 mb-6">{error || 'The requested report could not be found.'}</p>
           <button
-            onClick={() => router.push('/')}
-            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            onClick={() => router.push('/dashboard')}
+            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
           >
-            Back to Home
+            Back to Dashboard
           </button>
         </div>
       </div>
@@ -492,181 +172,275 @@ export default function ReportPage() {
   }
 
   if (report.status !== 'complete') {
-    const progressSteps = ['pending', 'ingesting', 'analyzing', 'generating'];
-    const currentStepIndex = progressSteps.indexOf(report.status);
-    const progressPercent = ((currentStepIndex + 1) / progressSteps.length) * 100;
-
     return (
-      <div className="min-h-screen bg-gray-50">
-        <Head>
-          <title>Generating Report... | Search Intelligence Report</title>
-        </Head>
-        <div className="max-w-4xl mx-auto px-4 py-16">
-          <div className="bg-white rounded-lg shadow-sm p-8">
-            <h1 className="text-3xl font-bold text-gray-900 mb-6">Generating Your Report</h1>
-            <div className="mb-4">
-              <div className="w-full bg-gray-200 rounded-full h-4">
-                <div
-                  className="bg-blue-600 h-4 rounded-full transition-all duration-500"
-                  style={{ width: `${progressPercent}%` }}
-                ></div>
-              </div>
-            </div>
-            <p className="text-gray-600 mb-4">
-              Status: <span className="font-semibold capitalize">{report.status}</span>
-            </p>
-            {report.progress && Object.keys(report.progress).length > 0 && (
-              <div className="mt-6">
-                <h3 className="text-sm font-semibold text-gray-700 mb-2">Module Progress:</h3>
-                <div className="space-y-1">
-                  {Object.entries(report.progress).map(([module, status]) => (
-                    <div key={module} className="flex items-center text-sm">
-                      <span className="w-32 text-gray-600">{module}:</span>
-                      <span className={`font-medium ${status === 'complete' ? 'text-green-600' : 'text-blue-600'}`}>
-                        {status}
-                      </span>
-                    </div>
-                  ))}
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+        <div className="text-center max-w-md">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Report In Progress</h1>
+          <p className="text-gray-600 mb-6">
+            Your report is currently being generated. This typically takes 2-5 minutes.
+          </p>
+          <div className="bg-white rounded-lg p-6 mb-6">
+            <h2 className="text-sm font-semibold text-gray-700 mb-3">Progress</h2>
+            <div className="space-y-2 text-sm">
+              {Object.entries(report.progress).map(([module, status]) => (
+                <div key={module} className="flex items-center justify-between">
+                  <span className="text-gray-600">{module.replace(/_/g, ' ')}</span>
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                    status === 'complete' ? 'bg-green-100 text-green-800' :
+                    status === 'running' ? 'bg-blue-100 text-blue-800' :
+                    'bg-gray-100 text-gray-600'
+                  }`}>
+                    {status}
+                  </span>
                 </div>
-              </div>
-            )}
-            <p className="text-sm text-gray-500 mt-6">
-              This usually takes 2-5 minutes. This page will refresh automatically when complete.
-            </p>
+              ))}
+            </div>
           </div>
+          <button
+            onClick={() => router.push('/dashboard')}
+            className="text-blue-600 hover:text-blue-700 transition"
+          >
+            Back to Dashboard
+          </button>
         </div>
       </div>
     );
   }
 
-  const data = report.report_data;
-
-  if (!data) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Report Data Not Available</h2>
-          <p className="text-gray-600">The report completed but data is missing.</p>
-        </div>
-      </div>
-    );
-  }
+  const { report_data } = report;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <>
       <Head>
-        <title>Search Intelligence Report | {report.gsc_property}</title>
+        <title>Search Intelligence Report - {report.gsc_property}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       </Head>
 
-      {/* Header */}
-      <div className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 py-6">
-          <h1 className="text-3xl font-bold text-gray-900">Search Intelligence Report</h1>
-          <p className="text-gray-600 mt-1">{report.gsc_property}</p>
-          <p className="text-sm text-gray-500 mt-1">
-            Generated {new Date(report.created_at).toLocaleDateString()}
-          </p>
-        </div>
-      </div>
-
-      <div className="max-w-7xl mx-auto px-4 py-8">
-        {/* Health & Trajectory */}
-        {data.health_trajectory && (
-          <Section
-            title="Health & Trajectory"
-            id="health"
-            expanded={expandedSections.has('health')}
-            onToggle={() => toggleSection('health')}
-            summary={`${data.health_trajectory.overall_direction} — ${data.health_trajectory.trend_slope_pct_per_month >= 0 ? '+' : ''}${data.health_trajectory.trend_slope_pct_per_month.toFixed(1)}% per month`}
-          >
-            <div className="space-y-6">
-              <div>
-                <h4 className="font-semibold text-gray-900 mb-2">Trend Direction</h4>
-                <p className="text-gray-700">
-                  Your site is <span className="font-semibold">{data.health_trajectory.overall_direction}</span> at a
-                  rate of{' '}
-                  <span className="font-semibold">
-                    {data.health_trajectory.trend_slope_pct_per_month >= 0 ? '+' : ''}
-                    {data.health_trajectory.trend_slope_pct_per_month.toFixed(1)}%
-                  </span>{' '}
-                  per month.
+      <div className="min-h-screen bg-gray-50">
+        {/* Header */}
+        <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center justify-between h-16">
+              <div className="flex-1 min-w-0">
+                <h1 className="text-lg sm:text-xl font-bold text-gray-900 truncate">
+                  {report.gsc_property}
+                </h1>
+                <p className="text-xs sm:text-sm text-gray-500 mt-1">
+                  Generated {formatDate(report.created_at)}
                 </p>
               </div>
+              <div className="flex items-center space-x-2 sm:space-x-4 ml-4">
+                <button
+                  onClick={() => window.print()}
+                  className="hidden sm:flex items-center space-x-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Export PDF</span>
+                </button>
+                <button
+                  onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                  className="sm:hidden p-2 text-gray-700 hover:bg-gray-100 rounded-lg transition"
+                >
+                  {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+                </button>
+              </div>
+            </div>
+          </div>
 
-              {data.health_trajectory.forecast && (
-                <div>
-                  <h4 className="font-semibold text-gray-900 mb-3">90-Day Forecast</h4>
-                  <div className="grid grid-cols-3 gap-4">
-                    {['30d', '60d', '90d'].map((period) => {
-                      const forecast = data.health_trajectory!.forecast[period as keyof Forecast];
-                      if (!forecast) return null;
-                      return (
-                        <div key={period} className="bg-gray-50 rounded-lg p-4">
-                          <div className="text-sm text-gray-600 mb-1">{period}</div>
-                          <div className="text-2xl font-bold text-gray-900">
-                            {formatNumber(forecast.clicks)}
-                          </div>
-                          <div className="text-xs text-gray-500 mt-1">
-                            {formatNumber(forecast.ci_low)} - {formatNumber(forecast.ci_high)}
-                          </div>
-                        </div>
-                      );
-                    })}
+          {/* Mobile menu */}
+          {mobileMenuOpen && (
+            <div className="sm:hidden border-t border-gray-200 bg-white">
+              <div className="px-4 py-3 space-y-2">
+                <button
+                  onClick={() => window.print()}
+                  className="w-full flex items-center space-x-2 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-50 rounded-lg hover:bg-gray-100 transition"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Export PDF</span>
+                </button>
+                <button
+                  onClick={() => router.push('/dashboard')}
+                  className="w-full flex items-center space-x-2 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-50 rounded-lg hover:bg-gray-100 transition"
+                >
+                  <span>Back to Dashboard</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </header>
+
+        {/* Main content */}
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+          <div className="space-y-6">
+            {/* Section 1: Health & Trajectory */}
+            {report_data.health_trajectory && (
+              <section className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                <button
+                  onClick={() => toggleSection('health')}
+                  className="w-full px-4 sm:px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition"
+                >
+                  <div className="flex items-center space-x-3 min-w-0 flex-1">
+                    {getTrendIcon(report_data.health_trajectory.overall_direction)}
+                    <div className="min-w-0 flex-1">
+                      <h2 className="text-lg sm:text-xl font-bold text-gray-900">Health & Trajectory</h2>
+                      <p className="text-sm text-gray-600 mt-1 truncate">
+                        {report_data.health_trajectory.overall_direction === 'declining' ? 'Traffic declining' :
+                         report_data.health_trajectory.overall_direction === 'growing' ? 'Traffic growing' :
+                         'Traffic stable'} at {Math.abs(report_data.health_trajectory.trend_slope_pct_per_month || 0).toFixed(1)}%/month
+                      </p>
+                    </div>
                   </div>
-                </div>
-              )}
+                  {expandedSections.has('health') ? (
+                    <ChevronUp className="w-5 h-5 text-gray-400 flex-shrink-0 ml-2" />
+                  ) : (
+                    <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0 ml-2" />
+                  )}
+                </button>
 
-              {data.health_trajectory.change_points && data.health_trajectory.change_points.length > 0 && (
-                <div>
-                  <h4 className="font-semibold text-gray-900 mb-3">Change Points Detected</h4>
-                  <div className="space-y-2">
-                    {data.health_trajectory.change_points.map((cp, i) => (
-                      <div key={i} className="flex items-center justify-between p-3 bg-gray-50 rounded">
-                        <div>
-                          <span className="font-medium">{cp.date}</span>
-                          <span className="ml-2 text-gray-600">
-                            {cp.direction} ({(cp.magnitude * 100).toFixed(1)}%)
-                          </span>
+                {expandedSections.has('health') && (
+                  <div className="px-4 sm:px-6 py-4 sm:py-6 border-t border-gray-200">
+                    {report_data.health_trajectory.forecast && (
+                      <div className="mb-6">
+                        <h3 className="text-base sm:text-lg font-semibold text-gray-900 mb-4">Traffic Forecast</h3>
+                        <div className="h-64 sm:h-80">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart
+                              data={[
+                                { period: 'Current', clicks: report_data.health_trajectory.current_clicks || 0 },
+                                { 
+                                  period: '30d', 
+                                  clicks: report_data.health_trajectory.forecast['30d']?.clicks || 0,
+                                  ci_low: report_data.health_trajectory.forecast['30d']?.ci_low || 0,
+                                  ci_high: report_data.health_trajectory.forecast['30d']?.ci_high || 0,
+                                },
+                                { 
+                                  period: '60d', 
+                                  clicks: report_data.health_trajectory.forecast['60d']?.clicks || 0,
+                                  ci_low: report_data.health_trajectory.forecast['60d']?.ci_low || 0,
+                                  ci_high: report_data.health_trajectory.forecast['60d']?.ci_high || 0,
+                                },
+                                { 
+                                  period: '90d', 
+                                  clicks: report_data.health_trajectory.forecast['90d']?.clicks || 0,
+                                  ci_low: report_data.health_trajectory.forecast['90d']?.ci_low || 0,
+                                  ci_high: report_data.health_trajectory.forecast['90d']?.ci_high || 0,
+                                },
+                              ]}
+                              margin={{ top: 5, right: 10, left: 0, bottom: 5 }}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                              <XAxis dataKey="period" tick={{ fontSize: 12 }} />
+                              <YAxis tick={{ fontSize: 12 }} />
+                              <Tooltip 
+                                contentStyle={{ fontSize: '12px' }}
+                                formatter={(value: number) => formatNumber(value)}
+                              />
+                              <Legend wrapperStyle={{ fontSize: '12px' }} />
+                              <Line type="monotone" dataKey="clicks" stroke="#3b82f6" strokeWidth={2} dot={{ r: 4 }} />
+                              <Line type="monotone" dataKey="ci_high" stroke="#93c5fd" strokeDasharray="5 5" dot={false} />
+                              <Line type="monotone" dataKey="ci_low" stroke="#93c5fd" strokeDasharray="5 5" dot={false} />
+                            </LineChart>
+                          </ResponsiveContainer>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                    )}
 
-              {data.health_trajectory.seasonality && (
-                <div>
-                  <h4 className="font-semibold text-gray-900 mb-2">Seasonality</h4>
-                  <p className="text-gray-700">
-                    Best day: <span className="font-semibold">{data.health_trajectory.seasonality.best_day}</span>
-                    {' • '}
-                    Worst day: <span className="font-semibold">{data.health_trajectory.seasonality.worst_day}</span>
-                  </p>
-                  {data.health_trajectory.seasonality.cycle_description && (
-                    <p className="text-gray-600 mt-2">{data.health_trajectory.seasonality.cycle_description}</p>
+                    {report_data.health_trajectory.seasonality && (
+                      <div className="bg-blue-50 rounded-lg p-4 mb-6">
+                        <h4 className="text-sm font-semibold text-gray-900 mb-2">Seasonality Patterns</h4>
+                        <div className="text-sm text-gray-700 space-y-1">
+                          <p>Best day: <span className="font-medium">{report_data.health_trajectory.seasonality.best_day}</span></p>
+                          <p>Worst day: <span className="font-medium">{report_data.health_trajectory.seasonality.worst_day}</span></p>
+                          {report_data.health_trajectory.seasonality.cycle_description && (
+                            <p className="mt-2">{report_data.health_trajectory.seasonality.cycle_description}</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {report_data.health_trajectory.change_points && report_data.health_trajectory.change_points.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-semibold text-gray-900 mb-3">Significant Changes</h4>
+                        <div className="overflow-x-auto -mx-4 sm:mx-0">
+                          <div className="inline-block min-w-full align-middle">
+                            <table className="min-w-full divide-y divide-gray-200">
+                              <thead className="bg-gray-50">
+                                <tr>
+                                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Direction</th>
+                                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Magnitude</th>
+                                </tr>
+                              </thead>
+                              <tbody className="bg-white divide-y divide-gray-200">
+                                {report_data.health_trajectory.change_points.map((cp: any, idx: number) => (
+                                  <tr key={idx}>
+                                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{formatDate(cp.date)}</td>
+                                    <td className="px-4 py-3 whitespace-nowrap text-sm">
+                                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                        cp.direction === 'drop' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'
+                                      }`}>
+                                        {cp.direction}
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{(cp.magnitude * 100).toFixed(1)}%</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* Section 2: Page-Level Triage */}
+            {report_data.page_triage && (
+              <section className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                <button
+                  onClick={() => toggleSection('triage')}
+                  className="w-full px-4 sm:px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition"
+                >
+                  <div className="flex items-center space-x-3 min-w-0 flex-1">
+                    <Target className="w-5 h-5 text-orange-500 flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <h2 className="text-lg sm:text-xl font-bold text-gray-900">Page-Level Triage</h2>
+                      <p className="text-sm text-gray-600 mt-1 truncate">
+                        {report_data.page_triage.summary?.critical || 0} critical pages, {formatNumber(report_data.page_triage.summary?.total_recoverable_clicks_monthly || 0)} clicks recoverable
+                      </p>
+                    </div>
+                  </div>
+                  {expandedSections.has('triage') ? (
+                    <ChevronUp className="w-5 h-5 text-gray-400 flex-shrink-0 ml-2" />
+                  ) : (
+                    <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0 ml-2" />
                   )}
-                </div>
-              )}
-            </div>
-          </Section>
-        )}
+                </button>
 
-        {/* Page-Level Triage */}
-        {data.page_triage && (
-          <Section
-            title="Page-Level Triage"
-            id="triage"
-            expanded={expandedSections.has('triage')}
-            onToggle={() => toggleSection('triage')}
-            summary={`${data.page_triage.summary.critical} critical pages, ${formatNumber(data.page_triage.summary.total_recoverable_clicks_monthly)} recoverable clicks/month`}
-          >
-            <div className="space-y-6">
-              {data.page_triage.summary && (
-                <div className="grid grid-cols-5 gap-4">
-                  <div className="bg-green-50 rounded-lg p-4">
-                    <div className="text-sm text-green-700 mb-1">Growing</div>
-                    <div className="text-2xl font-bold text-green-900">{data.page_triage.summary.growing}</div>
-                  </div>
-                  <div className="bg-blue-50 rounded-lg p-4">
-                    <div className="text-sm text-blue-700 mb-1">Stable</div>
-                    <div className="text-2xl font-bold text-blue-900">{data.page_triage.summary
+                {expandedSections.has('triage') && (
+                  <div className="px-4 sm:px-6 py-4 sm:py-6 border-t border-gray-200">
+                    {report_data.page_triage.summary && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-6">
+                        <div className="bg-green-50 rounded-lg p-3 sm:p-4">
+                          <div className="text-2xl sm:text-3xl font-bold text-green-700">{report_data.page_triage.summary.growing || 0}</div>
+                          <div className="text-xs sm:text-sm text-gray-600 mt-1">Growing</div>
+                        </div>
+                        <div className="bg-gray-50 rounded-lg p-3 sm:p-4">
+                          <div className="text-2xl sm:text-3xl font-bold text-gray-700">{report_data.page_triage.summary.stable || 0}</div>
+                          <div className="text-xs sm:text-sm text-gray-600 mt-1">Stable</div>
+                        </div>
+                        <div className="bg-orange-50 rounded-lg p-3 sm:p-4">
+                          <div className="text-2xl sm:text-3xl font-bold text-orange-700">{report_data.page_triage.summary.decaying || 0}</div>
+                          <div className="text-xs sm:text-sm text-gray-600 mt-1">Decaying</div>
+                        </div>
+                        <div className="bg-red-50 rounded-lg p-3 sm:p-4">
+                          <div className="text-2xl sm:text-3xl font-bold text-red-700">{report_data.page_triage.summary.critical || 0}</div>
+                          <div className="text-xs sm:text-sm text-gray-600 mt-1">Critical</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {report_data
