@@ -185,7 +185,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 - [x] **DAY 16** — Health & Trajectory visualization: line chart with trend + forecast + confidence interval bands + change point markers. Use Recharts. Wire to real Module 1 output.
 
-- [ ] **DAY 17** — Page Triage visualization: scatter plot (current clicks vs decay rate), color-coded by bucket (growing/stable/decaying/critical). Sortable detail table below. Wire to real Module 2 output.
+- [x] **DAY 17** — Page Triage visualization: scatter plot (current clicks vs decay rate), color-coded by bucket (growing/stable/decaying/critical). Sortable detail table below. Wire to real Module 2 output.
 
 - [ ] **DAY 18** — Gameplan section: critical/quick wins/strategic/structural action lists with impact estimates and effort badges. Consulting CTA placement after this section ("Want help executing this plan? Book a call"). Wire to real Module 5 output.
 
@@ -216,10 +216,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** 1  
-**Current Day:** 16
-**Last Task:** Built Health & Trajectory visualization component with line chart showing histor
+**Current Day:** 17
+**Last Task:** Built Page Triage scatter plot visualization and sortable detail table, wired to
 **Last Run:** 2026-03-31 — ✅ Pass
-**Next Task:** DAY 17 — Page Triage visualization: scatter plot (current clicks vs d
+**Next Task:** DAY 18 — Gameplan section: critical/quick wins/strategic/structural a
 **Completed Tasks:** 0 / 28  
 **Railway API URL:** (set after DAY 02)  
 **Railway Web URL:** (set after DAY 03)  
