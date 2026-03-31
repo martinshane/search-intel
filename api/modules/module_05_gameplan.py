@@ -1,562 +1,539 @@
 """
-Module 5: The Gameplan — Synthesize all prior modules into a prioritized action list.
+Module 5: The Gameplan
 
-This module takes the outputs from Modules 1-4 and generates a comprehensive,
-prioritized gameplan with critical fixes, quick wins, strategic plays, and
-structural improvements. Each action includes specific instructions, estimated
-impact, effort level, and dependencies.
+Synthesizes outputs from Modules 1-4 into a prioritized action list with
+critical/quick_wins/strategic/structural categories. Uses Claude API for
+narrative generation.
 """
 
-import logging
+import anthropic
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
-from enum import Enum
-
-logger = logging.getLogger(__name__)
-
-
-class EffortLevel(str, Enum):
-    """Effort level for an action item."""
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-
-
-class Priority(str, Enum):
-    """Priority category for actions."""
-    CRITICAL = "critical"
-    QUICK_WIN = "quick_win"
-    STRATEGIC = "strategic"
-    STRUCTURAL = "structural"
+import os
 
 
 @dataclass
-class ActionItem:
+class Action:
     """Represents a single action item in the gameplan."""
     action: str
     page_or_keyword: str
-    what_to_do: str
     impact_monthly_clicks: int
-    effort: EffortLevel
-    priority: Priority
-    dependencies: List[str]
-    estimated_timeframe: str  # e.g., "this week", "this month", "Q1 2026"
-    metrics: Dict[str, Any]  # Supporting data for the recommendation
+    effort: str  # "low", "medium", "high"
+    category: str  # For tracking which module this came from
+    dependencies: Optional[List[str]] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result = asdict(self)
+        if result['dependencies'] is None:
+            result['dependencies'] = []
+        return result
 
 
-@dataclass
-class GameplanOutput:
-    """Complete gameplan output structure."""
-    critical: List[ActionItem]
-    quick_wins: List[ActionItem]
-    strategic: List[ActionItem]
-    structural: List[ActionItem]
-    total_estimated_monthly_click_recovery: int
-    total_estimated_monthly_click_growth: int
-    narrative: str
-    summary_stats: Dict[str, Any]
-
-
-def generate_gameplan(
-    health: Dict[str, Any],
-    triage: Dict[str, Any],
-    serp: Optional[Dict[str, Any]] = None,
-    content: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """
-    Synthesize all prior modules into a prioritized action list.
+class GameplanGenerator:
+    """Generates prioritized gameplan from module outputs."""
     
-    Args:
-        health: Output from Module 1 (Health & Trajectory)
-        triage: Output from Module 2 (Page-Level Triage)
-        serp: Output from Module 3 (SERP Landscape Analysis) - optional in MVP
-        content: Output from Module 4 (Content Intelligence) - optional in MVP
-    
-    Returns:
-        dict: Structured gameplan with categorized actions, impact estimates, and narrative
-    
-    The gameplan is organized into four priority tiers:
-    
-    1. Critical fixes (do this week):
-       - Pages in "critical" decay bucket with > 100 clicks/month
-       - CTR anomalies on high-impression keywords (title rewrites)
-       - Cannibalization causing both pages to underperform
-    
-    2. Quick wins (do this month):
-       - Striking distance keywords needing minor content updates
-       - SERP feature optimization (add FAQ schema for PAA keywords)
-       - Internal link additions to boost decaying pages
-    
-    3. Strategic plays (this quarter):
-       - Content gaps worth filling (new pages to create)
-       - Consolidation projects (merge cannibalizing pages)
-       - Content refreshes for "urgent update" quadrant pages
-    
-    4. Structural improvements (ongoing):
-       - Internal link architecture changes
-       - Seasonal content calendar based on identified cycles
-       - Competitor monitoring priorities
-    """
-    logger.info("Starting gameplan generation")
-    
-    critical_actions = []
-    quick_win_actions = []
-    strategic_actions = []
-    structural_actions = []
-    
-    total_recovery = 0
-    total_growth = 0
-    
-    # Extract critical pages from triage
-    critical_pages = [
-        p for p in triage.get("pages", [])
-        if p.get("bucket") == "critical" and p.get("current_monthly_clicks", 0) > 100
-    ]
-    
-    # Process critical fixes
-    critical_actions.extend(_generate_critical_fixes(critical_pages, triage))
-    total_recovery += sum(
-        action.impact_monthly_clicks 
-        for action in critical_actions
-    )
-    
-    # Process quick wins
-    quick_win_actions.extend(_generate_quick_wins(triage, health, serp, content))
-    total_growth += sum(
-        action.impact_monthly_clicks 
-        for action in quick_win_actions
-    )
-    
-    # Process strategic plays
-    strategic_actions.extend(_generate_strategic_plays(triage, health, content))
-    total_growth += sum(
-        action.impact_monthly_clicks 
-        for action in strategic_actions
-    )
-    
-    # Process structural improvements
-    structural_actions.extend(_generate_structural_improvements(health, triage))
-    
-    # Generate narrative summary
-    narrative = _generate_narrative(
-        health=health,
-        triage=triage,
-        critical_count=len(critical_actions),
-        quick_win_count=len(quick_win_actions),
-        strategic_count=len(strategic_actions),
-        total_recovery=total_recovery,
-        total_growth=total_growth
-    )
-    
-    # Build summary statistics
-    summary_stats = {
-        "total_actions": len(critical_actions) + len(quick_win_actions) + 
-                        len(strategic_actions) + len(structural_actions),
-        "critical_actions": len(critical_actions),
-        "quick_win_actions": len(quick_win_actions),
-        "strategic_actions": len(strategic_actions),
-        "structural_actions": len(structural_actions),
-        "total_pages_affected": len(set(
-            action.page_or_keyword 
-            for action in critical_actions + quick_win_actions + strategic_actions
-            if action.page_or_keyword
-        )),
-        "avg_effort_critical": _calculate_avg_effort(critical_actions),
-        "avg_effort_quick_wins": _calculate_avg_effort(quick_win_actions)
-    }
-    
-    gameplan = GameplanOutput(
-        critical=[asdict(a) for a in critical_actions],
-        quick_wins=[asdict(a) for a in quick_win_actions],
-        strategic=[asdict(a) for a in strategic_actions],
-        structural=[asdict(a) for a in structural_actions],
-        total_estimated_monthly_click_recovery=total_recovery,
-        total_estimated_monthly_click_growth=total_growth,
-        narrative=narrative,
-        summary_stats=summary_stats
-    )
-    
-    logger.info(
-        f"Gameplan generated: {len(critical_actions)} critical, "
-        f"{len(quick_win_actions)} quick wins, {len(strategic_actions)} strategic, "
-        f"{len(structural_actions)} structural"
-    )
-    
-    return asdict(gameplan)
-
-
-def _generate_critical_fixes(
-    critical_pages: List[Dict[str, Any]],
-    triage: Dict[str, Any]
-) -> List[ActionItem]:
-    """Generate critical fix action items."""
-    actions = []
-    
-    # Sort by priority score (already calculated in triage)
-    sorted_pages = sorted(
-        critical_pages,
-        key=lambda p: p.get("priority_score", 0),
-        reverse=True
-    )
-    
-    for page in sorted_pages[:10]:  # Limit to top 10 most critical
-        url = page.get("url", "")
-        current_clicks = page.get("current_monthly_clicks", 0)
-        trend_slope = page.get("trend_slope", 0)
-        ctr_anomaly = page.get("ctr_anomaly", False)
-        engagement_flag = page.get("engagement_flag")
-        
-        # Estimate recoverable clicks (if decay stops)
-        # Assume recovery to stable state = current clicks + 30 days of projected loss
-        projected_monthly_loss = abs(trend_slope * 30)
-        recoverable_clicks = int(projected_monthly_loss)
-        
-        # Determine primary issue and action
-        if ctr_anomaly:
-            action = ActionItem(
-                action=f"Fix CTR anomaly on {url}",
-                page_or_keyword=url,
-                what_to_do=(
-                    f"Rewrite title and meta description. Current CTR is "
-                    f"{page.get('ctr_actual', 0):.1%} vs expected "
-                    f"{page.get('ctr_expected', 0):.1%}. Focus on making the "
-                    f"snippet more compelling and accurately reflecting page content."
-                ),
-                impact_monthly_clicks=recoverable_clicks,
-                effort=EffortLevel.LOW,
-                priority=Priority.CRITICAL,
-                dependencies=[],
-                estimated_timeframe="this week",
-                metrics={
-                    "current_ctr": page.get("ctr_actual"),
-                    "expected_ctr": page.get("ctr_expected"),
-                    "current_position": page.get("average_position"),
-                    "monthly_impressions": page.get("monthly_impressions")
-                }
-            )
-        elif engagement_flag == "low_engagement":
-            action = ActionItem(
-                action=f"Fix content mismatch on {url}",
-                page_or_keyword=url,
-                what_to_do=(
-                    f"This page has high search traffic but poor engagement "
-                    f"(high bounce rate or low session duration). Review search "
-                    f"queries driving traffic and ensure content matches user intent. "
-                    f"May need content rewrite or better internal linking to relevant pages."
-                ),
-                impact_monthly_clicks=recoverable_clicks,
-                effort=EffortLevel.MEDIUM,
-                priority=Priority.CRITICAL,
-                dependencies=[],
-                estimated_timeframe="this week",
-                metrics={
-                    "current_monthly_clicks": current_clicks,
-                    "decay_rate": trend_slope,
-                    "engagement_flag": engagement_flag
-                }
-            )
+    def __init__(self, anthropic_api_key: Optional[str] = None):
+        """Initialize with optional Claude API key."""
+        self.anthropic_api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+        if self.anthropic_api_key:
+            self.client = anthropic.Anthropic(api_key=self.anthropic_api_key)
         else:
-            action = ActionItem(
-                action=f"Halt critical decay on {url}",
-                page_or_keyword=url,
-                what_to_do=(
-                    f"This page is losing {int(abs(trend_slope))} clicks/day. "
-                    f"Investigate ranking drops: check for technical issues "
-                    f"(indexing, site speed), review recent content changes, "
-                    f"analyze competitor movement. May need content refresh, "
-                    f"more internal links, or addressing quality issues."
-                ),
-                impact_monthly_clicks=recoverable_clicks,
-                effort=EffortLevel.HIGH,
-                priority=Priority.CRITICAL,
-                dependencies=[],
-                estimated_timeframe="this week",
-                metrics={
-                    "current_monthly_clicks": current_clicks,
-                    "decay_rate": trend_slope,
-                    "days_until_page1_loss": page.get("days_until_page1_loss")
-                }
-            )
+            self.client = None
+    
+    def generate_gameplan(
+        self,
+        health: Dict[str, Any],
+        triage: Dict[str, Any],
+        serp: Optional[Dict[str, Any]],
+        content: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Synthesize all prior modules into a prioritized action list.
         
-        actions.append(action)
-    
-    # Add CTR anomaly fixes for high-impression keywords
-    for page in triage.get("pages", []):
-        if (page.get("ctr_anomaly") and 
-            page.get("monthly_impressions", 0) > 1000 and
-            page not in critical_pages):  # Not already in critical
-            
-            potential_clicks = int(
-                page.get("monthly_impressions", 0) * 
-                (page.get("ctr_expected", 0) - page.get("ctr_actual", 0))
-            )
-            
-            if potential_clicks > 50:  # Meaningful impact
-                action = ActionItem(
-                    action=f"Fix high-impression CTR anomaly: {page.get('url')}",
-                    page_or_keyword=page.get("url", ""),
-                    what_to_do=(
-                        f"High impression volume ({page.get('monthly_impressions'):,}) "
-                        f"but underperforming CTR. Rewrite title and description to be "
-                        f"more compelling. Current CTR: {page.get('ctr_actual', 0):.1%}, "
-                        f"Expected: {page.get('ctr_expected', 0):.1%}."
-                    ),
-                    impact_monthly_clicks=potential_clicks,
-                    effort=EffortLevel.LOW,
-                    priority=Priority.CRITICAL,
-                    dependencies=[],
-                    estimated_timeframe="this week",
-                    metrics={
-                        "monthly_impressions": page.get("monthly_impressions"),
-                        "current_ctr": page.get("ctr_actual"),
-                        "expected_ctr": page.get("ctr_expected"),
-                        "potential_click_gain": potential_clicks
-                    }
-                )
-                actions.append(action)
-    
-    return actions
-
-
-def _generate_quick_wins(
-    triage: Dict[str, Any],
-    health: Dict[str, Any],
-    serp: Optional[Dict[str, Any]],
-    content: Optional[Dict[str, Any]]
-) -> List[ActionItem]:
-    """Generate quick win action items."""
-    actions = []
-    
-    # Striking distance opportunities (from content module if available)
-    if content and "striking_distance" in content:
-        for opportunity in content["striking_distance"][:15]:  # Top 15
-            estimated_gain = opportunity.get("estimated_click_gain_if_top5", 0)
-            if estimated_gain > 20:  # Meaningful threshold
-                action = ActionItem(
-                    action=f"Boost striking distance keyword: {opportunity.get('query')}",
-                    page_or_keyword=opportunity.get("query", ""),
-                    what_to_do=(
-                        f"Currently ranking at position {opportunity.get('current_position', 0):.1f}. "
-                        f"Add 300-500 words of depth to {opportunity.get('landing_page')}. "
-                        f"Focus on answering related questions around this {opportunity.get('intent')} query. "
-                        f"Add internal links from related pages."
-                    ),
-                    impact_monthly_clicks=estimated_gain,
-                    effort=EffortLevel.LOW,
-                    priority=Priority.QUICK_WIN,
-                    dependencies=[],
-                    estimated_timeframe="this month",
-                    metrics={
-                        "current_position": opportunity.get("current_position"),
-                        "monthly_impressions": opportunity.get("impressions"),
-                        "intent": opportunity.get("intent"),
-                        "landing_page": opportunity.get("landing_page")
-                    }
-                )
-                actions.append(action)
-    
-    # Pages with declining but not yet critical status
-    decaying_pages = [
-        p for p in triage.get("pages", [])
-        if p.get("bucket") == "decaying" and p.get("current_monthly_clicks", 0) > 50
-    ]
-    
-    for page in sorted(decaying_pages, key=lambda p: p.get("priority_score", 0), reverse=True)[:10]:
-        # Estimate impact of stopping decay
-        potential_clicks = int(abs(page.get("trend_slope", 0)) * 30)
+        Args:
+            health: Output from Module 1 (Health & Trajectory)
+            triage: Output from Module 2 (Page-Level Triage)
+            serp: Output from Module 3 (SERP Landscape Analysis) - optional
+            content: Output from Module 4 (Content Intelligence)
         
-        action = ActionItem(
-            action=f"Stabilize decaying page: {page.get('url')}",
-            page_or_keyword=page.get("url", ""),
-            what_to_do=(
-                f"Add 5-10 internal links from high-authority pages to this URL. "
-                f"Refresh content with current information (2026 data, updated examples). "
-                f"Ensure page is mobile-friendly and loads quickly."
-            ),
-            impact_monthly_clicks=potential_clicks,
-            effort=EffortLevel.LOW,
-            priority=Priority.QUICK_WIN,
-            dependencies=[],
-            estimated_timeframe="this month",
-            metrics={
-                "current_monthly_clicks": page.get("current_monthly_clicks"),
-                "trend_slope": page.get("trend_slope"),
-                "bucket": page.get("bucket")
-            }
+        Returns:
+            Dictionary with critical/quick_wins/strategic/structural action lists,
+            impact estimates, and narrative.
+        """
+        # Initialize action lists
+        critical = []
+        quick_wins = []
+        strategic = []
+        structural = []
+        
+        # 1. CRITICAL FIXES (do this week)
+        critical.extend(self._extract_critical_fixes(triage, content))
+        
+        # 2. QUICK WINS (do this month)
+        quick_wins.extend(self._extract_quick_wins(triage, content, serp))
+        
+        # 3. STRATEGIC PLAYS (this quarter)
+        strategic.extend(self._extract_strategic_plays(health, triage, content, serp))
+        
+        # 4. STRUCTURAL IMPROVEMENTS (ongoing)
+        structural.extend(self._extract_structural_improvements(health, content))
+        
+        # Calculate total impact
+        total_recovery = sum(a['impact_monthly_clicks'] for a in critical + quick_wins)
+        total_growth = sum(a['impact_monthly_clicks'] for a in strategic)
+        
+        # Generate narrative using Claude API
+        narrative = self._generate_narrative(
+            health=health,
+            triage=triage,
+            serp=serp,
+            content=content,
+            critical_count=len(critical),
+            quick_wins_count=len(quick_wins),
+            strategic_count=len(strategic),
+            total_recovery=total_recovery,
+            total_growth=total_growth
         )
-        actions.append(action)
-    
-    # SERP feature opportunities (if SERP data available)
-    if serp and "feature_opportunities" in serp:
-        for opp in serp["feature_opportunities"][:5]:  # Top 5 opportunities
-            if opp.get("estimated_click_gain", 0) > 50:
-                feature_type = opp.get("feature", "")
-                action = ActionItem(
-                    action=f"Capture {feature_type} for: {opp.get('keyword')}",
-                    page_or_keyword=opp.get("keyword", ""),
-                    what_to_do=_get_feature_instructions(feature_type, opp),
-                    impact_monthly_clicks=opp.get("estimated_click_gain", 0),
-                    effort=EffortLevel.LOW,
-                    priority=Priority.QUICK_WIN,
-                    dependencies=[],
-                    estimated_timeframe="this month",
-                    metrics={
-                        "feature_type": feature_type,
-                        "current_holder": opp.get("current_holder"),
-                        "difficulty": opp.get("difficulty")
-                    }
-                )
-                actions.append(action)
-    
-    return actions
-
-
-def _generate_strategic_plays(
-    triage: Dict[str, Any],
-    health: Dict[str, Any],
-    content: Optional[Dict[str, Any]]
-) -> List[ActionItem]:
-    """Generate strategic play action items."""
-    actions = []
-    
-    # Cannibalization fixes (from content module)
-    if content and "cannibalization_clusters" in content:
-        for cluster in content["cannibalization_clusters"]:
-            if cluster.get("total_impressions_affected", 0) > 500:
-                action = ActionItem(
-                    action=f"Resolve cannibalization: {cluster.get('query_group')}",
-                    page_or_keyword=cluster.get("query_group", ""),
-                    what_to_do=(
-                        f"Recommendation: {cluster.get('recommendation')}. "
-                        f"Pages involved: {', '.join(cluster.get('pages', []))}. "
-                        f"Keep: {cluster.get('keep_page')}. "
-                        f"Either consolidate content or differentiate intent clearly."
-                    ),
-                    impact_monthly_clicks=int(cluster.get("total_impressions_affected", 0) * 0.05),
-                    effort=EffortLevel.HIGH,
-                    priority=Priority.STRATEGIC,
-                    dependencies=[],
-                    estimated_timeframe="this quarter",
-                    metrics={
-                        "pages_affected": cluster.get("pages", []),
-                        "shared_queries": cluster.get("shared_queries"),
-                        "impressions_affected": cluster.get("total_impressions_affected")
-                    }
-                )
-                actions.append(action)
-    
-    # Content refreshes for urgent update quadrant
-    if content and "update_priority_matrix" in content:
-        urgent_updates = content["update_priority_matrix"].get("urgent_update", [])
-        for page in urgent_updates[:5]:  # Top 5
-            action = ActionItem(
-                action=f"Urgent content refresh: {page.get('url')}",
-                page_or_keyword=page.get("url", ""),
-                what_to_do=(
-                    f"This older page is decaying. Full content refresh needed: "
-                    f"update statistics, replace outdated examples, add new sections "
-                    f"covering recent developments. Consider updating publish date after refresh."
-                ),
-                impact_monthly_clicks=page.get("estimated_recovery", 0),
-                effort=EffortLevel.HIGH,
-                priority=Priority.STRATEGIC,
-                dependencies=[],
-                estimated_timeframe="this quarter",
-                metrics={
-                    "page_age": page.get("age_months"),
-                    "current_clicks": page.get("current_monthly_clicks"),
-                    "decay_rate": page.get("trend_slope")
-                }
-            )
-            actions.append(action)
-    
-    # Thin content expansion
-    if content and "thin_content" in content:
-        for page in content["thin_content"][:5]:
-            if page.get("monthly_impressions", 0) > 500:
-                action = ActionItem(
-                    action=f"Expand thin content: {page.get('url')}",
-                    page_or_keyword=page.get("url", ""),
-                    what_to_do=(
-                        f"Current word count: {page.get('word_count')}. "
-                        f"Expand to at least 1,200 words. Add: examples, case studies, "
-                        f"FAQ section, comparison tables, visual content. "
-                        f"Focus on comprehensiveness over keyword density."
-                    ),
-                    impact_monthly_clicks=int(page.get("monthly_impressions", 0) * 0.03),
-                    effort=EffortLevel.MEDIUM,
-                    priority=Priority.STRATEGIC,
-                    dependencies=[],
-                    estimated_timeframe="this quarter",
-                    metrics={
-                        "word_count": page.get("word_count"),
-                        "monthly_impressions": page.get("monthly_impressions"),
-                        "bounce_rate": page.get("bounce_rate")
-                    }
-                )
-                actions.append(action)
-    
-    return actions
-
-
-def _generate_structural_improvements(
-    health: Dict[str, Any],
-    triage: Dict[str, Any]
-) -> List[ActionItem]:
-    """Generate structural improvement action items."""
-    actions = []
-    
-    # Seasonality-based content calendar
-    if health.get("seasonality", {}).get("monthly_cycle"):
-        action = ActionItem(
-            action="Implement seasonal content calendar",
-            page_or_keyword="site-wide",
-            what_to_do=(
-                f"Traffic pattern shows {health['seasonality'].get('cycle_description')}. "
-                f"Plan content publication and promotion campaigns around this cycle. "
-                f"Best performing day: {health['seasonality'].get('best_day')}. "
-                f"Schedule high-priority launches accordingly."
-            ),
-            impact_monthly_clicks=0,  # Indirect impact
-            effort=EffortLevel.LOW,
-            priority=Priority.STRUCTURAL,
-            dependencies=[],
-            estimated_timeframe="ongoing",
-            metrics={
-                "best_day": health['seasonality'].get('best_day'),
-                "worst_day": health['seasonality'].get('worst_day'),
-                "cycle_description": health['seasonality'].get('cycle_description')
+        
+        return {
+            "critical": critical,
+            "quick_wins": quick_wins,
+            "strategic": strategic,
+            "structural": structural,
+            "total_estimated_monthly_click_recovery": total_recovery,
+            "total_estimated_monthly_click_growth": total_growth,
+            "narrative": narrative,
+            "summary": {
+                "total_actions": len(critical) + len(quick_wins) + len(strategic) + len(structural),
+                "critical_actions": len(critical),
+                "quick_win_actions": len(quick_wins),
+                "strategic_actions": len(strategic),
+                "structural_actions": len(structural)
             }
-        )
-        actions.append(action)
-    
-    # Monitoring and alerting
-    action = ActionItem(
-        action="Set up traffic monitoring alerts",
-        page_or_keyword="site-wide",
-        what_to_do=(
-            "Based on historical volatility, set up alerts for: "
-            "1) Daily traffic drops > 15% (may indicate technical issues or penalties), "
-            "2) Individual page traffic drops > 30% week-over-week, "
-            "3) CTR drops on top keywords. "
-            "Use GSC API to pull daily data and compare to 7-day and 28-day averages."
-        ),
-        impact_monthly_clicks=0,  # Defensive
-        effort=EffortLevel.MEDIUM,
-        priority=Priority.STRUCTURAL,
-        dependencies=[],
-        estimated_timeframe="this month",
-        metrics={
-            "change_points_detected": len(health.get("change_points", [])),
-            "historical_volatility": health.get("trend_slope_pct_per_month")
         }
-    )
-    actions.append(action)
     
-    # Regular content audits
-    total_pages = triage.get("summary", {}).get("total_pages_analyzed", 0)
-    if total_pages > 50:
-        action = ActionItem(
-            action="Establish quarterly content audit process",
-            page_or_keyword="site-wide",
-            what
+    def _extract_critical_fixes(
+        self,
+        triage: Dict[str, Any],
+        content: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Extract critical fixes from triage and content modules."""
+        actions = []
+        
+        # Critical decay pages (>100 clicks/month)
+        for page in triage.get('pages', []):
+            if page.get('bucket') == 'critical' and page.get('current_monthly_clicks', 0) > 100:
+                action = Action(
+                    action=f"Emergency intervention for critically decaying page. "
+                           f"Current position {page.get('avg_position', 'N/A')}, "
+                           f"losing {abs(page.get('trend_slope', 0)):.2f} clicks/day. "
+                           f"Recommended: {page.get('recommended_action', 'content refresh')}",
+                    page_or_keyword=page['url'],
+                    impact_monthly_clicks=int(page['current_monthly_clicks'] * 0.5),  # Assume 50% recovery
+                    effort="medium",
+                    category="critical_decay"
+                )
+                actions.append(action.to_dict())
+        
+        # CTR anomalies on high-impression keywords (easy title rewrites)
+        for page in triage.get('pages', []):
+            if page.get('ctr_anomaly') and page.get('current_monthly_clicks', 0) > 50:
+                expected_ctr = page.get('ctr_expected', 0)
+                actual_ctr = page.get('ctr_actual', 0)
+                ctr_gap = expected_ctr - actual_ctr
+                potential_clicks = int(page.get('impressions_monthly', 0) * ctr_gap)
+                
+                action = Action(
+                    action=f"Rewrite title tag and meta description. Currently achieving "
+                           f"{actual_ctr:.1%} CTR vs expected {expected_ctr:.1%}. "
+                           f"Low-effort, high-impact fix.",
+                    page_or_keyword=page['url'],
+                    impact_monthly_clicks=potential_clicks,
+                    effort="low",
+                    category="ctr_optimization"
+                )
+                actions.append(action.to_dict())
+        
+        # Cannibalization causing both pages to underperform
+        for cluster in content.get('cannibalization_clusters', []):
+            if cluster.get('total_impressions_affected', 0) > 1000:
+                action = Action(
+                    action=f"Resolve cannibalization between {len(cluster['pages'])} pages "
+                           f"competing for '{cluster['query_group']}'. "
+                           f"Recommendation: {cluster['recommendation']}. "
+                           f"Keep: {cluster.get('keep_page', 'TBD')}",
+                    page_or_keyword=", ".join(cluster['pages']),
+                    impact_monthly_clicks=int(cluster['total_impressions_affected'] * 0.05),
+                    effort="medium",
+                    category="cannibalization",
+                    dependencies=None
+                )
+                actions.append(action.to_dict())
+        
+        # Sort by impact and return top items
+        actions.sort(key=lambda x: x['impact_monthly_clicks'], reverse=True)
+        return actions[:10]  # Limit to top 10 critical items
+    
+    def _extract_quick_wins(
+        self,
+        triage: Dict[str, Any],
+        content: Dict[str, Any],
+        serp: Optional[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Extract quick win opportunities."""
+        actions = []
+        
+        # Striking distance keywords (positions 8-20, high impressions)
+        for keyword_data in content.get('striking_distance', []):
+            if keyword_data.get('impressions', 0) > 500:
+                action = Action(
+                    action=f"Optimize for '{keyword_data['query']}' - currently position "
+                           f"{keyword_data['current_position']:.1f}. Minor content update "
+                           f"could push to top 5. Intent: {keyword_data.get('intent', 'unknown')}",
+                    page_or_keyword=keyword_data.get('landing_page', 'N/A'),
+                    impact_monthly_clicks=keyword_data.get('estimated_click_gain_if_top5', 0),
+                    effort="low",
+                    category="striking_distance"
+                )
+                actions.append(action.to_dict())
+        
+        # SERP feature opportunities (if SERP data available)
+        if serp:
+            for opportunity in serp.get('feature_opportunities', []):
+                if opportunity.get('estimated_click_gain', 0) > 100:
+                    feature_type = opportunity['feature']
+                    action_map = {
+                        'featured_snippet': 'Add FAQ schema and restructure content with clear Q&A format',
+                        'people_also_ask': 'Add FAQ schema targeting these questions',
+                        'video_carousel': 'Create and embed video content',
+                        'image_pack': 'Optimize images with descriptive alt text and proper sizing'
+                    }
+                    
+                    action = Action(
+                        action=f"Capture {feature_type} for '{opportunity['keyword']}'. "
+                               f"{action_map.get(feature_type, 'Optimize for this SERP feature')}. "
+                               f"Current holder: {opportunity.get('current_holder', 'N/A')}",
+                        page_or_keyword=opportunity['keyword'],
+                        impact_monthly_clicks=opportunity['estimated_click_gain'],
+                        effort=opportunity.get('difficulty', 'medium'),
+                        category="serp_feature"
+                    )
+                    actions.append(action.to_dict())
+        
+        # Thin content expansions (quick impact)
+        for page_data in content.get('thin_content', [])[:5]:  # Top 5 only
+            if page_data.get('impressions', 0) > 300:
+                action = Action(
+                    action=f"Expand thin content. Current word count: {page_data.get('word_count', 0)}. "
+                           f"Target: 1500+ words. Add depth, examples, FAQs.",
+                    page_or_keyword=page_data['url'],
+                    impact_monthly_clicks=int(page_data.get('impressions', 0) * 0.02),
+                    effort="medium",
+                    category="content_expansion"
+                )
+                actions.append(action.to_dict())
+        
+        # Sort by effort (prioritize low effort) then impact
+        actions.sort(key=lambda x: (
+            0 if x['effort'] == 'low' else 1 if x['effort'] == 'medium' else 2,
+            -x['impact_monthly_clicks']
+        ))
+        return actions[:15]  # Top 15 quick wins
+    
+    def _extract_strategic_plays(
+        self,
+        health: Dict[str, Any],
+        triage: Dict[str, Any],
+        content: Dict[str, Any],
+        serp: Optional[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Extract strategic plays for the quarter."""
+        actions = []
+        
+        # Content refresh for "urgent update" quadrant
+        urgent_updates = content.get('update_priority_matrix', {}).get('urgent_update', [])
+        for page_data in urgent_updates[:10]:
+            action = Action(
+                action=f"Comprehensive content refresh for aging, decaying page. "
+                       f"Last updated: {page_data.get('last_modified', 'unknown')}. "
+                       f"Update statistics, add new sections, refresh examples.",
+                page_or_keyword=page_data['url'],
+                impact_monthly_clicks=int(page_data.get('current_clicks', 0) * 0.3),
+                effort="high",
+                category="content_refresh"
+            )
+            actions.append(action.to_dict())
+        
+        # Consolidation projects
+        for cluster in content.get('cannibalization_clusters', []):
+            if cluster.get('recommendation') == 'consolidate':
+                action = Action(
+                    action=f"Consolidation project: merge {len(cluster['pages'])} pages "
+                           f"into single authoritative resource. Set up 301 redirects. "
+                           f"Combine best content from each page.",
+                    page_or_keyword=cluster.get('keep_page', 'TBD'),
+                    impact_monthly_clicks=int(cluster.get('total_impressions_affected', 0) * 0.08),
+                    effort="high",
+                    category="consolidation",
+                    dependencies=[f"Content audit of {p}" for p in cluster['pages']]
+                )
+                actions.append(action.to_dict())
+        
+        # New content creation for gaps
+        # Look for high-impression keywords without corresponding pages
+        if serp:
+            for keyword_data in serp.get('keywords_analyzed', [])[:20]:
+                # Placeholder logic - in real implementation, would check if keyword
+                # has a dedicated page or is being captured by generic page
+                if keyword_data.get('intent') in ['commercial', 'transactional']:
+                    action = Action(
+                        action=f"Create dedicated page for '{keyword_data.get('keyword', 'N/A')}' "
+                               f"targeting {keyword_data.get('intent')} intent. "
+                               f"Current search volume suggests significant opportunity.",
+                        page_or_keyword=f"NEW: {keyword_data.get('keyword', 'N/A')}",
+                        impact_monthly_clicks=500,  # Conservative estimate for new content
+                        effort="high",
+                        category="content_gap"
+                    )
+                    actions.append(action.to_dict())
+        
+        # Double-down opportunities (new + growing content)
+        double_down = content.get('update_priority_matrix', {}).get('double_down', [])
+        for page_data in double_down[:5]:
+            action = Action(
+                action=f"Double down on momentum: increase internal links, build backlinks, "
+                       f"expand related content. Page is new and already growing.",
+                page_or_keyword=page_data['url'],
+                impact_monthly_clicks=int(page_data.get('current_clicks', 0) * 0.5),
+                effort="medium",
+                category="momentum"
+            )
+            actions.append(action.to_dict())
+        
+        actions.sort(key=lambda x: x['impact_monthly_clicks'], reverse=True)
+        return actions[:12]  # Top 12 strategic plays
+    
+    def _extract_structural_improvements(
+        self,
+        health: Dict[str, Any],
+        content: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Extract ongoing structural improvements."""
+        actions = []
+        
+        # Seasonal content calendar
+        seasonality = health.get('seasonality', {})
+        if seasonality.get('monthly_cycle'):
+            action = Action(
+                action=f"Implement seasonal content calendar. Traffic pattern shows "
+                       f"{seasonality.get('cycle_description', 'recurring patterns')}. "
+                       f"Best day: {seasonality.get('best_day', 'N/A')}, "
+                       f"worst day: {seasonality.get('worst_day', 'N/A')}. "
+                       f"Time content publication and promotions accordingly.",
+                page_or_keyword="Site-wide",
+                impact_monthly_clicks=0,  # Efficiency gain, not direct traffic
+                effort="low",
+                category="scheduling"
+            )
+            actions.append(action.to_dict())
+        
+        # Internal linking strategy
+        action = Action(
+            action="Systematic internal linking audit and improvement. "
+                   "Review all high-authority pages and ensure they link to conversion pages. "
+                   "Add contextual internal links to starved high-potential pages.",
+            page_or_keyword="Site-wide",
+            impact_monthly_clicks=0,  # Supports other actions
+            effort="medium",
+            category="internal_linking"
+        )
+        actions.append(action.to_dict())
+        
+        # Content update schedule
+        action = Action(
+            action="Establish quarterly content review schedule. Identify pages that are "
+                   "6+ months old and schedule for freshness updates. Prevent future decay.",
+            page_or_keyword="Site-wide",
+            impact_monthly_clicks=0,
+            effort="low",
+            category="maintenance"
+        )
+        actions.append(action.to_dict())
+        
+        # Template optimization
+        action = Action(
+            action="Audit site templates for CTR optimization opportunities. "
+                   "Ensure all pages have optimal title tag length, compelling meta descriptions, "
+                   "and schema markup where applicable.",
+            page_or_keyword="Site-wide",
+            impact_monthly_clicks=0,
+            effort="medium",
+            category="technical_seo"
+        )
+        actions.append(action.to_dict())
+        
+        return actions
+    
+    def _generate_narrative(
+        self,
+        health: Dict[str, Any],
+        triage: Dict[str, Any],
+        serp: Optional[Dict[str, Any]],
+        content: Dict[str, Any],
+        critical_count: int,
+        quick_wins_count: int,
+        strategic_count: int,
+        total_recovery: int,
+        total_growth: int
+    ) -> str:
+        """
+        Generate human-readable narrative summary using Claude API.
+        Falls back to template-based narrative if API is unavailable.
+        """
+        if not self.client:
+            return self._generate_template_narrative(
+                health, triage, serp, content,
+                critical_count, quick_wins_count, strategic_count,
+                total_recovery, total_growth
+            )
+        
+        # Prepare context for Claude
+        context = self._prepare_llm_context(
+            health, triage, serp, content,
+            critical_count, quick_wins_count, strategic_count,
+            total_recovery, total_growth
+        )
+        
+        prompt = f"""You are a senior SEO consultant generating an executive summary for a client's search intelligence report.
+
+Based on the analysis data below, write a compelling 3-4 paragraph narrative that:
+1. Opens with the current state and trajectory (be direct about problems)
+2. Quantifies the opportunity (recovery + growth potential)
+3. Outlines the recommended approach (critical → quick wins → strategic)
+4. Ends with a clear call to action
+
+Tone: Professional consultant, no fluff, numbers-driven, actionable.
+Length: 250-350 words.
+
+ANALYSIS DATA:
+{context}
+
+Write the narrative now:"""
+
+        try:
+            message = self.client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=1024,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            narrative = message.content[0].text.strip()
+            return narrative
+            
+        except Exception as e:
+            print(f"Claude API error: {e}")
+            return self._generate_template_narrative(
+                health, triage, serp, content,
+                critical_count, quick_wins_count, strategic_count,
+                total_recovery, total_growth
+            )
+    
+    def _prepare_llm_context(
+        self,
+        health: Dict[str, Any],
+        triage: Dict[str, Any],
+        serp: Optional[Dict[str, Any]],
+        content: Dict[str, Any],
+        critical_count: int,
+        quick_wins_count: int,
+        strategic_count: int,
+        total_recovery: int,
+        total_growth: int
+    ) -> str:
+        """Prepare structured context for LLM."""
+        context_parts = []
+        
+        # Overall trajectory
+        direction = health.get('overall_direction', 'unknown')
+        slope = health.get('trend_slope_pct_per_month', 0)
+        context_parts.append(f"TRAJECTORY: {direction}, {slope:+.1f}% per month")
+        
+        # Forecast
+        forecast_30d = health.get('forecast', {}).get('30d', {})
+        if forecast_30d:
+            context_parts.append(
+                f"FORECAST: {forecast_30d.get('clicks', 0):,} clicks in 30 days "
+                f"(±{forecast_30d.get('ci_high', 0) - forecast_30d.get('clicks', 0):,})"
+            )
+        
+        # Page buckets
+        summary = triage.get('summary', {})
+        context_parts.append(
+            f"PAGES: {summary.get('critical', 0)} critical, "
+            f"{summary.get('decaying', 0)} decaying, "
+            f"{summary.get('stable', 0)} stable, "
+            f"{summary.get('growing', 0)} growing"
+        )
+        
+        # Recoverable clicks
+        recoverable = summary.get('total_recoverable_clicks_monthly', 0)
+        context_parts.append(f"RECOVERABLE: {recoverable:,} clicks/month")
+        
+        # Cannibalization
+        cannibalization_count = len(content.get('cannibalization_clusters', []))
+        if cannibalization_count > 0:
+            context_parts.append(f"CANNIBALIZATION: {cannibalization_count} clusters found")
+        
+        # Striking distance
+        striking_distance_count = len(content.get('striking_distance', []))
+        context_parts.append(f"STRIKING DISTANCE: {striking_distance_count} keywords positions 8-20")
+        
+        # SERP insights
+        if serp:
+            displacement_count = len(serp.get('serp_feature_displacement', []))
+            if displacement_count > 0:
+                context_parts.append(f"SERP DISPLACEMENT: {displacement_count} keywords affected by features")
+        
+        # Action summary
+        context_parts.append(
+            f"GAMEPLAN: {critical_count} critical fixes, "
+            f"{quick_wins_count} quick wins, "
+            f"{strategic_count} strategic plays"
+        )
+        
+        context_parts.append(
+            f"OPPORTUNITY: {total_recovery:,} clicks/month recovery + "
+            f"{total_growth:,} clicks/month growth potential"
+        )
+        
+        return "\n".join(context_parts)
+    
+    def _generate_template_narrative(
+        self,
+        health: Dict[str, Any],
+        triage: Dict[str, Any],
+        serp: Optional[Dict[str, Any]],
+        content: Dict[str, Any],
+        critical_count: int,
+        quick_wins_count: int,
+        strategic_count: int,
+        total_recovery: int,
+        total_growth: int
+    ) -> str:
+        """Generate narrative from template when Claude API unavailable."""
+        direction = health.get('overall_direction', 'stable')
+        slope = health.get('trend_slope_pct_per_month', 0)
+        
+        summary = triage.get('summary', {})
+        critical_pages = summary.get('critical', 0)
+        decaying_pages = summary.get('decaying', 0)
+        
+        # Opening - current state
+        if direction in ['declining', 'strong_decline']:
+            opening = (
+                f"Your site is currently declining at {abs(slope):.1f}% per month. "
+                f"We've identified {critical_pages} pages in critical decay and "
+                f"{
