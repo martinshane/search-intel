@@ -1,538 +1,22 @@
 """
 Module 2: Page-Level Triage
-Complete implementation with per-page trend fitting, CTR anomaly detection using PyOD Isolation Forest,
-GA4 engagement cross-reference, and priority scoring algorithm.
+
+Analyzes per-page performance trends, detects CTR anomalies, flags engagement issues,
+and prioritizes pages for action based on decay rate and recoverability.
+
+Refined to handle:
+- Minimum data requirements (pages with insufficient history)
+- Improved decay rate calculation for irregular traffic patterns
+- Better handling of pages with seasonal or volatile traffic
 """
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
 from scipy import stats
-from pyod.models.iforest import IForest
-import logging
-
-logger = logging.getLogger(__name__)
-
-
-class PageTriageAnalyzer:
-    """Analyzes page-level performance trends, CTR anomalies, and engagement patterns."""
-    
-    def __init__(self):
-        self.decay_thresholds = {
-            'growing': 0.1,
-            'stable_upper': 0.1,
-            'stable_lower': -0.1,
-            'decaying_lower': -0.5,
-        }
-        self.engagement_thresholds = {
-            'bounce_rate': 0.80,
-            'avg_session_duration': 30,  # seconds
-        }
-        
-    def analyze(
-        self,
-        page_daily_data: pd.DataFrame,
-        ga4_landing_data: Optional[pd.DataFrame],
-        gsc_page_summary: pd.DataFrame
-    ) -> Dict[str, Any]:
-        """
-        Main analysis pipeline for page-level triage.
-        
-        Args:
-            page_daily_data: Daily time series per page (columns: date, page, clicks, impressions, ctr, position)
-            ga4_landing_data: GA4 landing page metrics (columns: page, sessions, bounce_rate, avg_session_duration, conversions)
-            gsc_page_summary: GSC page summary stats (columns: page, total_clicks, total_impressions, avg_ctr, avg_position)
-            
-        Returns:
-            Dictionary containing page analysis results and summary stats
-        """
-        logger.info("Starting page-level triage analysis")
-        
-        try:
-            # 1. Per-page trend fitting
-            logger.info("Fitting per-page trends")
-            page_trends = self._fit_page_trends(page_daily_data)
-            
-            # 2. CTR anomaly detection
-            logger.info("Detecting CTR anomalies")
-            ctr_anomalies = self._detect_ctr_anomalies(gsc_page_summary)
-            
-            # 3. Engagement cross-reference
-            logger.info("Cross-referencing engagement data")
-            engagement_flags = self._analyze_engagement(gsc_page_summary, ga4_landing_data)
-            
-            # 4. Priority scoring
-            logger.info("Calculating priority scores")
-            pages_analyzed = self._calculate_priority_scores(
-                page_trends,
-                ctr_anomalies,
-                engagement_flags,
-                gsc_page_summary
-            )
-            
-            # 5. Generate summary statistics
-            summary = self._generate_summary(pages_analyzed)
-            
-            logger.info(f"Analysis complete. Analyzed {len(pages_analyzed)} pages")
-            
-            return {
-                "pages": pages_analyzed,
-                "summary": summary,
-                "metadata": {
-                    "analyzed_at": datetime.utcnow().isoformat(),
-                    "total_pages": len(pages_analyzed),
-                    "data_date_range": self._get_date_range(page_daily_data)
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in page triage analysis: {str(e)}", exc_info=True)
-            raise
-    
-    def _fit_page_trends(self, page_daily_data: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-        """
-        Fit linear regression trend for each page with sufficient data.
-        
-        Returns:
-            Dictionary mapping page URL to trend statistics
-        """
-        trends = {}
-        
-        # Ensure date column is datetime
-        if 'date' in page_daily_data.columns:
-            page_daily_data['date'] = pd.to_datetime(page_daily_data['date'])
-        
-        # Group by page
-        for page, group in page_daily_data.groupby('page'):
-            # Require at least 30 days of data
-            if len(group) < 30:
-                continue
-            
-            # Sort by date
-            group = group.sort_values('date')
-            
-            # Convert dates to numeric (days since first observation)
-            group = group.copy()
-            first_date = group['date'].min()
-            group['days'] = (group['date'] - first_date).dt.days
-            
-            # Fit linear regression on clicks
-            if 'clicks' in group.columns and group['clicks'].sum() > 0:
-                X = group['days'].values
-                y = group['clicks'].values
-                
-                # Handle missing or zero values
-                valid_mask = ~np.isnan(y) & (y >= 0)
-                if valid_mask.sum() < 10:  # Need at least 10 valid points
-                    continue
-                
-                X_valid = X[valid_mask]
-                y_valid = y[valid_mask]
-                
-                try:
-                    slope, intercept, r_value, p_value, std_err = stats.linregress(X_valid, y_valid)
-                    
-                    # Calculate daily change rate
-                    avg_clicks = y_valid.mean()
-                    daily_change_rate = slope
-                    
-                    # Calculate current monthly clicks (last 30 days)
-                    last_30_days = group[group['days'] >= (group['days'].max() - 30)]
-                    current_monthly_clicks = last_30_days['clicks'].sum()
-                    
-                    # Project when page might fall below page 1 (position 10)
-                    current_position = group['position'].tail(30).mean() if 'position' in group.columns else None
-                    projected_loss_date = None
-                    
-                    if current_position and current_position < 10 and slope < 0:
-                        # Estimate position decay (simplified)
-                        # Assume position worsens proportionally to click decay
-                        if avg_clicks > 0:
-                            position_slope = slope * (current_position / avg_clicks) * 0.1
-                            if position_slope < 0:
-                                days_to_position_10 = (10 - current_position) / abs(position_slope)
-                                if days_to_position_10 > 0 and days_to_position_10 < 365:
-                                    projected_loss_date = (datetime.now() + timedelta(days=days_to_position_10)).date().isoformat()
-                    
-                    # Classify bucket
-                    bucket = self._classify_trend_bucket(daily_change_rate)
-                    
-                    trends[page] = {
-                        'slope': float(daily_change_rate),
-                        'intercept': float(intercept),
-                        'r_squared': float(r_value ** 2),
-                        'p_value': float(p_value),
-                        'bucket': bucket,
-                        'current_monthly_clicks': int(current_monthly_clicks),
-                        'projected_page1_loss_date': projected_loss_date,
-                        'avg_position': float(current_position) if current_position else None,
-                        'data_points': int(valid_mask.sum())
-                    }
-                    
-                except Exception as e:
-                    logger.warning(f"Failed to fit trend for page {page}: {str(e)}")
-                    continue
-        
-        return trends
-    
-    def _classify_trend_bucket(self, slope: float) -> str:
-        """Classify page into trend bucket based on slope."""
-        if slope > self.decay_thresholds['growing']:
-            return 'growing'
-        elif slope >= self.decay_thresholds['stable_lower']:
-            return 'stable'
-        elif slope >= self.decay_thresholds['decaying_lower']:
-            return 'decaying'
-        else:
-            return 'critical'
-    
-    def _detect_ctr_anomalies(self, gsc_page_summary: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-        """
-        Detect CTR anomalies using Isolation Forest, grouped by position.
-        
-        Returns:
-            Dictionary mapping page URL to CTR anomaly information
-        """
-        anomalies = {}
-        
-        if gsc_page_summary.empty:
-            return anomalies
-        
-        # Ensure required columns exist
-        required_cols = ['page', 'avg_position', 'avg_ctr', 'total_impressions']
-        if not all(col in gsc_page_summary.columns for col in required_cols):
-            logger.warning("Missing required columns for CTR anomaly detection")
-            return anomalies
-        
-        # Filter to pages with sufficient impressions
-        df = gsc_page_summary[gsc_page_summary['total_impressions'] >= 100].copy()
-        
-        if len(df) < 10:
-            logger.warning("Not enough pages with sufficient impressions for CTR anomaly detection")
-            return anomalies
-        
-        # Round position to group similar positions
-        df['position_group'] = df['avg_position'].round().astype(int)
-        
-        # Detect anomalies within each position group
-        for position_group, group in df.groupby('position_group'):
-            if len(group) < 5:  # Need at least 5 pages in group
-                continue
-            
-            try:
-                # Prepare data for Isolation Forest
-                X = group[['avg_ctr']].values
-                
-                # Configure and fit Isolation Forest
-                clf = IForest(contamination=0.1, random_state=42, n_estimators=100)
-                clf.fit(X)
-                
-                # Get anomaly predictions (-1 for anomalies, 1 for normal)
-                predictions = clf.predict(X)
-                anomaly_scores = clf.decision_function(X)
-                
-                # Calculate expected CTR as median of normal points
-                normal_mask = predictions == 1
-                if normal_mask.sum() > 0:
-                    expected_ctr = group.loc[normal_mask, 'avg_ctr'].median()
-                else:
-                    expected_ctr = group['avg_ctr'].median()
-                
-                # Store anomalies
-                for idx, (_, row) in enumerate(group.iterrows()):
-                    if predictions[idx] == -1:  # Anomaly detected
-                        anomalies[row['page']] = {
-                            'ctr_anomaly': True,
-                            'ctr_expected': float(expected_ctr),
-                            'ctr_actual': float(row['avg_ctr']),
-                            'ctr_deviation': float(row['avg_ctr'] - expected_ctr),
-                            'anomaly_score': float(anomaly_scores[idx]),
-                            'position_group': int(position_group)
-                        }
-                
-            except Exception as e:
-                logger.warning(f"Failed to detect anomalies for position group {position_group}: {str(e)}")
-                continue
-        
-        return anomalies
-    
-    def _analyze_engagement(
-        self,
-        gsc_page_summary: pd.DataFrame,
-        ga4_landing_data: Optional[pd.DataFrame]
-    ) -> Dict[str, Dict[str, Any]]:
-        """
-        Cross-reference GSC pages with GA4 engagement metrics.
-        
-        Returns:
-            Dictionary mapping page URL to engagement flags
-        """
-        engagement_flags = {}
-        
-        if ga4_landing_data is None or ga4_landing_data.empty:
-            logger.warning("No GA4 data available for engagement analysis")
-            return engagement_flags
-        
-        # Normalize page URLs for matching
-        gsc_pages = gsc_page_summary.copy()
-        ga4_pages = ga4_landing_data.copy()
-        
-        # Ensure 'page' column exists and normalize
-        if 'page' not in gsc_pages.columns or 'page' not in ga4_pages.columns:
-            logger.warning("Missing 'page' column in GSC or GA4 data")
-            return engagement_flags
-        
-        gsc_pages['page_normalized'] = gsc_pages['page'].str.lower().str.strip()
-        ga4_pages['page_normalized'] = ga4_pages['page'].str.lower().str.strip()
-        
-        # Merge datasets
-        merged = gsc_pages.merge(
-            ga4_pages,
-            on='page_normalized',
-            how='left',
-            suffixes=('_gsc', '_ga4')
-        )
-        
-        # Analyze engagement for each page
-        for _, row in merged.iterrows():
-            page = row['page_gsc']
-            
-            # Check if GA4 data exists
-            if pd.isna(row.get('sessions', np.nan)):
-                continue
-            
-            flags = {
-                'has_ga4_data': True,
-                'sessions': int(row.get('sessions', 0)),
-                'bounce_rate': float(row.get('bounce_rate', 0)) if not pd.isna(row.get('bounce_rate')) else None,
-                'avg_session_duration': float(row.get('avg_session_duration', 0)) if not pd.isna(row.get('avg_session_duration')) else None,
-                'engagement_issues': []
-            }
-            
-            # Flag high bounce rate
-            if flags['bounce_rate'] and flags['bounce_rate'] > self.engagement_thresholds['bounce_rate']:
-                flags['engagement_issues'].append('high_bounce_rate')
-            
-            # Flag low session duration
-            if flags['avg_session_duration'] and flags['avg_session_duration'] < self.engagement_thresholds['avg_session_duration']:
-                flags['engagement_issues'].append('low_session_duration')
-            
-            # Determine overall engagement flag
-            if len(flags['engagement_issues']) >= 2:
-                flags['engagement_flag'] = 'low_engagement'
-            elif len(flags['engagement_issues']) == 1:
-                flags['engagement_flag'] = 'moderate_engagement'
-            else:
-                flags['engagement_flag'] = 'good_engagement'
-            
-            engagement_flags[page] = flags
-        
-        return engagement_flags
-    
-    def _calculate_priority_scores(
-        self,
-        page_trends: Dict[str, Dict[str, Any]],
-        ctr_anomalies: Dict[str, Dict[str, Any]],
-        engagement_flags: Dict[str, Dict[str, Any]],
-        gsc_page_summary: pd.DataFrame
-    ) -> List[Dict[str, Any]]:
-        """
-        Calculate priority scores and recommended actions for each page.
-        
-        Priority scoring algorithm:
-        score = (current_monthly_clicks × abs(decay_rate)) × recoverability_factor
-        
-        Returns:
-            List of page analysis dictionaries
-        """
-        pages_analyzed = []
-        
-        # Create lookup dictionary from GSC summary
-        gsc_lookup = {}
-        for _, row in gsc_page_summary.iterrows():
-            gsc_lookup[row['page']] = row.to_dict()
-        
-        # Combine all page data
-        all_pages = set(page_trends.keys()) | set(ctr_anomalies.keys()) | set(engagement_flags.keys())
-        
-        for page in all_pages:
-            trend = page_trends.get(page, {})
-            anomaly = ctr_anomalies.get(page, {})
-            engagement = engagement_flags.get(page, {})
-            gsc_data = gsc_lookup.get(page, {})
-            
-            # Skip if no meaningful data
-            if not trend and not anomaly and not engagement:
-                continue
-            
-            # Build page analysis object
-            page_data = {
-                'url': page,
-                'bucket': trend.get('bucket', 'unknown'),
-                'current_monthly_clicks': trend.get('current_monthly_clicks', 0),
-                'trend_slope': trend.get('slope'),
-                'projected_page1_loss_date': trend.get('projected_page1_loss_date'),
-                'ctr_anomaly': anomaly.get('ctr_anomaly', False),
-                'ctr_expected': anomaly.get('ctr_expected'),
-                'ctr_actual': anomaly.get('ctr_actual'),
-                'engagement_flag': engagement.get('engagement_flag'),
-                'avg_position': trend.get('avg_position') or gsc_data.get('avg_position')
-            }
-            
-            # Calculate recoverability factor
-            recoverability = self._calculate_recoverability(page_data, trend, anomaly, engagement)
-            
-            # Calculate priority score
-            monthly_clicks = page_data['current_monthly_clicks']
-            decay_rate = abs(trend.get('slope', 0))
-            
-            priority_score = monthly_clicks * decay_rate * recoverability
-            page_data['priority_score'] = round(priority_score, 1)
-            page_data['recoverability_factor'] = round(recoverability, 2)
-            
-            # Determine recommended action
-            page_data['recommended_action'] = self._determine_recommended_action(page_data, anomaly, engagement)
-            
-            pages_analyzed.append(page_data)
-        
-        # Sort by priority score descending
-        pages_analyzed.sort(key=lambda x: x['priority_score'], reverse=True)
-        
-        return pages_analyzed
-    
-    def _calculate_recoverability(
-        self,
-        page_data: Dict[str, Any],
-        trend: Dict[str, Any],
-        anomaly: Dict[str, Any],
-        engagement: Dict[str, Any]
-    ) -> float:
-        """
-        Calculate recoverability factor based on multiple signals.
-        
-        Higher score = easier to recover
-        """
-        factor = 1.0
-        
-        # CTR anomaly = easy fix (title/snippet rewrite)
-        if anomaly.get('ctr_anomaly'):
-            factor *= 1.5
-        
-        # Recent decay = easier to recover
-        if trend.get('data_points', 0) < 60:  # Decay started recently
-            factor *= 1.3
-        
-        # Position-based recoverability
-        avg_position = page_data.get('avg_position')
-        if avg_position:
-            if avg_position <= 10:  # Already on page 1
-                factor *= 1.4
-            elif avg_position <= 20:  # Page 2
-                factor *= 1.2
-            elif avg_position > 30:  # Deep positions
-                factor *= 0.7
-        
-        # Engagement issues = harder fix (content problem)
-        if engagement.get('engagement_flag') == 'low_engagement':
-            factor *= 0.8
-        
-        # Bucket-based adjustment
-        bucket = page_data.get('bucket')
-        if bucket == 'critical':
-            factor *= 0.9  # Severe decay may indicate structural issues
-        elif bucket == 'growing':
-            factor *= 1.1  # Already has momentum
-        
-        return max(factor, 0.1)  # Floor at 0.1
-    
-    def _determine_recommended_action(
-        self,
-        page_data: Dict[str, Any],
-        anomaly: Dict[str, Any],
-        engagement: Dict[str, Any]
-    ) -> str:
-        """Determine the primary recommended action for a page."""
-        
-        # Priority: CTR anomaly > engagement issues > content update > monitoring
-        
-        if anomaly.get('ctr_anomaly'):
-            return 'title_rewrite'
-        
-        engagement_flag = engagement.get('engagement_flag')
-        if engagement_flag == 'low_engagement':
-            issues = engagement.get('engagement_issues', [])
-            if 'high_bounce_rate' in issues and 'low_session_duration' in issues:
-                return 'content_overhaul'
-            else:
-                return 'content_enhancement'
-        
-        bucket = page_data.get('bucket')
-        if bucket == 'critical':
-            return 'urgent_content_update'
-        elif bucket == 'decaying':
-            return 'content_refresh'
-        elif bucket == 'growing':
-            return 'double_down'
-        else:
-            return 'monitor'
-    
-    def _generate_summary(self, pages_analyzed: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate summary statistics from analyzed pages."""
-        
-        total_pages = len(pages_analyzed)
-        
-        # Count by bucket
-        bucket_counts = {
-            'growing': 0,
-            'stable': 0,
-            'decaying': 0,
-            'critical': 0,
-            'unknown': 0
-        }
-        
-        for page in pages_analyzed:
-            bucket = page.get('bucket', 'unknown')
-            if bucket in bucket_counts:
-                bucket_counts[bucket] += 1
-        
-        # Calculate total recoverable clicks
-        recoverable_clicks = sum(
-            page['current_monthly_clicks']
-            for page in pages_analyzed
-            if page.get('bucket') in ['decaying', 'critical']
-            and page.get('recoverability_factor', 0) > 0.5
-        )
-        
-        # Count pages with various issues
-        ctr_anomalies = sum(1 for page in pages_analyzed if page.get('ctr_anomaly'))
-        engagement_issues = sum(
-            1 for page in pages_analyzed
-            if page.get('engagement_flag') in ['low_engagement', 'moderate_engagement']
-        )
-        
-        return {
-            'total_pages_analyzed': total_pages,
-            'growing': bucket_counts['growing'],
-            'stable': bucket_counts['stable'],
-            'decaying': bucket_counts['decaying'],
-            'critical': bucket_counts['critical'],
-            'total_recoverable_clicks_monthly': int(recoverable_clicks),
-            'pages_with_ctr_anomalies': ctr_anomalies,
-            'pages_with_engagement_issues': engagement_issues,
-            'avg_priority_score': round(np.mean([p['priority_score'] for p in pages_analyzed]), 1) if pages_analyzed else 0
-        }
-    
-    def _get_date_range(self, page_daily_data: pd.DataFrame) -> Dict[str, str]:
-        """Extract date range from time series data."""
-        if page_daily_data.empty or 'date' not in page_daily_data.columns:
-            return {'start': None, 'end': None}
-        
-        dates = pd.to_datetime(page_daily_data['date'])
-        return {
-            'start': dates.min().date().isoformat(),
-            'end': dates.max().date().isoformat()
-        }
+from sklearn.ensemble import IsolationForest
+from typing import Dict, List, Any, Optional
+import warnings
+warnings.filterwarnings('ignore')
 
 
 def analyze_page_triage(
@@ -541,21 +25,529 @@ def analyze_page_triage(
     gsc_page_summary: Optional[pd.DataFrame] = None
 ) -> Dict[str, Any]:
     """
-    Main entry point for Module 2: Page-Level Triage analysis.
+    Performs page-level triage analysis.
     
     Args:
-        page_daily_data: DataFrame with columns [date, page, clicks, impressions, ctr, position]
-        ga4_landing_data: Optional DataFrame with columns [page, sessions, bounce_rate, avg_session_duration, conversions]
-        gsc_page_summary: Optional DataFrame with columns [page, total_clicks, total_impressions, avg_ctr, avg_position]
+        page_daily_data: DataFrame with columns [page, date, clicks, impressions, ctr, position]
+        ga4_landing_data: DataFrame with columns [page, bounce_rate, avg_session_duration, sessions]
+        gsc_page_summary: DataFrame with columns [page, total_clicks, total_impressions, avg_position]
     
     Returns:
         Dictionary containing:
-        - pages: List of analyzed pages with metrics and recommendations
-        - summary: Overall statistics and counts
-        - metadata: Analysis metadata
+        - pages: List of page analysis objects with trend, CTR anomaly, engagement flags
+        - summary: Aggregated statistics across all pages
     """
-    # If gsc_page_summary not provided, generate from daily data
-    if gsc_page_summary is None and not page_daily_data.empty:
-        gsc_page_summary = page_daily_data.groupby('page').agg({
-            'clicks': 'sum',
-            'impressions': 
+    
+    if page_daily_data is None or len(page_daily_data) == 0:
+        return _empty_result()
+    
+    # Ensure date column is datetime
+    page_daily_data = page_daily_data.copy()
+    page_daily_data['date'] = pd.to_datetime(page_daily_data['date'])
+    
+    # Analyze each page
+    pages = []
+    for page_url in page_daily_data['page'].unique():
+        page_data = page_daily_data[page_daily_data['page'] == page_url].sort_values('date')
+        
+        # Get GA4 data for this page if available
+        ga4_data = None
+        if ga4_landing_data is not None and len(ga4_landing_data) > 0:
+            ga4_match = ga4_landing_data[ga4_landing_data['page'] == page_url]
+            if len(ga4_match) > 0:
+                ga4_data = ga4_match.iloc[0]
+        
+        # Get GSC summary for this page if available
+        gsc_summary = None
+        if gsc_page_summary is not None and len(gsc_page_summary) > 0:
+            gsc_match = gsc_page_summary[gsc_page_summary['page'] == page_url]
+            if len(gsc_match) > 0:
+                gsc_summary = gsc_match.iloc[0]
+        
+        page_analysis = _analyze_single_page(page_url, page_data, ga4_data, gsc_summary)
+        if page_analysis is not None:
+            pages.append(page_analysis)
+    
+    # Detect CTR anomalies across all pages
+    pages = _detect_ctr_anomalies(pages)
+    
+    # Calculate priority scores
+    pages = _calculate_priority_scores(pages)
+    
+    # Sort by priority score descending
+    pages.sort(key=lambda x: x.get('priority_score', 0), reverse=True)
+    
+    # Generate summary statistics
+    summary = _generate_summary(pages)
+    
+    return {
+        'pages': pages,
+        'summary': summary
+    }
+
+
+def _analyze_single_page(
+    page_url: str,
+    page_data: pd.DataFrame,
+    ga4_data: Optional[pd.Series],
+    gsc_summary: Optional[pd.Series]
+) -> Optional[Dict[str, Any]]:
+    """
+    Analyzes a single page's performance trends and flags issues.
+    
+    Returns None if page doesn't meet minimum data requirements.
+    """
+    
+    # Minimum data requirements: at least 14 days of data
+    if len(page_data) < 14:
+        return None
+    
+    # Filter out days with zero clicks AND zero impressions (likely data gaps)
+    page_data = page_data[(page_data['clicks'] > 0) | (page_data['impressions'] > 0)].copy()
+    
+    if len(page_data) < 14:
+        return None
+    
+    # Calculate current monthly metrics (last 30 days)
+    last_30_days = page_data.tail(30)
+    current_monthly_clicks = last_30_days['clicks'].sum()
+    current_monthly_impressions = last_30_days['impressions'].sum()
+    
+    # Require minimum traffic to be worth analyzing
+    if current_monthly_clicks < 5 and current_monthly_impressions < 100:
+        return None
+    
+    # Calculate average position
+    avg_position = page_data['position'].mean() if 'position' in page_data.columns else None
+    
+    # Calculate trend with improved handling of irregular patterns
+    trend_result = _calculate_trend(page_data)
+    
+    # Determine bucket based on trend
+    bucket = _determine_bucket(trend_result['slope'], trend_result['confidence'])
+    
+    # Calculate projected page 1 loss date if decaying
+    projected_loss_date = None
+    if bucket in ['decaying', 'critical'] and avg_position is not None and avg_position <= 15:
+        projected_loss_date = _calculate_projected_loss_date(
+            page_data, avg_position, trend_result['slope']
+        )
+    
+    # Check engagement issues from GA4 data
+    engagement_flag = None
+    if ga4_data is not None:
+        engagement_flag = _check_engagement_issues(ga4_data)
+    
+    # Calculate actual CTR
+    actual_ctr = current_monthly_clicks / current_monthly_impressions if current_monthly_impressions > 0 else 0
+    
+    result = {
+        'url': page_url,
+        'bucket': bucket,
+        'current_monthly_clicks': int(current_monthly_clicks),
+        'current_monthly_impressions': int(current_monthly_impressions),
+        'trend_slope': round(trend_result['slope'], 4),
+        'trend_confidence': round(trend_result['confidence'], 3),
+        'trend_r_squared': round(trend_result['r_squared'], 3),
+        'avg_position': round(avg_position, 1) if avg_position is not None else None,
+        'actual_ctr': round(actual_ctr, 4),
+        'engagement_flag': engagement_flag,
+        'projected_page1_loss_date': projected_loss_date,
+        'days_of_data': len(page_data),
+        'data_regularity': trend_result['data_regularity']
+    }
+    
+    # Add GA4 metrics if available
+    if ga4_data is not None:
+        result['bounce_rate'] = round(float(ga4_data.get('bounce_rate', 0)), 3)
+        result['avg_session_duration'] = round(float(ga4_data.get('avg_session_duration', 0)), 1)
+        result['sessions'] = int(ga4_data.get('sessions', 0))
+    
+    return result
+
+
+def _calculate_trend(page_data: pd.DataFrame) -> Dict[str, float]:
+    """
+    Calculates trend with improved handling for irregular traffic patterns.
+    
+    Uses weighted regression to emphasize recent data and applies
+    outlier-resistant techniques for volatile traffic.
+    """
+    
+    # Convert dates to numeric (days since first date)
+    page_data = page_data.copy()
+    page_data['days'] = (page_data['date'] - page_data['date'].min()).dt.days
+    
+    # Check data regularity (gaps in time series)
+    total_days_span = page_data['days'].max() - page_data['days'].min() + 1
+    data_regularity = len(page_data) / total_days_span if total_days_span > 0 else 0
+    
+    clicks = page_data['clicks'].values
+    days = page_data['days'].values
+    
+    # Handle zero-inflated data (many days with zero clicks)
+    non_zero_ratio = np.sum(clicks > 0) / len(clicks)
+    
+    if non_zero_ratio < 0.3:  # Very sparse data
+        # Use only non-zero days for trend calculation
+        non_zero_mask = clicks > 0
+        if np.sum(non_zero_mask) < 7:
+            # Not enough non-zero data points
+            return {
+                'slope': 0.0,
+                'confidence': 0.0,
+                'r_squared': 0.0,
+                'data_regularity': data_regularity
+            }
+        clicks = clicks[non_zero_mask]
+        days = days[non_zero_mask]
+    
+    # Apply smoothing for volatile data
+    if len(clicks) > 7:
+        # Use 7-day rolling average to reduce noise
+        smoothed = pd.Series(clicks).rolling(window=min(7, len(clicks)), min_periods=1).mean().values
+    else:
+        smoothed = clicks
+    
+    # Weight recent data more heavily (exponential decay)
+    # More recent = higher weight
+    weights = np.exp(np.linspace(-1, 0, len(days)))
+    weights = weights / weights.sum()  # Normalize
+    
+    try:
+        # Weighted linear regression on smoothed data
+        # Using log(clicks + 1) for better handling of exponential decay patterns
+        y = np.log1p(smoothed)  # log(1 + clicks) to handle zeros
+        
+        # Fit weighted regression
+        W = np.diag(weights)
+        X = np.column_stack([np.ones(len(days)), days])
+        XtW = X.T @ W
+        beta = np.linalg.lstsq(XtW @ X, XtW @ y, rcond=None)[0]
+        
+        # Convert log-space slope back to clicks/day
+        # Slope in log space represents relative growth rate
+        log_slope = beta[1]
+        
+        # Calculate predictions and R²
+        y_pred = X @ beta
+        ss_res = np.sum(weights * (y - y_pred) ** 2)
+        ss_tot = np.sum(weights * (y - np.average(y, weights=weights)) ** 2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+        
+        # Convert relative growth rate to absolute clicks/day
+        # This is approximate: exp(log_slope) - 1 gives daily % change
+        # Multiply by average clicks to get absolute change
+        avg_clicks = np.mean(smoothed)
+        daily_change_pct = np.exp(log_slope) - 1
+        slope = avg_clicks * daily_change_pct
+        
+        # Confidence based on R² and data regularity
+        confidence = r_squared * data_regularity
+        
+        return {
+            'slope': slope,
+            'confidence': max(0, min(1, confidence)),
+            'r_squared': max(0, min(1, r_squared)),
+            'data_regularity': data_regularity
+        }
+        
+    except (np.linalg.LinAlgError, ValueError):
+        # Regression failed, return neutral trend
+        return {
+            'slope': 0.0,
+            'confidence': 0.0,
+            'r_squared': 0.0,
+            'data_regularity': data_regularity
+        }
+
+
+def _determine_bucket(slope: float, confidence: float) -> str:
+    """
+    Classifies page into bucket based on trend slope and confidence.
+    
+    Only assigns strong buckets (growing/critical) when confidence is high.
+    Uses more conservative thresholds for irregular data.
+    """
+    
+    # Require minimum confidence to classify as non-stable
+    min_confidence = 0.3
+    
+    if confidence < min_confidence:
+        return 'stable'
+    
+    # Thresholds in clicks per day
+    if slope > 0.5:
+        return 'growing'
+    elif slope > 0.1:
+        return 'stable'
+    elif slope > -0.3:
+        return 'stable'
+    elif slope > -1.0:
+        return 'decaying'
+    else:
+        return 'critical'
+
+
+def _calculate_projected_loss_date(
+    page_data: pd.DataFrame,
+    current_position: float,
+    slope: float
+) -> Optional[str]:
+    """
+    Projects when page will fall below position 10 (off page 1).
+    
+    Returns None if page is already off page 1 or trend is not declining.
+    """
+    
+    if current_position > 10 or slope >= 0:
+        return None
+    
+    # Estimate position decay rate from click decay rate
+    # Rough approximation: each click lost corresponds to position drop
+    # This is highly simplified; real relationship is complex
+    
+    # Get recent position trend if available
+    if 'position' in page_data.columns:
+        recent_data = page_data.tail(30)
+        if len(recent_data) > 7:
+            days = (recent_data['date'] - recent_data['date'].min()).dt.days.values
+            positions = recent_data['position'].values
+            
+            try:
+                slope_pos, _, _, _, _ = stats.linregress(days, positions)
+                
+                if slope_pos > 0:  # Position is increasing (getting worse)
+                    # Days until position reaches 10
+                    days_until_loss = (10 - current_position) / slope_pos
+                    
+                    if 0 < days_until_loss < 365:  # Only if within next year
+                        loss_date = page_data['date'].max() + pd.Timedelta(days=int(days_until_loss))
+                        return loss_date.strftime('%Y-%m-%d')
+            except:
+                pass
+    
+    return None
+
+
+def _check_engagement_issues(ga4_data: pd.Series) -> Optional[str]:
+    """
+    Flags pages with poor engagement metrics from GA4 data.
+    """
+    
+    bounce_rate = float(ga4_data.get('bounce_rate', 0))
+    avg_session = float(ga4_data.get('avg_session_duration', 0))
+    
+    if bounce_rate > 0.8 and avg_session < 30:
+        return 'low_engagement'
+    elif bounce_rate > 0.7 and avg_session < 45:
+        return 'moderate_engagement_issues'
+    
+    return None
+
+
+def _detect_ctr_anomalies(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Detects CTR anomalies using position-grouped isolation forest.
+    
+    Pages with anomalously low CTR for their position are flagged.
+    """
+    
+    if len(pages) < 10:  # Need sufficient pages for anomaly detection
+        for page in pages:
+            page['ctr_anomaly'] = False
+            page['ctr_expected'] = None
+        return pages
+    
+    # Group pages by position (rounded to nearest integer)
+    position_groups = {}
+    for page in pages:
+        if page['avg_position'] is not None:
+            pos_bucket = round(page['avg_position'])
+            if pos_bucket not in position_groups:
+                position_groups[pos_bucket] = []
+            position_groups[pos_bucket].append(page)
+    
+    # Run isolation forest within each position group
+    for pos_bucket, group_pages in position_groups.items():
+        if len(group_pages) < 5:  # Need minimum pages per group
+            for page in group_pages:
+                page['ctr_anomaly'] = False
+                page['ctr_expected'] = None
+            continue
+        
+        # Extract CTR values
+        ctrs = np.array([p['actual_ctr'] for p in group_pages]).reshape(-1, 1)
+        
+        # Handle case where all CTRs are identical or very similar
+        if np.std(ctrs) < 0.001:
+            for page in group_pages:
+                page['ctr_anomaly'] = False
+                page['ctr_expected'] = page['actual_ctr']
+            continue
+        
+        try:
+            # Fit isolation forest
+            iso_forest = IsolationForest(contamination=0.1, random_state=42)
+            predictions = iso_forest.fit_predict(ctrs)
+            
+            # Calculate expected CTR (median of the group)
+            expected_ctr = np.median(ctrs)
+            
+            # Flag anomalies (predictions == -1) that are BELOW expected
+            for i, page in enumerate(group_pages):
+                page['ctr_expected'] = float(expected_ctr)
+                page['ctr_anomaly'] = bool(predictions[i] == -1 and page['actual_ctr'] < expected_ctr)
+        except:
+            # Isolation forest failed, skip anomaly detection for this group
+            for page in group_pages:
+                page['ctr_anomaly'] = False
+                page['ctr_expected'] = None
+    
+    return pages
+
+
+def _calculate_priority_scores(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Calculates priority score for each page and recommends action.
+    
+    Priority = (current_monthly_clicks × abs(decay_rate)) × recoverability_factor
+    """
+    
+    for page in pages:
+        clicks = page['current_monthly_clicks']
+        slope = page['trend_slope']
+        confidence = page['trend_confidence']
+        bucket = page['bucket']
+        position = page.get('avg_position')
+        ctr_anomaly = page.get('ctr_anomaly', False)
+        engagement_flag = page.get('engagement_flag')
+        
+        # Base impact: clicks at risk
+        if slope < 0:
+            # Monthly decay estimate
+            monthly_decay = abs(slope) * 30
+            base_impact = clicks * (monthly_decay / max(clicks, 1))
+        else:
+            base_impact = 0
+        
+        # Recoverability factor
+        recoverability = 1.0
+        
+        # Easier to recover if CTR issue (just rewrite title)
+        if ctr_anomaly:
+            recoverability *= 2.0
+        
+        # Easier to recover from better positions
+        if position is not None:
+            if position <= 5:
+                recoverability *= 1.5
+            elif position <= 10:
+                recoverability *= 1.2
+            elif position > 20:
+                recoverability *= 0.5
+        
+        # Recent decay is more recoverable
+        if bucket == 'decaying':
+            recoverability *= 1.3
+        elif bucket == 'critical':
+            recoverability *= 1.1  # Critical is harder (decay is advanced)
+        
+        # Low confidence reduces priority
+        recoverability *= confidence
+        
+        # Calculate final score
+        priority_score = base_impact * recoverability
+        
+        # Determine recommended action
+        recommended_action = _determine_recommended_action(page)
+        
+        page['priority_score'] = round(priority_score, 2)
+        page['recommended_action'] = recommended_action
+    
+    return pages
+
+
+def _determine_recommended_action(page: Dict[str, Any]) -> str:
+    """
+    Determines the recommended action for a page based on its issues.
+    """
+    
+    ctr_anomaly = page.get('ctr_anomaly', False)
+    engagement_flag = page.get('engagement_flag')
+    bucket = page['bucket']
+    
+    if ctr_anomaly:
+        return 'title_rewrite'
+    elif engagement_flag == 'low_engagement':
+        return 'content_mismatch_review'
+    elif bucket == 'critical':
+        return 'urgent_content_refresh'
+    elif bucket == 'decaying':
+        return 'content_update'
+    elif bucket == 'growing':
+        return 'amplify_with_links'
+    else:
+        return 'monitor'
+
+
+def _generate_summary(pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Generates summary statistics across all analyzed pages.
+    """
+    
+    total_pages = len(pages)
+    
+    # Count by bucket
+    bucket_counts = {
+        'growing': 0,
+        'stable': 0,
+        'decaying': 0,
+        'critical': 0
+    }
+    
+    for page in pages:
+        bucket = page['bucket']
+        if bucket in bucket_counts:
+            bucket_counts[bucket] += 1
+    
+    # Calculate total recoverable clicks (from decaying + critical pages)
+    recoverable_clicks = sum(
+        page['current_monthly_clicks']
+        for page in pages
+        if page['bucket'] in ['decaying', 'critical']
+    )
+    
+    # Count pages with specific issues
+    ctr_anomaly_count = sum(1 for p in pages if p.get('ctr_anomaly', False))
+    engagement_issue_count = sum(1 for p in pages if p.get('engagement_flag') is not None)
+    
+    return {
+        'total_pages_analyzed': total_pages,
+        'growing': bucket_counts['growing'],
+        'stable': bucket_counts['stable'],
+        'decaying': bucket_counts['decaying'],
+        'critical': bucket_counts['critical'],
+        'total_recoverable_clicks_monthly': recoverable_clicks,
+        'pages_with_ctr_anomalies': ctr_anomaly_count,
+        'pages_with_engagement_issues': engagement_issue_count
+    }
+
+
+def _empty_result() -> Dict[str, Any]:
+    """
+    Returns empty result structure when no data is available.
+    """
+    return {
+        'pages': [],
+        'summary': {
+            'total_pages_analyzed': 0,
+            'growing': 0,
+            'stable': 0,
+            'decaying': 0,
+            'critical': 0,
+            'total_recoverable_clicks_monthly': 0,
+            'pages_with_ctr_anomalies': 0,
+            'pages_with_engagement_issues': 0
+        }
+    }
