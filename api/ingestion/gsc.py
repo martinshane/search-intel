@@ -647,4 +647,39 @@ def ingest_gsc_data(
             logger.warning("No query data available")
     except Exception as e:
         logger.warning(f"Failed to fetch query data: {str(e)}")
-        results['queries'] = pd.DataFrame(columns=['query', 'clicks', 'impressions', '
+        results['queries'] = pd.DataFrame(columns=['query', 'clicks', 'impressions', 'ctr', 'position'])
+    
+    # Page data is critical
+    try:
+        results['pages'] = client.fetch_page_data(site_url, start_date, end_date)
+        if results['pages'].empty:
+            logger.warning("No page data available")
+    except Exception as e:
+        logger.warning(f"Failed to fetch page data: {str(e)}")
+        results['pages'] = pd.DataFrame(columns=['page', 'clicks', 'impressions', 'ctr', 'position'])
+    
+    # Query-page mapping (for cannibalization detection)
+    try:
+        results['query_page'] = client.fetch_query_page_data(site_url, start_date, end_date)
+    except Exception as e:
+        logger.warning(f"Failed to fetch query-page data: {str(e)}")
+        results['query_page'] = pd.DataFrame(columns=['query', 'page', 'clicks', 'impressions', 'ctr', 'position'])
+    
+    # Per-query time series (may be large, graceful degradation)
+    try:
+        results['query_date'] = client.fetch_query_date_data(site_url, start_date, end_date)
+    except Exception as e:
+        logger.warning(f"Failed to fetch query-date data: {str(e)}")
+        results['query_date'] = pd.DataFrame(columns=['query', 'date', 'clicks', 'impressions', 'ctr', 'position'])
+    
+    # Per-page time series
+    try:
+        results['page_date'] = client.fetch_page_date_data(site_url, start_date, end_date)
+    except Exception as e:
+        logger.warning(f"Failed to fetch page-date data: {str(e)}")
+        results['page_date'] = pd.DataFrame(columns=['page', 'date', 'clicks', 'impressions', 'ctr', 'position'])
+    
+    total_rows = sum(len(df) for df in results.values())
+    logger.info(f"GSC ingestion complete for {site_url}: {total_rows} total rows across {len(results)} datasets")
+    
+    return results
