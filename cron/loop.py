@@ -247,15 +247,36 @@ def wait_for_deployment(timeout=180) -> bool:
 
 def log_run(action: str, status: str, score_before: int, score_after: int,
             notes: str, commit_url: str = "", duration: int = 0):
-    supabase.table("build_log").insert({
-        "day": 0,
+    row = {
         "run_date": datetime.date.today().isoformat(),
         "task": action,
         "status": status,
-        "notes": f"Score: {score_before} → {score_after}\n{notes}",
+        "notes": f"Score: {score_before} \u2192 {score_after}\n{notes}",
         "commit_url": commit_url,
         "duration_seconds": duration
-    }).execute()
+    }
+
+    # Write to search-intel Supabase project (app data)
+    try:
+        supabase.table("build_log").insert({**row, "day": 0}).execute()
+    except Exception as e:
+        print(f"search-intel log error: {e}")
+
+    # Also write to main Supabase project (Cowork can read this)
+    main_url = os.environ.get("MAIN_SUPABASE_URL")
+    main_key = os.environ.get("MAIN_SUPABASE_KEY")
+    if main_url and main_key:
+        try:
+            from supabase import create_client as _mk
+            main_sb = _mk(main_url, main_key)
+            main_sb.table("search_intel_build_log").insert({
+                **row,
+                "score_before": score_before,
+                "score_after": score_after,
+            }).execute()
+            print("  Logged to main Supabase ✓")
+        except Exception as e:
+            print(f"Main Supabase log error: {e}")
 
 def post_to_slack(action: str, status: str, score_before: int, score_after: int,
                   notes: str, commit_url: str = ""):
