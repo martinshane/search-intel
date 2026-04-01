@@ -7,19 +7,21 @@ invoked as a FastAPI BackgroundTask. It:
 1. Updates the report status to "ingesting"
 2. Fetches the user's OAuth credentials from Supabase
 3. Pulls GSC + GA4 data via the ingestion layer
-4. Runs the AnalysisPipeline across all 12 modules
-5. Stores each module result in the report_modules table
-6. Writes the assembled report_data JSON to the reports table
-7. Updates report status to "completed" (or "partial" / "failed")
+4. Pulls live SERP data via DataForSEO for top non-branded keywords
+5. Runs the AnalysisPipeline across all 12 modules
+6. Stores each module result in the report_modules table
+7. Writes the assembled report_data JSON to the reports table
+8. Updates report status to "completed" (or "partial" / "failed")
 
 This is the critical glue between the REST API and the analysis engine.
 """
 
+import asyncio
 import logging
 import os
 import traceback
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from supabase import create_client, Client
 
@@ -162,7 +164,7 @@ def _ingest_gsc_data(credentials: Dict[str, Any], gsc_property: str) -> Dict[str
             site_url=gsc_property, months=16
         )
 
-        # Query-level summary
+        # Query-level summary (alias)
         gsc_data["gsc_query_data"] = gsc_data["gsc_keyword_data"]
 
         logger.info("GSC ingestion complete for %s", gsc_property)
@@ -197,6 +199,146 @@ def _ingest_ga4_data(credentials: Dict[str, Any], ga4_property: str) -> Dict[str
     return ga4_data
 
 
+def _extract_top_nonbranded_keywords(
+    gsc_keyword_data: Any,
+    brand_terms: List[str],
+    max_keywords: int = 50,
+) -> List[str]:
+    """
+    Extract top non-branded keywords from GSC keyword data, sorted by
+    impressions descending.
+
+    Handles both DataFrame (pandas) and list-of-dicts formats from the
+    GSC ingestion layer.
+    """
+    keywords: List[str] = []
+    try:
+        # Normalise brand terms for case-insensitive matching
+        brand_lower = [b.lower() for b in brand_terms if b]
+
+        rows: List[Dict[str, Any]] = []
+
+        # Accept pandas DataFrame
+        try:
+            import pandas as pd
+            if isinstance(gsc_keyword_data, pd.DataFrame) and not gsc_keyword_data.empty:
+                rows = gsc_keyword_data.to_dict("records")
+        except ImportError:
+            pass
+
+        # Accept list of dicts
+        if not rows and isinstance(gsc_keyword_data, list):
+            rows = gsc_keyword_data
+
+        if not rows:
+            logger.info("No keyword rows available for SERP extraction")
+            return []
+
+        # Filter out branded queries
+        filtered: List[Dict[str, Any]] = []
+        for row in rows:
+            query = str(row.get("query", row.get("keys", [""])[0] if isinstance(row.get("keys"), list) else "")).lower()
+            if not query:
+                continue
+            is_branded = any(brand in query for brand in brand_lower)
+            if not is_branded:
+                filtered.append({"query": query, "impressions": float(row.get("impressions", 0))})
+
+        # Sort by impressions descending and take top N
+        filtered.sort(key=lambda r: r["impressions"], reverse=True)
+        keywords = [r["query"] for r in filtered[:max_keywords]]
+
+        logger.info(
+            "Extracted %d non-branded keywords from %d total (brand terms: %s)",
+            len(keywords), len(rows), brand_lower,
+        )
+    except Exception as exc:
+        logger.error("Failed to extract top keywords: %s", exc)
+
+    return keywords
+
+
+def _ingest_serp_data(
+    supabase: Client,
+    keywords: List[str],
+    domain: str,
+    budget: float = 0.20,
+) -> Dict[str, Any]:
+    """
+    Pull live SERP data from DataForSEO for the given keywords.
+
+    The DataForSEO client is async, so we run it in an event loop.
+    Falls back gracefully if credentials are missing or API errors occur.
+
+    Returns a dict suitable for data_context["serp_data"].
+    """
+    if not keywords:
+        logger.info("No keywords provided for SERP ingestion — skipping")
+        return {}
+
+    # Check credentials early to avoid noisy errors
+    login = os.getenv("DATAFORSEO_LOGIN", "")
+    password = os.getenv("DATAFORSEO_PASSWORD", "")
+    if not login or not password:
+        logger.warning(
+            "DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD not set — skipping SERP ingestion. "
+            "Modules 3, 8, 11 will run without live SERP data."
+        )
+        return {}
+
+    try:
+        from api.ingestion.dataforseo import fetch_serps_for_top_keywords
+
+        # Run the async function in a new event loop (we are in a sync
+        # background-task context, so there is no running loop).
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # Already inside an async context — create a task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                serp_result = pool.submit(
+                    asyncio.run,
+                    fetch_serps_for_top_keywords(
+                        supabase=supabase,
+                        keywords=keywords,
+                        user_domain=domain,
+                        max_keywords=min(len(keywords), 50),
+                        budget=budget,
+                    ),
+                ).result(timeout=300)
+        else:
+            serp_result = asyncio.run(
+                fetch_serps_for_top_keywords(
+                    supabase=supabase,
+                    keywords=keywords,
+                    user_domain=domain,
+                    max_keywords=min(len(keywords), 50),
+                    budget=budget,
+                )
+            )
+
+        successful = serp_result.get("successful_fetches", 0)
+        failed = serp_result.get("failed_fetches", 0)
+        spending = serp_result.get("spending", {})
+        logger.info(
+            "SERP ingestion complete: %d succeeded, %d failed, spent $%.4f",
+            successful, failed, spending.get("total_spent", 0),
+        )
+        return serp_result
+
+    except ValueError as exc:
+        # DataForSEOClient raises ValueError when credentials are missing
+        logger.warning("DataForSEO client init failed (credentials?): %s", exc)
+        return {}
+    except Exception as exc:
+        logger.error("SERP ingestion failed: %s", exc)
+        return {}
+
+
 def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_property: Optional[str], domain: str) -> None:
     """
     Main entry point — run as a FastAPI BackgroundTask.
@@ -221,7 +363,8 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
         ga4_token = user_creds.get("ga4_token") or {}
 
         # Build data context from ingestion
-        data_context: Dict[str, Any] = {"brand_terms": [domain.replace(".", ""), domain.split(".")[0]]}
+        brand_terms = [domain.replace(".", ""), domain.split(".")[0]]
+        data_context: Dict[str, Any] = {"brand_terms": brand_terms}
 
         # GSC ingestion
         if gsc_token:
@@ -236,6 +379,24 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
             data_context.update(ga4_data)
         else:
             logger.info("GA4 not configured — skipping GA4 ingestion")
+
+        # DataForSEO SERP ingestion (Phase 2)
+        # Extract top non-branded keywords from GSC data, then pull live SERPs
+        top_keywords = _extract_top_nonbranded_keywords(
+            data_context.get("gsc_keyword_data"),
+            brand_terms,
+            max_keywords=50,
+        )
+        if top_keywords:
+            serp_result = _ingest_serp_data(supabase, top_keywords, domain)
+            if serp_result:
+                data_context["serp_data"] = serp_result
+                logger.info(
+                    "Added SERP data for %d keywords to pipeline context",
+                    serp_result.get("successful_fetches", 0),
+                )
+        else:
+            logger.info("No non-branded keywords found — skipping SERP ingestion")
 
         # ----- Phase 2: Pipeline execution -----
         _update_report_status(supabase, report_id, "running", current_module=1)
