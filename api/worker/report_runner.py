@@ -8,10 +8,11 @@ invoked as a FastAPI BackgroundTask. It:
 2. Fetches the user's OAuth credentials from Supabase
 3. Pulls GSC + GA4 data via the ingestion layer
 4. Pulls live SERP data via DataForSEO for top non-branded keywords
-5. Runs the AnalysisPipeline across all 12 modules
-6. Stores each module result in the report_modules table
-7. Writes the assembled report_data JSON to the reports table
-8. Updates report status to "completed" (or "partial" / "failed")
+5. Crawls the site for internal link graph + page metadata
+6. Runs the AnalysisPipeline across all 12 modules
+7. Stores each module result in the report_modules table
+8. Writes the assembled report_data JSON to the reports table
+9. Updates report status to "completed" (or "partial" / "failed")
 
 This is the critical glue between the REST API and the analysis engine.
 """
@@ -339,6 +340,49 @@ def _ingest_serp_data(
         return {}
 
 
+def _ingest_crawl_data(domain: str, max_pages: int = 200) -> Dict[str, Any]:
+    """
+    Crawl the site to extract page metadata and internal link graph.
+
+    Falls back gracefully if the crawler fails or the site is unreachable.
+    The crawl_result dict is designed to be consumed directly by the
+    pipeline's data_context (keys: crawl_data, internal_link_graph,
+    sitemap_urls).
+
+    Returns a dict with:
+      - crawl_data: full crawl result (pages + link_graph + stats)
+      - internal_link_graph: alias for crawl_data (Module 9 compat)
+      - sitemap_urls: list of URLs found in sitemap
+    """
+    try:
+        from api.ingestion.crawler import crawl_site
+
+        logger.info("Starting site crawl for %s (max %d pages)", domain, max_pages)
+
+        crawl_result = crawl_site(domain, max_pages=max_pages)
+
+        stats = crawl_result.get("stats", {})
+        logger.info(
+            "Site crawl complete: %d pages crawled, %d links found, %.1fs",
+            stats.get("pages_crawled", 0),
+            stats.get("total_internal_links", 0),
+            stats.get("crawl_time_seconds", 0),
+        )
+
+        return {
+            "crawl_data": crawl_result,
+            "internal_link_graph": crawl_result,
+            "sitemap_urls": crawl_result.get("sitemap_urls", []),
+        }
+
+    except ImportError as exc:
+        logger.warning("Crawler module not available: %s", exc)
+        return {}
+    except Exception as exc:
+        logger.error("Site crawl failed for %s: %s", domain, exc)
+        return {}
+
+
 def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_property: Optional[str], domain: str) -> None:
     """
     Main entry point — run as a FastAPI BackgroundTask.
@@ -397,6 +441,18 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
                 )
         else:
             logger.info("No non-branded keywords found — skipping SERP ingestion")
+
+        # Site crawl ingestion (Phase 3)
+        # Crawl the site for page metadata + internal link graph
+        crawl_result = _ingest_crawl_data(domain, max_pages=200)
+        if crawl_result:
+            data_context.update(crawl_result)
+            logger.info(
+                "Added crawl data to pipeline context (%d pages)",
+                crawl_result.get("crawl_data", {}).get("stats", {}).get("pages_crawled", 0),
+            )
+        else:
+            logger.info("No crawl data available — modules 4, 9 will run without crawl input")
 
         # ----- Phase 2: Pipeline execution -----
         _update_report_status(supabase, report_id, "running", current_module=1)
