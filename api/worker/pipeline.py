@@ -169,6 +169,16 @@ def _ensure_dataframe(data: Any, name: str) -> Optional[pd.DataFrame]:
     return data  # return as-is; module will handle or fail gracefully
 
 
+def _get_module_data(completed_modules: Dict[str, 'ModuleResult'], name: str) -> Optional[Dict[str, Any]]:
+    """Safely extract data from a completed module result, returning None on failure."""
+    result = completed_modules.get(name)
+    if result is None:
+        return None
+    if result.status != "success":
+        return None
+    return result.data
+
+
 class AnalysisPipeline:
     """
     Orchestrates the sequential execution of all analysis modules.
@@ -178,15 +188,20 @@ class AnalysisPipeline:
     - Tracks all errors for user reporting
     - Generates partial reports with available data
     - Provides meaningful error messages for each failure type
+    
+    IMPORTANT: The Gameplan (Module 5) runs LAST so it can synthesize
+    outputs from ALL other modules (1-4, 6-12).  The module numbering
+    reflects the report section order, not the execution order.
     """
     
     def __init__(self):
+        # Execution order: modules 1-4, then 6-12, then gameplan (5) last.
+        # Gameplan runs last because it synthesizes ALL module outputs.
         self.modules = [
             ("health_trajectory", analyze_health_trajectory),
             ("page_triage", analyze_page_triage),
             ("serp_landscape", analyze_serp_landscape),
             ("content_intelligence", analyze_content_intelligence),
-            ("gameplan", generate_gameplan),
             ("algorithm_impact", analyze_algorithm_impacts),
             ("intent_migration", analyze_intent_migration),
             ("technical_health", analyze_technical_health),
@@ -194,8 +209,11 @@ class AnalysisPipeline:
             ("branded_split", analyze_branded_split),
             ("competitive_threats", analyze_competitive_threats),
             ("revenue_attribution", estimate_revenue_attribution),
+            ("gameplan", generate_gameplan),
         ]
         
+        # Gameplan now depends on modules 1-4 (required) and benefits
+        # from 6-12 (optional — passed if available).
         self.module_dependencies = {
             "gameplan": ["health_trajectory", "page_triage", "serp_landscape", "content_intelligence"],
             "technical_health": ["serp_landscape"],
@@ -404,11 +422,21 @@ class AnalysisPipeline:
             }
         
         elif module_name == "gameplan":
+            # Gameplan runs LAST and receives outputs from ALL prior modules.
+            # Modules 1-4 are required (enforced by dependency check).
+            # Modules 6-12 are optional — passed when available for richer synthesis.
             inputs = {
-                "health": (completed_modules.get("health_trajectory") or ModuleResult(module_name="", status="")).data,
-                "triage": (completed_modules.get("page_triage") or ModuleResult(module_name="", status="")).data,
-                "serp": (completed_modules.get("serp_landscape") or ModuleResult(module_name="", status="")).data,
-                "content": (completed_modules.get("content_intelligence") or ModuleResult(module_name="", status="")).data,
+                "health": _get_module_data(completed_modules, "health_trajectory"),
+                "triage": _get_module_data(completed_modules, "page_triage"),
+                "serp": _get_module_data(completed_modules, "serp_landscape"),
+                "content": _get_module_data(completed_modules, "content_intelligence"),
+                "algorithm": _get_module_data(completed_modules, "algorithm_impact"),
+                "intent": _get_module_data(completed_modules, "intent_migration"),
+                "ctr": _get_module_data(completed_modules, "technical_health"),
+                "architecture": _get_module_data(completed_modules, "site_architecture"),
+                "branded": _get_module_data(completed_modules, "branded_split"),
+                "competitive": _get_module_data(completed_modules, "competitive_threats"),
+                "revenue": _get_module_data(completed_modules, "revenue_attribution"),
             }
         
         elif module_name == "algorithm_impact":
@@ -500,6 +528,9 @@ class AnalysisPipeline:
         """
         Execute the complete analysis pipeline.
         
+        Runs modules 1-4, then 6-12, then the Gameplan (5) last so it
+        can synthesize outputs from every other module.
+        
         Args:
             data_context: Dictionary containing all input data:
                 - gsc_daily_data: Daily time series from GSC
@@ -541,6 +572,17 @@ class AnalysisPipeline:
             
             if result.error:
                 all_errors.append(result.error)
+        
+        # Re-order results so the report JSON has modules in section order
+        # (1-12) rather than execution order (1-4, 6-12, 5).
+        section_order = [
+            "health_trajectory", "page_triage", "serp_landscape",
+            "content_intelligence", "gameplan", "algorithm_impact",
+            "intent_migration", "technical_health", "site_architecture",
+            "branded_split", "competitive_threats", "revenue_attribution",
+        ]
+        result_map = {r.module_name: r for r in module_results}
+        module_results = [result_map[name] for name in section_order if name in result_map]
         
         successful = sum(1 for r in module_results if r.status == "success")
         failed = sum(1 for r in module_results if r.status == "failed")
