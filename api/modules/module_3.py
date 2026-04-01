@@ -1,11 +1,11 @@
 """
-Module 3: SERP Landscape Analysis
+Module 3: Competitor Landscape Analysis
 
-Analyzes search engine results page competition using DataForSEO API.
-Fetches top 10 organic results for target keywords, analyzes competitor domains,
-calculates keyword difficulty scores, identifies SERP features, and returns
-structured data including competitor URLs, rankings, domain authority estimates,
-and SERP feature presence.
+Analyzes competitor domains using DataForSEO API to:
+1. Identify top competing domains from GSC query data
+2. Fetch competitor rankings for user's top keywords
+3. Calculate competitor visibility scores and overlap metrics
+4. Identify keyword gaps and opportunities
 """
 
 import asyncio
@@ -79,92 +79,78 @@ class DataForSEOClient:
                     else:
                         raise Exception(f"API error: {data.get('status_message')}")
                 
-                elif response.status == 401:
-                    raise Exception("Authentication failed - check DataForSEO credentials")
                 elif response.status == 429:
+                    # HTTP rate limit
                     if retry_count < self.MAX_RETRIES:
                         await asyncio.sleep(self.RETRY_DELAY * (retry_count + 1))
                         return await self._make_request(session, endpoint, payload, retry_count + 1)
                     else:
-                        raise Exception("Rate limit exceeded after retries")
+                        raise Exception("Rate limit exceeded")
                 else:
-                    response.raise_for_status()
+                    raise Exception(f"HTTP error: {response.status}")
                     
         except aiohttp.ClientError as e:
             if retry_count < self.MAX_RETRIES:
                 await asyncio.sleep(self.RETRY_DELAY * (retry_count + 1))
                 return await self._make_request(session, endpoint, payload, retry_count + 1)
             else:
-                raise Exception(f"Request failed after {self.MAX_RETRIES} retries: {str(e)}")
+                raise Exception(f"Request failed: {str(e)}")
 
     async def get_serp_results(
         self,
         keywords: List[str],
-        location_code: int = 2840,  # USA
+        location_code: int = 2840,  # United States
         language_code: str = "en",
         device: str = "desktop",
-        depth: int = 10
-    ) -> List[Dict[str, Any]]:
+        depth: int = 100
+    ) -> Dict[str, Any]:
         """
         Fetch SERP results for multiple keywords.
         
         Args:
             keywords: List of keywords to analyze
-            location_code: DataForSEO location code (2840 = USA)
+            location_code: DataForSEO location code
             language_code: Language code
-            device: desktop, mobile, or tablet
-            depth: Number of results to retrieve (max 100)
-            
-        Returns:
-            List of SERP result dictionaries
-        """
-        if not keywords:
-            return []
+            device: Device type (desktop/mobile)
+            depth: Number of results to fetch (max 100)
         
-        # Build payload for batch request
+        Returns:
+            Dictionary mapping keywords to SERP results
+        """
+        endpoint = "/serp/google/organic/live/advanced"
+        
+        # Build tasks for each keyword
         tasks = []
         for keyword in keywords:
-            task_payload = {
+            payload = [{
                 "keyword": keyword,
                 "location_code": location_code,
                 "language_code": language_code,
                 "device": device,
                 "depth": depth,
-                "calculate_rectangles": True  # For SERP feature positioning
-            }
-            tasks.append(task_payload)
+                "calculate_rectangles": False
+            }]
+            tasks.append((keyword, payload))
         
-        results = []
+        results = {}
         
-        # Process in batches of 20 (API limit)
-        batch_size = 20
         async with aiohttp.ClientSession() as session:
-            for i in range(0, len(tasks), batch_size):
-                batch = tasks[i:i + batch_size]
-                
+            for keyword, payload in tasks:
                 try:
-                    response = await self._make_request(
-                        session,
-                        "/serp/google/organic/live/advanced",
-                        batch
-                    )
+                    response = await self._make_request(session, endpoint, payload)
                     
-                    if response.get("tasks"):
-                        for task in response["tasks"]:
-                            if task.get("status_code") == 20000 and task.get("result"):
-                                results.extend(task["result"])
-                            else:
-                                # Log failed task but continue
-                                keyword = batch[task.get("id", 0) - 1].get("keyword", "unknown")
-                                print(f"Warning: Failed to fetch SERP for keyword '{keyword}'")
-                    
-                    # Small delay between batches
-                    if i + batch_size < len(tasks):
-                        await asyncio.sleep(0.5)
+                    if response.get("tasks") and len(response["tasks"]) > 0:
+                        task = response["tasks"][0]
+                        if task.get("result") and len(task["result"]) > 0:
+                            results[keyword] = task["result"][0]
+                        else:
+                            results[keyword] = None
+                    else:
+                        results[keyword] = None
                         
                 except Exception as e:
-                    print(f"Error fetching batch starting at index {i}: {str(e)}")
-                    continue
+                    print(f"Error fetching SERP for '{keyword}': {str(e)}")
+                    results[keyword] = None
         
         return results
 
@@ -173,585 +159,474 @@ def extract_domain(url: str) -> str:
     """Extract root domain from URL."""
     try:
         parsed = urlparse(url)
-        domain = parsed.netloc.lower()
-        # Remove www. prefix
-        if domain.startswith("www."):
+        domain = parsed.netloc or parsed.path
+        # Remove www.
+        if domain.startswith('www.'):
             domain = domain[4:]
-        return domain
+        return domain.lower()
     except:
         return ""
 
 
-def identify_serp_features(serp_data: Dict[str, Any]) -> Dict[str, Any]:
+def calculate_domain_authority_estimate(domain: str, serp_positions: List[int]) -> float:
     """
-    Identify all SERP features present in the result.
+    Estimate domain authority based on ranking positions.
     
-    Returns dict with feature presence and counts.
+    Simple heuristic:
+    - Average position in top 3: ~80-100
+    - Average position 4-10: ~60-80
+    - Average position 11-20: ~40-60
+    - Average position 21-50: ~20-40
+    - Average position 51+: ~0-20
     """
-    features = {
-        "featured_snippet": False,
-        "featured_snippet_type": None,
-        "people_also_ask": False,
-        "people_also_ask_count": 0,
-        "local_pack": False,
-        "local_pack_count": 0,
-        "knowledge_panel": False,
-        "image_pack": False,
-        "image_pack_count": 0,
-        "video_carousel": False,
-        "video_carousel_count": 0,
-        "shopping_results": False,
-        "shopping_results_count": 0,
-        "top_stories": False,
-        "top_stories_count": 0,
-        "twitter_results": False,
-        "ai_overview": False,
-        "related_searches": False,
-        "site_links": False,
-        "total_features": 0
-    }
-    
-    items = serp_data.get("items", [])
-    
-    for item in items:
-        item_type = item.get("type", "")
-        
-        if item_type == "featured_snippet":
-            features["featured_snippet"] = True
-            features["featured_snippet_type"] = item.get("featured_snippet", {}).get("type")
-            features["total_features"] += 1
-            
-        elif item_type == "people_also_ask":
-            features["people_also_ask"] = True
-            items_list = item.get("items", [])
-            features["people_also_ask_count"] = len(items_list)
-            features["total_features"] += 1
-            
-        elif item_type == "local_pack":
-            features["local_pack"] = True
-            items_list = item.get("items", [])
-            features["local_pack_count"] = len(items_list)
-            features["total_features"] += 1
-            
-        elif item_type == "knowledge_graph":
-            features["knowledge_panel"] = True
-            features["total_features"] += 1
-            
-        elif item_type == "images":
-            features["image_pack"] = True
-            items_list = item.get("items", [])
-            features["image_pack_count"] = len(items_list)
-            features["total_features"] += 1
-            
-        elif item_type == "video":
-            features["video_carousel"] = True
-            items_list = item.get("items", [])
-            features["video_carousel_count"] = len(items_list)
-            features["total_features"] += 1
-            
-        elif item_type == "shopping":
-            features["shopping_results"] = True
-            items_list = item.get("items", [])
-            features["shopping_results_count"] = len(items_list)
-            features["total_features"] += 1
-            
-        elif item_type == "top_stories":
-            features["top_stories"] = True
-            items_list = item.get("items", [])
-            features["top_stories_count"] = len(items_list)
-            features["total_features"] += 1
-            
-        elif item_type == "twitter":
-            features["twitter_results"] = True
-            features["total_features"] += 1
-            
-        elif item_type == "ai_overview":
-            features["ai_overview"] = True
-            features["total_features"] += 1
-            
-        elif item_type == "related_searches":
-            features["related_searches"] = True
-            
-        elif item_type == "organic" and item.get("links"):
-            # Site links attached to organic result
-            features["site_links"] = True
-    
-    return features
-
-
-def calculate_visual_position(
-    organic_rank: int,
-    serp_features: Dict[str, Any],
-    items: List[Dict[str, Any]]
-) -> float:
-    """
-    Calculate visual position accounting for SERP features above the organic result.
-    
-    Each SERP feature adds "weight" to push organic results down visually.
-    """
-    visual_offset = 0.0
-    
-    # Parse items in order to count features before this organic position
-    for item in items:
-        item_type = item.get("type", "")
-        rank_group = item.get("rank_group", 0)
-        rank_absolute = item.get("rank_absolute", 0)
-        
-        # Only count features that appear before the organic result
-        if rank_absolute >= organic_rank:
-            break
-        
-        if item_type == "featured_snippet":
-            visual_offset += 2.0  # Featured snippets are very prominent
-            
-        elif item_type == "people_also_ask":
-            # Each PAA box
-            count = len(item.get("items", []))
-            visual_offset += count * 0.5
-            
-        elif item_type == "local_pack":
-            visual_offset += 1.5  # Local pack with map
-            
-        elif item_type == "knowledge_graph":
-            visual_offset += 1.0  # Usually on right side, but still draws attention
-            
-        elif item_type == "images":
-            visual_offset += 1.0
-            
-        elif item_type == "video":
-            count = len(item.get("items", []))
-            visual_offset += min(count * 0.3, 1.5)  # Video carousel
-            
-        elif item_type == "shopping":
-            visual_offset += 1.5
-            
-        elif item_type == "top_stories":
-            visual_offset += 1.0
-            
-        elif item_type == "ai_overview":
-            visual_offset += 2.5  # AI overviews are very prominent
-    
-    return organic_rank + visual_offset
-
-
-def extract_organic_results(serp_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Extract organic results from SERP data."""
-    organic_results = []
-    
-    items = serp_data.get("items", [])
-    
-    for item in items:
-        if item.get("type") == "organic":
-            result = {
-                "position": item.get("rank_absolute", 0),
-                "url": item.get("url", ""),
-                "domain": extract_domain(item.get("url", "")),
-                "title": item.get("title", ""),
-                "description": item.get("description", ""),
-                "breadcrumb": item.get("breadcrumb", ""),
-                "has_site_links": bool(item.get("links")),
-                "is_amp": item.get("amp_version", False),
-                "rating": None,
-                "reviews_count": None
-            }
-            
-            # Extract rating if present
-            rating_data = item.get("rating")
-            if rating_data:
-                result["rating"] = rating_data.get("rating_value")
-                result["reviews_count"] = rating_data.get("votes_count") or rating_data.get("rating_votes")
-            
-            organic_results.append(result)
-    
-    return organic_results
-
-
-def calculate_keyword_difficulty(
-    organic_results: List[Dict[str, Any]],
-    serp_features: Dict[str, Any]
-) -> float:
-    """
-    Calculate keyword difficulty score (0-100).
-    
-    Based on:
-    - Domain diversity in top 10
-    - Presence of authoritative domains
-    - SERP feature density
-    - Result quality signals (ratings, reviews)
-    """
-    if not organic_results:
-        return 50.0
-    
-    score = 0.0
-    
-    # 1. Domain diversity (fewer unique domains = harder)
-    unique_domains = len(set(r["domain"] for r in organic_results if r["domain"]))
-    domain_diversity_factor = (10 - unique_domains) / 10.0  # 0 to 1
-    score += domain_diversity_factor * 30
-    
-    # 2. SERP feature density
-    feature_count = serp_features.get("total_features", 0)
-    feature_factor = min(feature_count / 5.0, 1.0)  # Cap at 5 features
-    score += feature_factor * 25
-    
-    # 3. AI Overview presence (makes it harder)
-    if serp_features.get("ai_overview"):
-        score += 15
-    
-    # 4. Featured snippet presence
-    if serp_features.get("featured_snippet"):
-        score += 10
-    
-    # 5. Quality signals in results (ratings, site links)
-    quality_count = sum(1 for r in organic_results if r.get("rating") or r.get("has_site_links"))
-    quality_factor = quality_count / len(organic_results)
-    score += quality_factor * 20
-    
-    return min(score, 100.0)
-
-
-def classify_search_intent(
-    keyword: str,
-    serp_features: Dict[str, Any],
-    organic_results: List[Dict[str, Any]]
-) -> str:
-    """
-    Classify search intent based on keyword and SERP composition.
-    
-    Returns: informational, commercial, transactional, or navigational
-    """
-    keyword_lower = keyword.lower()
-    
-    # Navigational signals
-    navigational_keywords = ["login", "sign in", "facebook", "youtube", "twitter", "linkedin"]
-    if any(nk in keyword_lower for nk in navigational_keywords):
-        return "navigational"
-    
-    # Transactional signals
-    transactional_keywords = ["buy", "purchase", "order", "price", "cost", "cheap", "discount", "deal"]
-    if any(tk in keyword_lower for tk in transactional_keywords):
-        return "transactional"
-    
-    if serp_features.get("shopping_results"):
-        return "transactional"
-    
-    # Commercial investigation signals
-    commercial_keywords = ["best", "top", "review", "vs", "versus", "compare", "alternative"]
-    if any(ck in keyword_lower for ck in commercial_keywords):
-        return "commercial"
-    
-    # Informational signals
-    informational_keywords = ["what", "how", "why", "when", "where", "guide", "tutorial", "learn"]
-    if any(ik in keyword_lower for ik in informational_keywords):
-        return "informational"
-    
-    if serp_features.get("people_also_ask") or serp_features.get("featured_snippet"):
-        return "informational"
-    
-    if serp_features.get("knowledge_panel"):
-        return "informational"
-    
-    # Default based on URL patterns in results
-    if organic_results:
-        blog_count = sum(1 for r in organic_results if any(
-            b in r["url"].lower() for b in ["/blog/", "/article/", "/guide/", "/learn/"]
-        ))
-        product_count = sum(1 for r in organic_results if any(
-            p in r["url"].lower() for p in ["/product/", "/buy/", "/shop/", "/cart/"]
-        ))
-        
-        if blog_count > len(organic_results) / 2:
-            return "informational"
-        if product_count > len(organic_results) / 2:
-            return "transactional"
-    
-    return "informational"  # Default
-
-
-def estimate_ctr_impact(
-    organic_rank: int,
-    visual_position: float,
-    serp_features: Dict[str, Any]
-) -> float:
-    """
-    Estimate CTR impact due to SERP feature displacement.
-    
-    Returns negative value representing CTR loss.
-    """
-    # Base CTR by position (industry averages)
-    base_ctr_curve = {
-        1: 0.284, 2: 0.152, 3: 0.098, 4: 0.071, 5: 0.057,
-        6: 0.045, 7: 0.036, 8: 0.030, 9: 0.025, 10: 0.021
-    }
-    
-    base_ctr = base_ctr_curve.get(organic_rank, 0.01)
-    
-    # Calculate adjusted CTR based on visual position
-    # Each position of displacement reduces CTR
-    position_gap = visual_position - organic_rank
-    
-    if position_gap <= 0:
+    if not serp_positions:
         return 0.0
     
-    # Approximate: each visual position down reduces CTR by ~15%
-    ctr_multiplier = 0.85 ** position_gap
-    adjusted_ctr = base_ctr * ctr_multiplier
+    avg_position = sum(serp_positions) / len(serp_positions)
     
-    ctr_loss = base_ctr - adjusted_ctr
-    
-    # Additional penalties for specific features
-    if serp_features.get("ai_overview"):
-        ctr_loss *= 1.3  # AI overviews reduce CTR more
-    
-    if serp_features.get("featured_snippet") and organic_rank > 1:
-        ctr_loss *= 1.2  # Featured snippet steals clicks
-    
-    return -ctr_loss
+    if avg_position <= 3:
+        return 90 + (3 - avg_position) * 3.33
+    elif avg_position <= 10:
+        return 60 + (10 - avg_position) * 2.86
+    elif avg_position <= 20:
+        return 40 + (20 - avg_position) * 2.0
+    elif avg_position <= 50:
+        return 20 + (50 - avg_position) * 0.67
+    else:
+        return max(0, 20 - (avg_position - 50) * 0.4)
 
 
-async def analyze_serp_landscape(
+def analyze_competitor_landscape(
     gsc_keyword_data: pd.DataFrame,
+    serp_data: Dict[str, Any],
     user_domain: str,
-    top_n_keywords: int = 50,
-    client: Optional[DataForSEOClient] = None
+    top_n_competitors: int = 10,
+    min_keyword_overlap: int = 3
 ) -> Dict[str, Any]:
     """
-    Main analysis function for Module 3.
+    Analyze competitor landscape from SERP data.
     
     Args:
-        gsc_keyword_data: DataFrame with columns [query, clicks, impressions, ctr, position]
-        user_domain: User's root domain (for filtering)
-        top_n_keywords: Number of top keywords to analyze
-        client: DataForSEO client instance (will create if not provided)
-        
+        gsc_keyword_data: DataFrame with columns: query, clicks, impressions, position
+        serp_data: Dictionary mapping keywords to SERP results from DataForSEO
+        user_domain: User's root domain
+        top_n_competitors: Number of top competitors to analyze in detail
+        min_keyword_overlap: Minimum keyword overlap to be considered a competitor
+    
     Returns:
-        Structured analysis results
+        Dictionary containing:
+        - competitors: List of competitor domains with metrics
+        - keyword_overlap: Overlap analysis per competitor
+        - visibility_comparison: Visibility scores
+        - keyword_gaps: Keywords where competitors rank but user doesn't
+        - opportunity_keywords: Keywords with weak competition
     """
-    if gsc_keyword_data.empty:
-        return {
-            "error": "No GSC keyword data provided",
-            "keywords_analyzed": 0
+    
+    # Normalize user domain
+    user_domain = extract_domain(user_domain)
+    
+    # Track competitor appearances and positions
+    competitor_keywords = defaultdict(list)  # domain -> list of (keyword, position, url)
+    competitor_positions = defaultdict(list)  # domain -> list of positions
+    keyword_competitors = defaultdict(set)  # keyword -> set of competitor domains
+    
+    # Track user's keywords and positions
+    user_keywords = {}  # keyword -> position
+    user_keyword_metrics = {}  # keyword -> {clicks, impressions, position}
+    
+    # Process GSC data
+    for _, row in gsc_keyword_data.iterrows():
+        keyword = row['query']
+        user_keywords[keyword] = row.get('position', 0)
+        user_keyword_metrics[keyword] = {
+            'clicks': row.get('clicks', 0),
+            'impressions': row.get('impressions', 0),
+            'position': row.get('position', 0),
+            'ctr': row.get('ctr', 0)
         }
     
-    # Initialize client if not provided
-    if client is None:
-        try:
-            client = DataForSEOClient()
-        except ValueError as e:
-            return {
-                "error": str(e),
-                "keywords_analyzed": 0
-            }
-    
-    # Filter and sort keywords
-    # Remove branded queries (containing user's domain name)
-    domain_parts = user_domain.replace("www.", "").split(".")
-    brand_term = domain_parts[0] if domain_parts else ""
-    
-    non_branded = gsc_keyword_data[
-        ~gsc_keyword_data["query"].str.contains(brand_term, case=False, na=False)
-    ].copy()
-    
-    # Sort by impressions and take top N
-    top_keywords = non_branded.nlargest(top_n_keywords, "impressions")
-    
-    if top_keywords.empty:
-        return {
-            "error": "No non-branded keywords found",
-            "keywords_analyzed": 0
-        }
-    
-    keywords_list = top_keywords["query"].tolist()
-    
-    # Fetch SERP data
-    try:
-        serp_results = await client.get_serp_results(keywords_list)
-    except Exception as e:
-        return {
-            "error": f"Failed to fetch SERP data: {str(e)}",
-            "keywords_analyzed": 0
-        }
-    
-    if not serp_results:
-        return {
-            "error": "No SERP results returned",
-            "keywords_analyzed": 0
-        }
-    
-    # Analysis containers
-    serp_feature_displacement = []
-    competitor_domains = Counter()
-    competitor_positions = defaultdict(list)
-    intent_classification = {}
-    keyword_difficulty_scores = {}
-    user_positions = {}
-    
-    # Process each SERP result
-    for serp_data in serp_results:
-        keyword = serp_data.get("keyword", "")
-        
-        if not keyword:
+    # Process SERP data
+    for keyword, serp_result in serp_data.items():
+        if not serp_result or 'items' not in serp_result:
             continue
         
-        # Extract data
-        features = identify_serp_features(serp_data)
-        organic_results = extract_organic_results(serp_data)
+        items = serp_result.get('items', [])
         
-        if not organic_results:
-            continue
-        
-        # Find user's position
-        user_rank = None
-        user_result = None
-        
-        for result in organic_results:
-            if user_domain in result["domain"]:
-                user_rank = result["position"]
-                user_result = result
-                user_positions[keyword] = user_rank
-                break
-        
-        # Calculate visual position if user ranks
-        if user_rank:
-            visual_pos = calculate_visual_position(
-                user_rank,
-                features,
-                serp_data.get("items", [])
-            )
+        for item in items:
+            # Only process organic results
+            if item.get('type') != 'organic':
+                continue
             
-            # Flag significant displacement
-            if visual_pos > user_rank + 2:
-                features_above = []
-                
-                if features.get("featured_snippet"):
-                    features_above.append("featured_snippet")
-                if features.get("people_also_ask"):
-                    features_above.append(f"paa_x{features['people_also_ask_count']}")
-                if features.get("ai_overview"):
-                    features_above.append("ai_overview")
-                if features.get("local_pack"):
-                    features_above.append("local_pack")
-                if features.get("shopping_results"):
-                    features_above.append("shopping_results")
-                if features.get("video_carousel"):
-                    features_above.append("video_carousel")
-                
-                ctr_impact = estimate_ctr_impact(user_rank, visual_pos, features)
-                
-                serp_feature_displacement.append({
-                    "keyword": keyword,
-                    "organic_position": user_rank,
-                    "visual_position": round(visual_pos, 1),
-                    "features_above": features_above,
-                    "estimated_ctr_impact": round(ctr_impact, 4)
-                })
-        
-        # Track competitors
-        for result in organic_results:
-            domain = result["domain"]
-            if domain and domain != user_domain:
-                competitor_domains[domain] += 1
-                competitor_positions[domain].append(result["position"])
-        
-        # Classify intent
-        intent = classify_search_intent(keyword, features, organic_results)
-        intent_classification[keyword] = intent
-        
-        # Calculate keyword difficulty
-        difficulty = calculate_keyword_difficulty(organic_results, features)
-        keyword_difficulty_scores[keyword] = difficulty
+            url = item.get('url', '')
+            domain = extract_domain(url)
+            position = item.get('rank_group', 0)
+            
+            if not domain or position == 0:
+                continue
+            
+            # Skip user's own domain
+            if domain == user_domain:
+                continue
+            
+            # Track competitor
+            competitor_keywords[domain].append({
+                'keyword': keyword,
+                'position': position,
+                'url': url
+            })
+            competitor_positions[domain].append(position)
+            keyword_competitors[keyword].add(domain)
     
-    # Build competitor analysis
-    total_keywords = len(serp_results)
-    competitors = []
+    # Calculate competitor metrics
+    competitor_metrics = []
     
-    for domain, count in competitor_domains.most_common(20):
-        positions = competitor_positions[domain]
-        avg_position = sum(positions) / len(positions)
+    for domain, keywords_data in competitor_keywords.items():
+        if len(keywords_data) < min_keyword_overlap:
+            continue
+        
+        # Get all keywords this competitor ranks for
+        competitor_keyword_set = {kd['keyword'] for kd in keywords_data}
+        
+        # Find overlap with user's keywords
+        overlapping_keywords = competitor_keyword_set & set(user_keywords.keys())
+        
+        # Calculate average position
+        positions = [kd['position'] for kd in keywords_data]
+        avg_position = sum(positions) / len(positions) if positions else 0
+        
+        # Calculate visibility score (inverse of average position, weighted by keyword count)
+        visibility_score = (len(keywords_data) * 100) / (avg_position if avg_position > 0 else 1)
+        
+        # Estimate domain authority
+        domain_authority_estimate = calculate_domain_authority_estimate(domain, positions)
+        
+        # Calculate head-to-head win rate
+        wins = 0
+        losses = 0
+        for keyword in overlapping_keywords:
+            competitor_pos = next(
+                (kd['position'] for kd in keywords_data if kd['keyword'] == keyword),
+                None
+            )
+            user_pos = user_keywords.get(keyword)
+            
+            if competitor_pos and user_pos:
+                if competitor_pos < user_pos:
+                    wins += 1
+                elif competitor_pos > user_pos:
+                    losses += 1
+        
+        win_rate = wins / (wins + losses) if (wins + losses) > 0 else 0
         
         # Determine threat level
-        if count > total_keywords * 0.3:
+        if win_rate > 0.6 and len(overlapping_keywords) >= 10:
             threat_level = "high"
-        elif count > total_keywords * 0.15:
+        elif win_rate > 0.4 and len(overlapping_keywords) >= 5:
             threat_level = "medium"
         else:
             threat_level = "low"
         
-        competitors.append({
-            "domain": domain,
-            "keywords_shared": count,
-            "overlap_pct": round(count / total_keywords * 100, 1),
-            "avg_position": round(avg_position, 1),
-            "threat_level": threat_level
+        # Top ranking keywords for this competitor
+        top_keywords = sorted(keywords_data, key=lambda x: x['position'])[:5]
+        
+        competitor_metrics.append({
+            'domain': domain,
+            'keywords_total': len(keywords_data),
+            'keywords_shared': len(overlapping_keywords),
+            'avg_position': round(avg_position, 1),
+            'visibility_score': round(visibility_score, 1),
+            'domain_authority_estimate': round(domain_authority_estimate, 1),
+            'win_rate': round(win_rate, 2),
+            'threat_level': threat_level,
+            'top_keywords': [
+                {
+                    'keyword': kd['keyword'],
+                    'position': kd['position'],
+                    'url': kd['url']
+                }
+                for kd in top_keywords
+            ]
         })
     
-    # Calculate click share
-    # This is a simplified estimation
-    total_potential_clicks = 0
-    user_estimated_clicks = 0
+    # Sort competitors by visibility score
+    competitor_metrics.sort(key=lambda x: x['visibility_score'], reverse=True)
     
-    for keyword in user_positions:
-        # Get impressions from GSC data
-        keyword_data = top_keywords[top_keywords["query"] == keyword]
-        if keyword_data.empty:
+    # Limit to top N
+    top_competitors = competitor_metrics[:top_n_competitors]
+    
+    # Analyze keyword gaps (keywords where competitors rank well but user doesn't)
+    keyword_gaps = []
+    
+    for keyword, competitors in keyword_competitors.items():
+        # Skip if user already ranks for this keyword
+        if keyword in user_keywords:
             continue
         
-        impressions = keyword_data.iloc[0]["impressions"]
-        position = user_positions[keyword]
+        # Find how many top competitors rank for this keyword
+        top_competitor_domains = {c['domain'] for c in top_competitors}
+        competitors_ranking = competitors & top_competitor_domains
         
-        # Estimate total clicks available for this keyword (sum of all CTRs)
-        total_potential_clicks += impressions * 1.0  # Assume 100% capture if rank #1
+        if len(competitors_ranking) >= 2:  # At least 2 top competitors rank
+            # Get positions of competitors for this keyword
+            competitor_positions_for_kw = []
+            for domain in competitors_ranking:
+                for kd in competitor_keywords[domain]:
+                    if kd['keyword'] == keyword:
+                        competitor_positions_for_kw.append({
+                            'domain': domain,
+                            'position': kd['position'],
+                            'url': kd['url']
+                        })
+            
+            # Calculate average competitor position
+            avg_comp_position = sum(c['position'] for c in competitor_positions_for_kw) / len(competitor_positions_for_kw)
+            
+            # Estimate opportunity (better if competitors rank lower on average)
+            opportunity_score = max(0, 100 - avg_comp_position * 5)
+            
+            keyword_gaps.append({
+                'keyword': keyword,
+                'competitors_ranking': len(competitors_ranking),
+                'avg_competitor_position': round(avg_comp_position, 1),
+                'opportunity_score': round(opportunity_score, 1),
+                'ranking_competitors': competitor_positions_for_kw[:3]  # Top 3
+            })
+    
+    # Sort keyword gaps by opportunity score
+    keyword_gaps.sort(key=lambda x: x['opportunity_score'], reverse=True)
+    
+    # Analyze opportunity keywords (keywords user ranks for with weak competition)
+    opportunity_keywords = []
+    
+    for keyword in user_keywords:
+        user_pos = user_keywords[keyword]
         
-        # Estimate user's actual clicks based on position
-        base_ctr_curve = {
-            1: 0.284, 2: 0.152, 3: 0.098, 4: 0.071, 5: 0.057,
-            6: 0.045, 7: 0.036, 8: 0.030, 9: 0.025, 10: 0.021
-        }
-        ctr = base_ctr_curve.get(position, 0.01)
-        user_estimated_clicks += impressions * ctr
+        # Skip if user already ranks in top 3
+        if user_pos <= 3:
+            continue
+        
+        competitors_for_kw = keyword_competitors.get(keyword, set())
+        
+        # Get top competitor domains
+        top_competitor_domains = {c['domain'] for c in top_competitors}
+        strong_competitors = competitors_for_kw & top_competitor_domains
+        
+        # Calculate average position of strong competitors
+        strong_comp_positions = []
+        for domain in strong_competitors:
+            for kd in competitor_keywords[domain]:
+                if kd['keyword'] == keyword:
+                    strong_comp_positions.append(kd['position'])
+        
+        avg_strong_comp_pos = sum(strong_comp_positions) / len(strong_comp_positions) if strong_comp_positions else 100
+        
+        # Opportunity if user is close to or better than strong competitors
+        if user_pos < avg_strong_comp_pos or (user_pos <= 10 and len(strong_competitors) < 2):
+            metrics = user_keyword_metrics.get(keyword, {})
+            
+            # Estimate traffic gain from reaching top 3
+            current_ctr = metrics.get('ctr', 0)
+            impressions = metrics.get('impressions', 0)
+            
+            # Rough CTR estimates by position
+            position_ctr = {
+                1: 0.30, 2: 0.15, 3: 0.10, 4: 0.07, 5: 0.05,
+                6: 0.04, 7: 0.03, 8: 0.025, 9: 0.02, 10: 0.015
+            }
+            
+            estimated_top3_ctr = position_ctr.get(3, 0.10)
+            estimated_click_gain = impressions * (estimated_top3_ctr - current_ctr) if impressions > 0 else 0
+            
+            opportunity_keywords.append({
+                'keyword': keyword,
+                'current_position': user_pos,
+                'current_clicks': metrics.get('clicks', 0),
+                'impressions': impressions,
+                'strong_competitors': len(strong_competitors),
+                'avg_competitor_position': round(avg_strong_comp_pos, 1),
+                'estimated_click_gain': round(estimated_click_gain, 0),
+                'difficulty': 'easy' if len(strong_competitors) < 2 else 'medium'
+            })
     
-    click_share = user_estimated_clicks / total_potential_clicks if total_potential_clicks > 0 else 0
-    click_share_opportunity = 1.0 - click_share
+    # Sort opportunity keywords by estimated click gain
+    opportunity_keywords.sort(key=lambda x: x['estimated_click_gain'], reverse=True)
     
-    # Intent distribution
-    intent_counts = Counter(intent_classification.values())
+    # Calculate overall visibility comparison
+    user_visibility = 0
+    if user_keywords:
+        # User visibility based on their rankings
+        user_positions = [pos for pos in user_keywords.values() if pos > 0]
+        if user_positions:
+            avg_user_position = sum(user_positions) / len(user_positions)
+            user_visibility = (len(user_keywords) * 100) / avg_user_position
     
-    # Average keyword difficulty
-    avg_difficulty = sum(keyword_difficulty_scores.values()) / len(keyword_difficulty_scores) if keyword_difficulty_scores else 0
+    top_competitor_visibility = sum(c['visibility_score'] for c in top_competitors[:3]) / 3 if len(top_competitors) >= 3 else 0
+    
+    # Calculate market share estimate
+    total_visibility = user_visibility + sum(c['visibility_score'] for c in top_competitors)
+    user_market_share = (user_visibility / total_visibility * 100) if total_visibility > 0 else 0
+    
+    # Generate summary insights
+    summary = {
+        'total_competitors_identified': len(competitor_metrics),
+        'top_competitors_analyzed': len(top_competitors),
+        'total_keyword_gaps': len(keyword_gaps),
+        'high_opportunity_gaps': len([k for k in keyword_gaps if k['opportunity_score'] > 70]),
+        'total_opportunity_keywords': len(opportunity_keywords),
+        'estimated_monthly_click_opportunity': sum(k['estimated_click_gain'] for k in opportunity_keywords),
+        'user_visibility_score': round(user_visibility, 1),
+        'market_leader_visibility': round(top_competitors[0]['visibility_score'], 1) if top_competitors else 0,
+        'user_market_share_pct': round(user_market_share, 1),
+        'primary_threat': top_competitors[0]['domain'] if top_competitors else None
+    }
     
     return {
-        "keywords_analyzed": len(serp_results),
-        "user_domain": user_domain,
-        "avg_keyword_difficulty": round(avg_difficulty, 1),
-        "serp_feature_displacement": sorted(
-            serp_feature_displacement,
-            key=lambda x: abs(x["estimated_ctr_impact"]),
-            reverse=True
-        )[:20],  # Top 20 most affected
-        "competitors": competitors,
-        "intent_distribution": dict(intent_counts),
-        "total_click_share": round(click_share, 3),
-        "click_share_opportunity": round(click_share_opportunity, 3),
-        "keyword_details": [
-            {
-                "keyword": keyword,
-                "user_position": user_positions.get(keyword),
-                "intent": intent_classification.get(keyword),
-                "difficulty": round(keyword_difficulty_scores.get(keyword, 0), 1)
-            }
-            for keyword in keywords_list[:100]  # Limit to first 100
-        ]
+        'competitors': top_competitors,
+        'all_competitors': competitor_metrics,  # Full list
+        'keyword_gaps': keyword_gaps[:50],  # Top 50 gaps
+        'opportunity_keywords': opportunity_keywords[:50],  # Top 50 opportunities
+        'visibility_comparison': {
+            'user_visibility': round(user_visibility, 1),
+            'top_competitor_avg': round(top_competitor_visibility, 1),
+            'market_share_pct': round(user_market_share, 1)
+        },
+        'summary': summary
     }
 
 
-# Convenience function for sync contexts
-def analyze_serp_landscape_sync(
+async def run_competitor_analysis(
     gsc_keyword_data: pd.DataFrame,
     user_domain: str,
-    top_n_keywords: int = 50,
-    client: Optional[DataForSEOClient] = None
+    location_code: int = 2840,
+    language_code: str = "en",
+    max_keywords: int = 50
 ) -> Dict[str, Any]:
-    """Synchronous wrapper for analyze_serp_landscape."""
-    return asyncio.run(
-        analyze_serp_landscape(gsc_keyword_data, user_domain, top_n_keywords, client)
+    """
+    Main function to run complete competitor landscape analysis.
+    
+    Args:
+        gsc_keyword_data: GSC keyword data with queries, clicks, impressions, positions
+        user_domain: User's domain
+        location_code: DataForSEO location code
+        language_code: Language code
+        max_keywords: Maximum number of keywords to analyze via SERP API
+    
+    Returns:
+        Complete competitor analysis results
+    """
+    
+    # Select top keywords to analyze
+    # Prioritize by impressions and filter out branded terms
+    gsc_data = gsc_keyword_data.copy()
+    
+    # Simple brand filtering (remove queries containing the domain name)
+    domain_parts = extract_domain(user_domain).split('.')
+    brand_terms = [part for part in domain_parts if len(part) > 3]
+    
+    def is_branded(query: str) -> bool:
+        query_lower = query.lower()
+        for term in brand_terms:
+            if term.lower() in query_lower:
+                return True
+        return False
+    
+    gsc_data['is_branded'] = gsc_data['query'].apply(is_branded)
+    non_branded = gsc_data[~gsc_data['is_branded']].copy()
+    
+    # Sort by impressions and take top N
+    non_branded = non_branded.sort_values('impressions', ascending=False)
+    top_keywords = non_branded.head(max_keywords)['query'].tolist()
+    
+    print(f"Analyzing {len(top_keywords)} non-branded keywords...")
+    
+    # Fetch SERP data
+    client = DataForSEOClient()
+    serp_data = await client.get_serp_results(
+        keywords=top_keywords,
+        location_code=location_code,
+        language_code=language_code,
+        depth=100
     )
+    
+    # Filter out failed requests
+    successful_serps = {k: v for k, v in serp_data.items() if v is not None}
+    print(f"Successfully fetched SERP data for {len(successful_serps)} keywords")
+    
+    # Run competitor analysis
+    analysis = analyze_competitor_landscape(
+        gsc_keyword_data=top_keywords,
+        serp_data=successful_serps,
+        user_domain=user_domain
+    )
+    
+    # Add metadata
+    analysis['metadata'] = {
+        'analysis_date': datetime.now().isoformat(),
+        'keywords_analyzed': len(successful_serps),
+        'total_keywords_available': len(gsc_keyword_data),
+        'location_code': location_code,
+        'language_code': language_code,
+        'user_domain': user_domain
+    }
+    
+    return analysis
+
+
+def analyze_competitor_landscape_sync(
+    gsc_keyword_data: pd.DataFrame,
+    user_domain: str,
+    location_code: int = 2840,
+    language_code: str = "en",
+    max_keywords: int = 50
+) -> Dict[str, Any]:
+    """
+    Synchronous wrapper for competitor analysis.
+    
+    Args:
+        gsc_keyword_data: GSC keyword data
+        user_domain: User's domain
+        location_code: DataForSEO location code
+        language_code: Language code
+        max_keywords: Max keywords to analyze
+    
+    Returns:
+        Competitor analysis results
+    """
+    return asyncio.run(
+        run_competitor_analysis(
+            gsc_keyword_data=gsc_keyword_data,
+            user_domain=user_domain,
+            location_code=location_code,
+            language_code=language_code,
+            max_keywords=max_keywords
+        )
+    )
+
+
+if __name__ == "__main__":
+    # Example usage
+    import numpy as np
+    
+    # Create sample GSC data
+    sample_data = pd.DataFrame({
+        'query': [
+            'best crm software',
+            'crm for small business',
+            'salesforce alternative',
+            'affordable crm',
+            'crm comparison'
+        ],
+        'clicks': [150, 89, 67, 45, 34],
+        'impressions': [5000, 3200, 2100, 1800, 1200],
+        'position': [8.5, 11.2, 6.3, 14.1, 9.8],
+        'ctr': [0.03, 0.028, 0.032, 0.025, 0.028]
+    })
+    
+    result = analyze_competitor_landscape_sync(
+        gsc_keyword_data=sample_data,
+        user_domain="example.com",
+        max_keywords=5
+    )
+    
+    print(json.dumps(result, indent=2))
+
