@@ -4,6 +4,8 @@ Health check router.
 from typing import Any, Dict
 from fastapi import APIRouter
 
+from ..config import APP_VERSION
+
 router = APIRouter()
 
 
@@ -14,7 +16,7 @@ async def health_check() -> Dict[str, Any]:
     return {
         "status": "ok",
         "service": "search-intel-api",
-        "version": "0.1.0"
+        "version": APP_VERSION,
     }
 
 
@@ -44,7 +46,7 @@ async def detailed_health() -> Dict[str, Any]:
     return {
         "status": "ok" if all_healthy else "degraded",
         "service": "search-intel-api",
-        "version": "0.1.0",
+        "version": APP_VERSION,
         "healthy": all_healthy,
-        "dependencies": deps
+        "dependencies": deps,
     }
