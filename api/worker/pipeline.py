@@ -11,6 +11,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 
+import pandas as pd
+
 from api.analysis.module_1_health_trajectory import analyze_health_trajectory
 from api.analysis.module_2_page_triage import analyze_page_triage
 from api.analysis.module_3_serp_landscape import analyze_serp_landscape
@@ -56,6 +58,115 @@ class PipelineResult:
     errors: List[ModuleError]
     total_execution_time: float
     completed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+# ---------------------------------------------------------------------------
+# Data conversion helpers
+# ---------------------------------------------------------------------------
+
+def _crawl_dict_to_page_dataframe(crawl_data: Any) -> Optional[pd.DataFrame]:
+    """
+    Convert crawler output dict into a pandas DataFrame suitable for
+    Module 4 (Content Intelligence).
+
+    The crawler returns a dict shaped like:
+        {
+            "pages": [
+                {"url": "...", "title": "...", "h1": "...",
+                 "meta_description": "...", "word_count": 123,
+                 "canonical": "...", "schema_types": [...],
+                 "internal_links": [...]},
+                ...
+            ],
+            "link_graph": { url: [linked_urls] },
+            "sitemap_urls": [...],
+            "stats": { ... }
+        }
+
+    Module 4 expects a DataFrame with columns:
+        [url, word_count, last_modified, title, h1]
+
+    We map available fields and fill missing ones with sensible defaults.
+    """
+    if crawl_data is None:
+        return None
+
+    # Already a DataFrame — pass through
+    if isinstance(crawl_data, pd.DataFrame):
+        return crawl_data
+
+    # Must be a dict with a "pages" key
+    if not isinstance(crawl_data, dict):
+        logger.warning(
+            "crawl_data is neither dict nor DataFrame (type=%s); returning None",
+            type(crawl_data).__name__,
+        )
+        return None
+
+    pages = crawl_data.get("pages")
+    if not pages:
+        logger.warning("crawl_data dict has no 'pages' key or pages list is empty")
+        return None
+
+    try:
+        df = pd.DataFrame(pages)
+
+        # Ensure required columns exist with defaults
+        required_cols = {
+            "url": "",
+            "word_count": 0,
+            "title": "",
+            "h1": "",
+            "last_modified": None,
+            "meta_description": "",
+        }
+        for col, default in required_cols.items():
+            if col not in df.columns:
+                df[col] = default
+
+        logger.info(
+            "Converted crawl_data dict to DataFrame: %d rows, columns=%s",
+            len(df),
+            list(df.columns),
+        )
+        return df
+
+    except Exception as exc:
+        logger.error("Failed to convert crawl_data to DataFrame: %s", exc)
+        return None
+
+
+def _ensure_dataframe(data: Any, name: str) -> Optional[pd.DataFrame]:
+    """
+    Coerce various input formats into a DataFrame.
+
+    Handles:
+      - None → None
+      - pd.DataFrame → passthrough
+      - list of dicts → pd.DataFrame
+      - dict with a single list value → pd.DataFrame (common API shape)
+    """
+    if data is None:
+        return None
+    if isinstance(data, pd.DataFrame):
+        return data
+    if isinstance(data, list):
+        if len(data) == 0:
+            return pd.DataFrame()
+        try:
+            return pd.DataFrame(data)
+        except Exception as exc:
+            logger.warning("Could not convert list to DataFrame for %s: %s", name, exc)
+            return None
+    if isinstance(data, dict):
+        # If the dict has a "rows" or "data" key that is a list, use that
+        for key in ("rows", "data", "results"):
+            if key in data and isinstance(data[key], list):
+                try:
+                    return pd.DataFrame(data[key])
+                except Exception:
+                    pass
+    return data  # return as-is; module will handle or fail gracefully
 
 
 class AnalysisPipeline:
@@ -243,33 +354,53 @@ class AnalysisPipeline:
         Prepare input parameters for a specific module.
         
         Maps from raw data context and completed module outputs to the
-        specific parameters each module expects.
+        specific parameters each module expects.  Handles data format
+        conversions (e.g. crawler dict → DataFrame for Module 4).
         """
         inputs = {}
         
         if module_name == "health_trajectory":
             inputs = {
-                "daily_data": data_context.get("gsc_daily_data"),
+                "daily_data": _ensure_dataframe(
+                    data_context.get("gsc_daily_data"), "gsc_daily_data"
+                ),
             }
         
         elif module_name == "page_triage":
             inputs = {
-                "page_daily_data": data_context.get("gsc_page_daily_data"),
-                "ga4_landing_data": data_context.get("ga4_landing_pages"),
-                "gsc_page_summary": data_context.get("gsc_page_summary"),
+                "page_daily_data": _ensure_dataframe(
+                    data_context.get("gsc_page_daily_data"), "gsc_page_daily_data"
+                ),
+                "ga4_landing_data": _ensure_dataframe(
+                    data_context.get("ga4_landing_pages"), "ga4_landing_pages"
+                ),
+                "gsc_page_summary": _ensure_dataframe(
+                    data_context.get("gsc_page_summary"), "gsc_page_summary"
+                ),
             }
         
         elif module_name == "serp_landscape":
             inputs = {
                 "serp_data": data_context.get("serp_data"),
-                "gsc_keyword_data": data_context.get("gsc_keyword_data"),
+                "gsc_keyword_data": _ensure_dataframe(
+                    data_context.get("gsc_keyword_data"), "gsc_keyword_data"
+                ),
             }
         
         elif module_name == "content_intelligence":
+            # Module 4 expects page_data as a pd.DataFrame with columns:
+            # [url, word_count, last_modified, title, h1]
+            # The crawler returns a dict with "pages" list — convert it.
             inputs = {
-                "gsc_query_page": data_context.get("gsc_query_page_data"),
-                "page_data": data_context.get("crawl_data"),
-                "ga4_engagement": data_context.get("ga4_engagement_data"),
+                "gsc_query_page": _ensure_dataframe(
+                    data_context.get("gsc_query_page_data"), "gsc_query_page_data"
+                ),
+                "page_data": _crawl_dict_to_page_dataframe(
+                    data_context.get("crawl_data")
+                ),
+                "ga4_engagement": _ensure_dataframe(
+                    data_context.get("ga4_engagement_data"), "ga4_engagement_data"
+                ),
             }
         
         elif module_name == "gameplan":
@@ -282,7 +413,9 @@ class AnalysisPipeline:
         
         elif module_name == "algorithm_impact":
             inputs = {
-                "daily_data": data_context.get("gsc_daily_data"),
+                "daily_data": _ensure_dataframe(
+                    data_context.get("gsc_daily_data"), "gsc_daily_data"
+                ),
                 "change_points_from_module1": (
                     (completed_modules.get("health_trajectory") or ModuleResult(module_name="", status="")).data or {}
                 ).get("change_points"),
@@ -290,37 +423,51 @@ class AnalysisPipeline:
         
         elif module_name == "intent_migration":
             inputs = {
-                "gsc_query_date_data": data_context.get("gsc_query_date_data"),
+                "gsc_query_date_data": _ensure_dataframe(
+                    data_context.get("gsc_query_date_data"), "gsc_query_date_data"
+                ),
             }
         
         elif module_name == "technical_health":
+            # Module 8 accepts crawl_technical as a dict — no conversion needed.
             inputs = {
                 "gsc_coverage": data_context.get("gsc_keyword_data"),
                 "crawl_technical": data_context.get("crawl_data"),
             }
         
         elif module_name == "site_architecture":
+            # Module 9 handles the crawler dict format directly (reads "link_graph" key).
             inputs = {
                 "link_graph": data_context.get("internal_link_graph") or data_context.get("crawl_data"),
             }
         
         elif module_name == "branded_split":
             inputs = {
-                "gsc_query_data": data_context.get("gsc_query_data"),
+                "gsc_query_data": _ensure_dataframe(
+                    data_context.get("gsc_query_data"), "gsc_query_data"
+                ),
                 "brand_terms": data_context.get("brand_terms", []),
             }
         
         elif module_name == "competitive_threats":
             inputs = {
                 "serp_data": data_context.get("serp_data"),
-                "gsc_data": data_context.get("gsc_keyword_data"),
+                "gsc_data": _ensure_dataframe(
+                    data_context.get("gsc_keyword_data"), "gsc_keyword_data"
+                ),
             }
         
         elif module_name == "revenue_attribution":
             inputs = {
-                "gsc_data": data_context.get("gsc_page_summary"),
-                "ga4_conversions": data_context.get("ga4_conversions"),
-                "ga4_engagement": data_context.get("ga4_landing_pages"),
+                "gsc_data": _ensure_dataframe(
+                    data_context.get("gsc_page_summary"), "gsc_page_summary"
+                ),
+                "ga4_conversions": _ensure_dataframe(
+                    data_context.get("ga4_conversions"), "ga4_conversions"
+                ),
+                "ga4_engagement": _ensure_dataframe(
+                    data_context.get("ga4_landing_pages"), "ga4_landing_pages"
+                ),
             }
         
         return inputs
@@ -365,8 +512,8 @@ class AnalysisPipeline:
                 - ga4_conversions: Conversion data
                 - ga4_engagement_data: Engagement metrics
                 - serp_data: SERP data from DataForSEO
-                - crawl_data: Internal link graph
-                - internal_link_graph: Graph structure
+                - crawl_data: Crawler result dict (pages, link_graph, stats)
+                - internal_link_graph: Alias for crawl_data (Module 9)
                 - brand_terms: List of brand keywords
         
         Returns:
