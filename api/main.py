@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from httpx import HTTPError, TimeoutException
 
-from .config import settings
+from .config import settings, APP_VERSION
 from .routers import health  # health always loads; others are lazy
 
 # Configure logging
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown events."""
     # Startup
-    logger.info("Starting Search Intelligence Report API")
+    logger.info("Starting Search Intelligence Report API v%s", APP_VERSION)
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"Debug mode: {settings.debug}")
 
@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
             logger.warning("Some dependencies are unhealthy:")
             for dep, status_info in health_status.get("dependencies", {}).items():
                 if not status_info.get("healthy", False):
-                    logger.warning(f"  - {dep}: {status_info.get('error', 'Unknown error')}")
+                    logger.warning(f"  - {dep}: {status_info.get(\'error\', \'Unknown error\')}")
         else:
             logger.info("All dependencies are healthy")
     except Exception as e:
@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Search Intelligence Report API",
     description="Backend API for generating comprehensive search intelligence reports from GSC + GA4 data",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -167,19 +167,19 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """Log all incoming requests and responses."""
-    logger.info(f"→ {request.method} {request.url.path}")
+    logger.info(f"\u2192 {request.method} {request.url.path}")
 
     try:
         response = await call_next(request)
-        logger.info(f"← {request.method} {request.url.path} - {response.status_code}")
+        logger.info(f"\u2190 {request.method} {request.url.path} - {response.status_code}")
         return response
     except Exception as e:
         logger.exception(f"Request failed: {request.method} {request.url.path}")
         raise
 
 
-# Include routers — each wrapped in try/except so one failure
-# doesn't prevent the remaining routers from loading.
+# Include routers \u2014 each wrapped in try/except so one failure
+# doesn\u2019t prevent the remaining routers from loading.
 app.include_router(health.router, prefix="/health", tags=["Health"])
 
 try:
@@ -209,6 +209,7 @@ async def root() -> Dict[str, Any]:
     """Root endpoint with API information."""
     return {
         "message": "Search Intelligence Report API",
+        "version": APP_VERSION,
         "status": "operational",
         "docs": "/docs",
         "health": "/health",
