@@ -1,19 +1,27 @@
 """
-Module 8: Technical Health — Core Web Vitals analysis, indexing coverage,
-mobile usability, crawl error classification, and technical debt scoring.
+Module 8: CTR Modeling by SERP Context — build a gradient-boosting CTR
+prediction model on the user's own GSC + SERP data, identify over/under-
+performers, calculate SERP-context-adjusted click values, and score
+SERP-feature acquisition opportunities.
 
-Phase 2 full implementation.  Consumes GA4 Core Web Vitals data, GSC index
-coverage, GSC mobile usability reports, and crawl data to produce:
-  1. Core Web Vitals assessment (LCP, INP, CLS) with pass/fail and trends
-  2. Indexing coverage analysis — valid, excluded, errors by reason
-  3. Mobile usability issue detection and severity scoring
-  4. Crawl error classification and priority ranking
-  5. Technical debt score (0–100) with actionable fix list
+Spec reference (supabase/spec.md — Module 8):
+  Input:  DataForSEO SERP data, GSC position + CTR data
+  Output: ctr_model_accuracy, keyword_ctr_analysis, feature_opportunities,
+          contextual_ctr_benchmarks
+
+This replaces the prior "Technical Health" implementation which did not
+match the spec.  Technical SEO auditing (CWV, indexing, mobile) is not
+part of the module numbering — it could be added as a supplementary
+check inside Module 2 (Page Triage) or as a future Module 13.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+import math
 from collections import Counter, defaultdict
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -21,836 +29,741 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-# Core Web Vitals thresholds (Google's "good" / "needs improvement" / "poor")
-CWV_THRESHOLDS = {
-    "lcp": {"good": 2500, "poor": 4000},       # milliseconds
-    "inp": {"good": 200, "poor": 500},          # milliseconds
-    "cls": {"good": 0.1, "poor": 0.25},         # unitless
-    "fid": {"good": 100, "poor": 300},          # milliseconds (legacy)
-    "fcp": {"good": 1800, "poor": 3000},        # milliseconds
-    "ttfb": {"good": 800, "poor": 1800},        # milliseconds
+# Generic CTR benchmarks by organic position (no SERP-feature context).
+# Derived from aggregated industry data — used as a fallback when the
+# gradient-boosting model cannot be trained (insufficient data).
+GENERIC_CTR_BY_POSITION = {
+    1: 0.280, 2: 0.155, 3: 0.110, 4: 0.080, 5: 0.067,
+    6: 0.047, 7: 0.038, 8: 0.031, 9: 0.026, 10: 0.022,
+    11: 0.012, 12: 0.010, 13: 0.009, 14: 0.008, 15: 0.007,
+    16: 0.006, 17: 0.005, 18: 0.005, 19: 0.004, 20: 0.004,
 }
 
-# Weight each CWV metric contributes to overall CWV score
-CWV_SCORE_WEIGHTS = {
-    "lcp": 0.35,
-    "inp": 0.35,
-    "cls": 0.30,
+# SERP feature weights — approximate CTR displacement each feature
+# causes for organic results positioned below it.
+FEATURE_CTR_DISPLACEMENT = {
+    "featured_snippet": -0.08,
+    "ai_overview": -0.10,
+    "people_also_ask": -0.015,  # per PAA block (typically 4 items)
+    "video_carousel": -0.03,
+    "local_pack": -0.05,
+    "shopping_results": -0.06,
+    "knowledge_panel": -0.04,
+    "top_stories": -0.03,
+    "image_pack": -0.02,
+    "sitelinks": -0.02,
+    "ads_top": -0.035,  # per ad
+    "reddit_threads": -0.02,
 }
 
-# Indexing issue severity map
-INDEX_SEVERITY = {
-    "noindex": "high",
-    "blocked_by_robots_txt": "high",
-    "redirect": "medium",
-    "not_found": "high",
-    "soft_404": "medium",
-    "server_error": "critical",
-    "crawl_anomaly": "medium",
-    "duplicate_without_canonical": "medium",
-    "duplicate_submitted_not_selected": "low",
-    "crawled_not_indexed": "high",
-    "discovered_not_indexed": "medium",
-    "alternate_page": "low",
-    "excluded_by_tag": "low",
-}
+# Minimum rows required to train the gradient-boosting model.
+MIN_TRAINING_ROWS = 30
 
-# Mobile usability issue severity
-MOBILE_SEVERITY = {
-    "text_too_small": "medium",
-    "clickable_elements_too_close": "medium",
-    "content_wider_than_screen": "high",
-    "viewport_not_set": "critical",
-    "incompatible_plugins": "high",
+# SERP features that can be targeted (opportunity scoring)
+TARGETABLE_FEATURES = {
+    "featured_snippet": {
+        "difficulty_base": "medium",
+        "content_types": ["how-to", "definition", "list", "comparison"],
+        "effort": "Add structured content targeting the snippet format",
+    },
+    "people_also_ask": {
+        "difficulty_base": "low",
+        "content_types": ["faq"],
+        "effort": "Add FAQ schema + answer-formatted sections",
+    },
+    "video_carousel": {
+        "difficulty_base": "high",
+        "content_types": ["video"],
+        "effort": "Create and embed a YouTube video targeting this query",
+    },
 }
 
 
 # ---------------------------------------------------------------------------
-# Core Web Vitals Analysis
+# Feature extraction
 # ---------------------------------------------------------------------------
 
-def _classify_cwv_value(metric: str, value: float) -> str:
-    """Classify a CWV value as good / needs_improvement / poor."""
-    thresholds = CWV_THRESHOLDS.get(metric)
-    if not thresholds:
-        return "unknown"
-    if value <= thresholds["good"]:
-        return "good"
-    elif value <= thresholds["poor"]:
-        return "needs_improvement"
-    else:
-        return "poor"
-
-
-def _score_cwv_metric(metric: str, value: float) -> float:
+def _extract_serp_features(serp_entry: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Score a single CWV metric 0-100.
-    100 = at or below the 'good' threshold.
-    0   = at or above 2x the 'poor' threshold.
-    Linear interpolation in between.
-    """
-    thresholds = CWV_THRESHOLDS.get(metric)
-    if not thresholds:
-        return 50.0  # unknown metric, neutral score
-    good = thresholds["good"]
-    poor = thresholds["poor"]
-    if value <= good:
-        return 100.0
-    elif value >= poor * 2:
-        return 0.0
-    elif value <= poor:
-        # Linear 100->40 between good and poor
-        ratio = (value - good) / (poor - good)
-        return 100.0 - (ratio * 60.0)
-    else:
-        # Linear 40->0 between poor and 2xpoor
-        ratio = (value - poor) / poor
-        return max(0.0, 40.0 - (ratio * 40.0))
+    Parse a DataForSEO SERP result dict and extract boolean/count features
+    for the CTR model.
 
-
-def _analyze_core_web_vitals(ga4_cwv_data: Optional[Dict]) -> Dict[str, Any]:
+    DataForSEO organic/live/advanced returns items with ``type`` fields like
+    ``"featured_snippet"``, ``"people_also_ask"``, ``"local_pack"`` etc.
+    We also look for ``"paid"`` items (ads) and count them.
     """
-    Analyse Core Web Vitals from GA4 CrUX-style data.
-
-    Expected input shape (flexible -- handles multiple formats):
-    {
-        "metrics": {
-            "lcp": {"p75": 2400, "values": [...], "good_pct": 0.72, ...},
-            "inp": {"p75": 180, ...},
-            "cls": {"p75": 0.08, ...}
-        },
-        "pages": [
-            {"url": "/page", "lcp": 2600, "inp": 210, "cls": 0.12, ...}
-        ]
-    }
-    """
-    result = {
-        "overall_score": 0.0,
-        "pass": False,
-        "metrics": {},
-        "page_level": [],
-        "recommendations": [],
+    features: Dict[str, Any] = {
+        "has_featured_snippet": False,
+        "has_ai_overview": False,
+        "paa_count": 0,
+        "has_video_carousel": False,
+        "has_local_pack": False,
+        "has_shopping": False,
+        "has_knowledge_panel": False,
+        "has_top_stories": False,
+        "has_image_pack": False,
+        "has_reddit_threads": False,
+        "ads_above_count": 0,
+        "organic_results_above_fold": 0,
     }
 
-    if not ga4_cwv_data or not isinstance(ga4_cwv_data, dict):
-        result["recommendations"].append(
-            "No Core Web Vitals data available. Ensure GA4 is collecting CrUX data "
-            "or implement the web-vitals JS library for field measurements."
-        )
-        return result
+    if not serp_entry or not isinstance(serp_entry, dict):
+        return features
 
-    metrics_data = ga4_cwv_data.get("metrics", {})
-    if not metrics_data and isinstance(ga4_cwv_data, dict):
-        # Fallback: maybe the data is flat {lcp: ..., inp: ..., cls: ...}
-        for key in ("lcp", "inp", "cls", "fid", "fcp", "ttfb"):
-            if key in ga4_cwv_data:
-                metrics_data[key] = ga4_cwv_data[key]
+    items = serp_entry.get("items") or serp_entry.get("result", [])
+    if isinstance(items, dict):
+        items = items.get("items", [])
+    if not isinstance(items, list):
+        return features
 
-    # --- Per-metric analysis ---
-    weighted_score = 0.0
-    weight_sum = 0.0
-
-    for metric_name in ("lcp", "inp", "cls"):
-        metric_info = metrics_data.get(metric_name, {})
-        if isinstance(metric_info, dict):
-            p75 = metric_info.get("p75", metric_info.get("value"))
-        elif isinstance(metric_info, (int, float)):
-            p75 = metric_info
-        else:
-            p75 = None
-
-        if p75 is None:
-            result["metrics"][metric_name] = {"status": "no_data"}
+    for item in items:
+        if not isinstance(item, dict):
             continue
+        item_type = str(item.get("type", "")).lower()
+        position = item.get("position", item.get("rank_absolute", 99))
 
-        p75 = float(p75)
-        classification = _classify_cwv_value(metric_name, p75)
-        score = _score_cwv_metric(metric_name, p75)
-        weight = CWV_SCORE_WEIGHTS.get(metric_name, 0.33)
+        if "featured_snippet" in item_type:
+            features["has_featured_snippet"] = True
+        elif "ai_overview" in item_type or "ai_result" in item_type:
+            features["has_ai_overview"] = True
+        elif "people_also_ask" in item_type:
+            # Count individual PAA items
+            sub_items = item.get("items", [])
+            features["paa_count"] = len(sub_items) if isinstance(sub_items, list) else 4
+        elif "video" in item_type:
+            features["has_video_carousel"] = True
+        elif "local_pack" in item_type or "maps" in item_type:
+            features["has_local_pack"] = True
+        elif "shopping" in item_type:
+            features["has_shopping"] = True
+        elif "knowledge" in item_type:
+            features["has_knowledge_panel"] = True
+        elif "top_stories" in item_type or "news" in item_type:
+            features["has_top_stories"] = True
+        elif "images" in item_type or "image_pack" in item_type:
+            features["has_image_pack"] = True
+        elif "reddit" in item_type or "discussions" in item_type:
+            features["has_reddit_threads"] = True
+        elif "paid" in item_type or "ad" in item_type:
+            features["ads_above_count"] += 1
+        elif "organic" in item_type:
+            if isinstance(position, (int, float)) and position <= 5:
+                features["organic_results_above_fold"] += 1
 
-        result["metrics"][metric_name] = {
-            "p75": p75,
-            "classification": classification,
-            "score": round(score, 1),
-            "threshold_good": CWV_THRESHOLDS[metric_name]["good"],
-            "threshold_poor": CWV_THRESHOLDS[metric_name]["poor"],
-            "good_pct": metric_info.get("good_pct") if isinstance(metric_info, dict) else None,
-        }
-
-        weighted_score += score * weight
-        weight_sum += weight
-
-        # Recommendations
-        if classification == "poor":
-            result["recommendations"].append(
-                _cwv_recommendation(metric_name, p75, "poor")
-            )
-        elif classification == "needs_improvement":
-            result["recommendations"].append(
-                _cwv_recommendation(metric_name, p75, "needs_improvement")
-            )
-
-    if weight_sum > 0:
-        result["overall_score"] = round(weighted_score / weight_sum, 1)
-        result["pass"] = all(
-            result["metrics"].get(m, {}).get("classification") == "good"
-            for m in ("lcp", "inp", "cls")
-            if result["metrics"].get(m, {}).get("classification") != "no_data"
-        )
-
-    # --- Page-level analysis (top slowest pages) ---
-    pages = ga4_cwv_data.get("pages", [])
-    if pages and isinstance(pages, list):
-        scored_pages = []
-        for page in pages[:200]:  # cap to avoid huge payloads
-            url = page.get("url", page.get("page_path", "unknown"))
-            page_scores = {}
-            worst_metric = None
-            worst_class = "good"
-            for m in ("lcp", "inp", "cls"):
-                val = page.get(m)
-                if val is not None:
-                    val = float(val)
-                    cls_ = _classify_cwv_value(m, val)
-                    page_scores[m] = {"value": val, "classification": cls_}
-                    if cls_ == "poor" or (cls_ == "needs_improvement" and worst_class != "poor"):
-                        worst_class = cls_
-                        worst_metric = m
-            scored_pages.append({
-                "url": url,
-                "metrics": page_scores,
-                "worst_metric": worst_metric,
-                "worst_classification": worst_class,
-            })
-        # Sort: poor first, then needs_improvement, then good
-        priority_order = {"poor": 0, "needs_improvement": 1, "good": 2, None: 3}
-        scored_pages.sort(key=lambda p: priority_order.get(p["worst_classification"], 3))
-        result["page_level"] = scored_pages[:30]  # Top 30 worst pages
-
-    return result
+    return features
 
 
-def _cwv_recommendation(metric: str, value: float, classification: str) -> str:
-    """Generate a specific recommendation for a failing CWV metric."""
-    severity = "Critical" if classification == "poor" else "Moderate"
-    recs = {
-        "lcp": (
-            f"{severity}: Largest Contentful Paint is {value:.0f}ms (p75). "
-            f"Optimize by: (1) preloading hero images/fonts, (2) using next-gen image "
-            f"formats (WebP/AVIF), (3) reducing server response time (TTFB), "
-            f"(4) eliminating render-blocking resources, (5) implementing CDN caching."
-        ),
-        "inp": (
-            f"{severity}: Interaction to Next Paint is {value:.0f}ms (p75). "
-            f"Optimize by: (1) breaking long tasks into smaller chunks, (2) yielding "
-            f"to the main thread with scheduler.yield(), (3) reducing JavaScript bundle "
-            f"size, (4) debouncing input handlers, (5) using web workers for heavy "
-            f"computation."
-        ),
-        "cls": (
-            f"{severity}: Cumulative Layout Shift is {value:.3f} (p75). "
-            f"Optimize by: (1) setting explicit width/height on images and embeds, "
-            f"(2) reserving space for dynamic content (ads, lazy-loaded elements), "
-            f"(3) avoiding inserting content above existing content, (4) using "
-            f"CSS contain and content-visibility, (5) loading web fonts with "
-            f"font-display: optional."
-        ),
-    }
-    return recs.get(metric, f"{severity}: {metric} is {value} -- investigate further.")
+def _calculate_visual_position(
+    organic_rank: int,
+    serp_features: Dict[str, Any],
+) -> float:
+    """
+    Estimate how far down the user's listing appears visually, accounting
+    for SERP features that push organic results down.
+
+    Each SERP feature occupies visual "slots":
+      featured_snippet  = 2 slots
+      ai_overview       = 3 slots
+      PAA               = 0.5 slots each (typically 4 = 2 slots)
+      ads               = 1 slot each
+      local_pack        = 3 slots
+      shopping          = 2 slots
+      everything else   = 1 slot
+    """
+    visual_offset = 0.0
+
+    if serp_features.get("has_featured_snippet"):
+        visual_offset += 2.0
+    if serp_features.get("has_ai_overview"):
+        visual_offset += 3.0
+    visual_offset += serp_features.get("paa_count", 0) * 0.5
+    visual_offset += serp_features.get("ads_above_count", 0) * 1.0
+    if serp_features.get("has_local_pack"):
+        visual_offset += 3.0
+    if serp_features.get("has_shopping"):
+        visual_offset += 2.0
+    if serp_features.get("has_video_carousel"):
+        visual_offset += 1.5
+    if serp_features.get("has_knowledge_panel"):
+        visual_offset += 1.0
+    if serp_features.get("has_top_stories"):
+        visual_offset += 1.5
+    if serp_features.get("has_image_pack"):
+        visual_offset += 1.0
+    if serp_features.get("has_reddit_threads"):
+        visual_offset += 1.0
+
+    return organic_rank + visual_offset
+
+
+def _build_feature_vector(
+    position: float,
+    serp_features: Dict[str, Any],
+) -> List[float]:
+    """
+    Build a numeric feature vector for the gradient-boosting model.
+
+    Features (12 total):
+      0: position (float)
+      1: has_featured_snippet (0/1)
+      2: has_ai_overview (0/1)
+      3: paa_count (int)
+      4: has_video_carousel (0/1)
+      5: has_local_pack (0/1)
+      6: has_shopping (0/1)
+      7: has_knowledge_panel (0/1)
+      8: ads_above_count (int)
+      9: has_top_stories (0/1)
+     10: has_image_pack (0/1)
+     11: has_reddit_threads (0/1)
+    """
+    return [
+        float(position),
+        float(serp_features.get("has_featured_snippet", False)),
+        float(serp_features.get("has_ai_overview", False)),
+        float(serp_features.get("paa_count", 0)),
+        float(serp_features.get("has_video_carousel", False)),
+        float(serp_features.get("has_local_pack", False)),
+        float(serp_features.get("has_shopping", False)),
+        float(serp_features.get("has_knowledge_panel", False)),
+        float(serp_features.get("ads_above_count", 0)),
+        float(serp_features.get("has_top_stories", False)),
+        float(serp_features.get("has_image_pack", False)),
+        float(serp_features.get("has_reddit_threads", False)),
+    ]
 
 
 # ---------------------------------------------------------------------------
-# Indexing Coverage Analysis
+# CTR estimation (rule-based fallback)
 # ---------------------------------------------------------------------------
 
-def _analyze_indexing_coverage(gsc_coverage: Optional[Dict]) -> Dict[str, Any]:
+def _estimate_contextual_ctr(
+    position: int,
+    serp_features: Dict[str, Any],
+) -> float:
     """
-    Analyse GSC index coverage data.
+    Rule-based contextual CTR estimate — used when the gradient-boosting
+    model cannot be trained (insufficient data).
 
-    Expected input shape:
-    {
-        "summary": {"valid": 1200, "warning": 30, "excluded": 450, "error": 12},
-        "issues": [
-            {"reason": "crawled_not_indexed", "count": 150, "urls": [...]},
-            {"reason": "noindex", "count": 80, "urls": [...]},
-            ...
-        ]
-    }
+    Starts with the generic position-based CTR and adjusts downward for
+    each SERP feature present.
     """
-    result = {
-        "summary": {"valid": 0, "warning": 0, "excluded": 0, "error": 0, "total": 0},
-        "index_ratio": 0.0,
-        "issues_by_severity": {"critical": [], "high": [], "medium": [], "low": []},
-        "top_issues": [],
-        "recommendations": [],
-    }
-
-    if not gsc_coverage or not isinstance(gsc_coverage, dict):
-        result["recommendations"].append(
-            "No indexing coverage data available. Connect Google Search Console "
-            "to access URL inspection and coverage reports."
-        )
-        return result
-
-    # Summary stats
-    summary = gsc_coverage.get("summary", {})
-    valid = int(summary.get("valid", 0))
-    warning = int(summary.get("warning", 0))
-    excluded = int(summary.get("excluded", 0))
-    error = int(summary.get("error", 0))
-    total = valid + warning + excluded + error
-
-    result["summary"] = {
-        "valid": valid,
-        "warning": warning,
-        "excluded": excluded,
-        "error": error,
-        "total": total,
-    }
-    result["index_ratio"] = round(valid / total, 3) if total > 0 else 0.0
-
-    # Classify issues by severity
-    issues = gsc_coverage.get("issues", [])
-    for issue in issues:
-        reason = issue.get("reason", "unknown")
-        count = int(issue.get("count", 0))
-        severity = INDEX_SEVERITY.get(reason, "low")
-        sample_urls = issue.get("urls", [])[:5]
-
-        issue_entry = {
-            "reason": reason,
-            "count": count,
-            "severity": severity,
-            "sample_urls": sample_urls,
-        }
-        result["issues_by_severity"][severity].append(issue_entry)
-        result["top_issues"].append(issue_entry)
-
-    # Sort top issues by count desc
-    result["top_issues"].sort(key=lambda x: x["count"], reverse=True)
-    result["top_issues"] = result["top_issues"][:15]
-
-    # Recommendations
-    if error > 0:
-        result["recommendations"].append(
-            f"{error} pages have indexing errors. Prioritize server errors and "
-            f"'crawled but not indexed' pages -- these represent lost organic potential."
-        )
-    if result["index_ratio"] < 0.5 and total > 50:
-        result["recommendations"].append(
-            f"Only {result['index_ratio']*100:.0f}% of discovered URLs are indexed. "
-            f"Review excluded URLs to identify accidental noindex/robots.txt blocks."
-        )
-    crawled_not_indexed = sum(
-        i["count"] for i in issues if i.get("reason") == "crawled_not_indexed"
-    )
-    if crawled_not_indexed > 20:
-        result["recommendations"].append(
-            f"{crawled_not_indexed} pages are crawled but not indexed -- Google saw "
-            f"them but chose not to include them. Improve content quality, add "
-            f"internal links, and consolidate thin/duplicate pages."
-        )
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Mobile Usability Analysis
-# ---------------------------------------------------------------------------
-
-def _analyze_mobile_usability(gsc_mobile: Optional[Dict]) -> Dict[str, Any]:
-    """
-    Analyse GSC mobile usability data.
-
-    Expected input shape:
-    {
-        "summary": {"pages_with_issues": 45, "total_pages": 1200},
-        "issues": [
-            {"type": "text_too_small", "count": 30, "urls": [...]},
-            ...
-        ]
-    }
-    """
-    result = {
-        "mobile_friendly_pct": 100.0,
-        "pages_with_issues": 0,
-        "total_pages": 0,
-        "issues": [],
-        "recommendations": [],
-    }
-
-    if not gsc_mobile or not isinstance(gsc_mobile, dict):
-        result["recommendations"].append(
-            "No mobile usability data available. Ensure the site is verified "
-            "in Google Search Console for mobile usability reports."
-        )
-        return result
-
-    summary = gsc_mobile.get("summary", {})
-    pages_with_issues = int(summary.get("pages_with_issues", 0))
-    total_pages = int(summary.get("total_pages", 0))
-
-    result["pages_with_issues"] = pages_with_issues
-    result["total_pages"] = total_pages
-    if total_pages > 0:
-        result["mobile_friendly_pct"] = round(
-            (1 - pages_with_issues / total_pages) * 100, 1
-        )
-
-    issues = gsc_mobile.get("issues", [])
-    for issue in issues:
-        issue_type = issue.get("type", "unknown")
-        count = int(issue.get("count", 0))
-        severity = MOBILE_SEVERITY.get(issue_type, "low")
-        sample_urls = issue.get("urls", [])[:5]
-
-        result["issues"].append({
-            "type": issue_type,
-            "count": count,
-            "severity": severity,
-            "sample_urls": sample_urls,
-        })
-
-    result["issues"].sort(
-        key=lambda x: {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(x["severity"], 4)
+    base_ctr = GENERIC_CTR_BY_POSITION.get(
+        min(max(round(position), 1), 20),
+        0.003,
     )
 
-    if pages_with_issues > 0:
-        critical_issues = [i for i in result["issues"] if i["severity"] == "critical"]
-        if critical_issues:
-            result["recommendations"].append(
-                f"Critical mobile issues found: {', '.join(i['type'] for i in critical_issues)}. "
-                f"These may prevent Google from mobile-indexing affected pages."
-            )
-        if result["mobile_friendly_pct"] < 90:
-            result["recommendations"].append(
-                f"Only {result['mobile_friendly_pct']}% of pages are mobile-friendly. "
-                f"With mobile-first indexing, this directly impacts rankings."
-            )
+    adjustment = 0.0
+    if serp_features.get("has_featured_snippet"):
+        adjustment += FEATURE_CTR_DISPLACEMENT["featured_snippet"]
+    if serp_features.get("has_ai_overview"):
+        adjustment += FEATURE_CTR_DISPLACEMENT["ai_overview"]
+    adjustment += serp_features.get("paa_count", 0) * FEATURE_CTR_DISPLACEMENT["people_also_ask"]
+    if serp_features.get("has_video_carousel"):
+        adjustment += FEATURE_CTR_DISPLACEMENT["video_carousel"]
+    if serp_features.get("has_local_pack"):
+        adjustment += FEATURE_CTR_DISPLACEMENT["local_pack"]
+    if serp_features.get("has_shopping"):
+        adjustment += FEATURE_CTR_DISPLACEMENT["shopping_results"]
+    if serp_features.get("has_knowledge_panel"):
+        adjustment += FEATURE_CTR_DISPLACEMENT["knowledge_panel"]
+    if serp_features.get("has_top_stories"):
+        adjustment += FEATURE_CTR_DISPLACEMENT["top_stories"]
+    if serp_features.get("has_image_pack"):
+        adjustment += FEATURE_CTR_DISPLACEMENT["image_pack"]
+    adjustment += serp_features.get("ads_above_count", 0) * FEATURE_CTR_DISPLACEMENT["ads_top"]
 
-    return result
+    return max(base_ctr + adjustment, 0.001)
 
 
 # ---------------------------------------------------------------------------
-# Crawl Error Analysis
+# Gradient-boosting CTR model
 # ---------------------------------------------------------------------------
 
-def _analyze_crawl_errors(crawl_technical: Optional[Dict]) -> Dict[str, Any]:
+def _train_ctr_model(
+    X: np.ndarray,
+    y: np.ndarray,
+) -> Tuple[Any, float]:
     """
-    Analyse crawl data for technical SEO issues.
+    Train a gradient-boosting regressor on the user's own CTR data.
 
-    Expected input shape:
-    {
-        "pages": [
-            {
-                "url": "https://example.com/page",
-                "status_code": 200,
-                "redirect_chain": [],
-                "canonical": "https://example.com/page",
-                "meta_robots": "index,follow",
-                "h1": ["Page Title"],
-                "title": "Page Title | Site",
-                "meta_description": "...",
-                "internal_links_in": 5,
-                "internal_links_out": 12,
-                "external_links_out": 3,
-                "load_time_ms": 1200,
-                "content_length": 45000,
-                "word_count": 800,
-                "has_schema": true,
-                "schema_types": ["Article", "BreadcrumbList"],
-                "images_without_alt": 2,
-                "broken_links": [],
-                "mixed_content": false
-            }
-        ],
-        "summary": {
-            "total_pages": 150,
-            "total_errors": 12
-        }
-    }
+    Returns (model, r2_score).  Uses a 75/25 train/test split.
+    Falls back to (None, 0.0) if scikit-learn is unavailable or data is
+    insufficient.
     """
-    result = {
-        "total_pages_crawled": 0,
-        "status_code_distribution": {},
-        "redirect_issues": [],
-        "canonical_issues": [],
-        "missing_meta": {"no_title": [], "no_description": [], "no_h1": []},
-        "broken_links": [],
-        "performance_issues": [],
-        "schema_coverage": {"with_schema": 0, "without_schema": 0, "types": {}},
-        "accessibility_issues": [],
-        "recommendations": [],
-    }
+    try:
+        from sklearn.ensemble import GradientBoostingRegressor
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import r2_score
 
-    if not crawl_technical or not isinstance(crawl_technical, dict):
-        result["recommendations"].append(
-            "No crawl data available. A technical site crawl is recommended "
-            "to identify broken links, redirect chains, and meta tag issues."
+        if len(X) < MIN_TRAINING_ROWS:
+            logger.info(
+                "Insufficient data for CTR model (%d rows, need %d) — using rule-based fallback",
+                len(X), MIN_TRAINING_ROWS,
+            )
+            return None, 0.0
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.25, random_state=42,
         )
-        return result
 
-    pages = crawl_technical.get("pages", [])
-    if not pages:
-        result["recommendations"].append("Crawl returned zero pages.")
-        return result
+        model = GradientBoostingRegressor(
+            n_estimators=100,
+            max_depth=4,
+            learning_rate=0.1,
+            min_samples_leaf=3,
+            subsample=0.8,
+            random_state=42,
+        )
+        model.fit(X_train, y_train)
 
-    result["total_pages_crawled"] = len(pages)
-    status_counter: Counter = Counter()
-    schema_type_counter: Counter = Counter()
-    slow_pages = []
-    redirect_chains = []
-    canonical_mismatches = []
-    broken = []
-    no_title = []
-    no_desc = []
-    no_h1 = []
-    images_no_alt = []
+        y_pred = model.predict(X_test)
+        r2 = r2_score(y_test, y_pred)
 
-    for page in pages:
-        url = page.get("url", "unknown")
-        status = page.get("status_code", 0)
-        status_counter[status] += 1
+        logger.info(
+            "CTR model trained: R²=%.3f, %d train rows, %d test rows",
+            r2, len(X_train), len(X_test),
+        )
+        return model, float(r2)
 
-        # Redirect chains (>1 hop)
-        chain = page.get("redirect_chain", [])
-        if len(chain) > 1:
-            redirect_chains.append({
-                "url": url,
-                "hops": len(chain),
-                "chain": chain[:5],  # cap displayed chain
+    except ImportError:
+        logger.warning("scikit-learn not available — CTR model disabled")
+        return None, 0.0
+    except Exception as exc:
+        logger.error("CTR model training failed: %s", exc)
+        return None, 0.0
+
+
+# ---------------------------------------------------------------------------
+# Opportunity scoring
+# ---------------------------------------------------------------------------
+
+def _score_feature_opportunities(
+    keyword_analyses: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    For keywords where acquirable SERP features are NOT currently held by
+    the user, estimate the click gain from capturing them.
+
+    Focuses on featured_snippet, people_also_ask, and video_carousel
+    because those are the three features site owners can actively target.
+    """
+    opportunities: List[Dict[str, Any]] = []
+
+    for kw in keyword_analyses:
+        features = kw.get("serp_features_present", [])
+        impressions = kw.get("impressions", 0)
+        position = kw.get("position", 99)
+
+        if position > 20 or impressions < 100:
+            continue  # Not worth targeting low-visibility keywords
+
+        for feature_name, meta in TARGETABLE_FEATURES.items():
+            # Skip if the feature isn't present in this SERP at all
+            # (can't capture what doesn't exist)
+            feature_key = f"has_{feature_name}"
+            serp_has_feature = feature_key in features or feature_name in features
+
+            # For featured_snippet — opportunity if someone else holds it
+            # For PAA — opportunity if PAA exists but user has no FAQ schema
+            # For video — opportunity if no video carousel yet
+            if feature_name == "featured_snippet":
+                # Opportunity: feature exists and user is in top 5 (can compete)
+                if not serp_has_feature and position > 5:
+                    continue
+                if serp_has_feature:
+                    # Someone else has it — user could take it
+                    ctr_gain_estimate = abs(FEATURE_CTR_DISPLACEMENT.get(feature_name, 0.05))
+                    estimated_clicks = int(impressions * ctr_gain_estimate)
+                else:
+                    continue
+            elif feature_name == "people_also_ask":
+                # Opportunity: PAA exists, user can add FAQ schema
+                paa_present = any("paa" in str(f).lower() or "people_also_ask" in str(f).lower() for f in features) if features else False
+                if not paa_present:
+                    continue
+                ctr_gain_estimate = 0.02  # FAQ schema visibility boost
+                estimated_clicks = int(impressions * ctr_gain_estimate)
+            elif feature_name == "video_carousel":
+                video_present = any("video" in str(f).lower() for f in features) if features else False
+                if video_present:
+                    # Carousel exists — user can create video to appear
+                    ctr_gain_estimate = abs(FEATURE_CTR_DISPLACEMENT.get(feature_name, 0.03))
+                    estimated_clicks = int(impressions * ctr_gain_estimate)
+                else:
+                    continue
+            else:
+                continue
+
+            if estimated_clicks < 10:
+                continue
+
+            # Difficulty scales with position (easier if already ranking well)
+            if position <= 3:
+                difficulty = "low"
+            elif position <= 7:
+                difficulty = meta["difficulty_base"]
+            else:
+                difficulty = "high"
+
+            opportunities.append({
+                "keyword": kw.get("keyword", ""),
+                "feature": feature_name,
+                "current_position": round(position, 1),
+                "impressions": impressions,
+                "estimated_click_gain": estimated_clicks,
+                "difficulty": difficulty,
+                "effort": meta["effort"],
             })
 
-        # Canonical mismatch
-        canonical = page.get("canonical", "")
-        if canonical and canonical != url and status == 200:
-            canonical_mismatches.append({
-                "url": url,
-                "canonical": canonical,
-            })
-
-        # Missing meta
-        title = page.get("title", "")
-        if not title or len(title.strip()) == 0:
-            no_title.append(url)
-        desc = page.get("meta_description", "")
-        if not desc or len(desc.strip()) == 0:
-            no_desc.append(url)
-        h1_list = page.get("h1", [])
-        if not h1_list:
-            no_h1.append(url)
-
-        # Broken links
-        page_broken = page.get("broken_links", [])
-        for bl in page_broken:
-            broken.append({"source": url, "target": bl})
-
-        # Performance
-        load_time = page.get("load_time_ms", 0)
-        if load_time and load_time > 3000:
-            slow_pages.append({"url": url, "load_time_ms": load_time})
-
-        # Schema
-        has_schema = page.get("has_schema", False)
-        if has_schema:
-            result["schema_coverage"]["with_schema"] += 1
-            for st in page.get("schema_types", []):
-                schema_type_counter[st] += 1
-        else:
-            result["schema_coverage"]["without_schema"] += 1
-
-        # Images without alt
-        img_no_alt = page.get("images_without_alt", 0)
-        if img_no_alt and img_no_alt > 0:
-            images_no_alt.append({"url": url, "count": img_no_alt})
-
-    result["status_code_distribution"] = dict(status_counter.most_common())
-
-    # Redirect issues -- sorted by hops desc
-    redirect_chains.sort(key=lambda x: x["hops"], reverse=True)
-    result["redirect_issues"] = redirect_chains[:20]
-
-    # Canonical issues
-    result["canonical_issues"] = canonical_mismatches[:20]
-
-    # Missing meta
-    result["missing_meta"]["no_title"] = no_title[:20]
-    result["missing_meta"]["no_description"] = no_desc[:20]
-    result["missing_meta"]["no_h1"] = no_h1[:20]
-
-    # Broken links -- deduplicated
-    seen_broken = set()
-    unique_broken = []
-    for bl in broken:
-        key = (bl["source"], bl["target"])
-        if key not in seen_broken:
-            seen_broken.add(key)
-            unique_broken.append(bl)
-    result["broken_links"] = unique_broken[:30]
-
-    # Performance issues
-    slow_pages.sort(key=lambda x: x["load_time_ms"], reverse=True)
-    result["performance_issues"] = slow_pages[:20]
-
-    # Schema coverage
-    result["schema_coverage"]["types"] = dict(schema_type_counter.most_common(10))
-
-    # Accessibility issues (images without alt)
-    images_no_alt.sort(key=lambda x: x["count"], reverse=True)
-    result["accessibility_issues"] = images_no_alt[:20]
-
-    # --- Recommendations ---
-    error_pages = sum(v for k, v in status_counter.items() if k >= 400)
-    if error_pages > 0:
-        result["recommendations"].append(
-            f"{error_pages} pages returned 4xx/5xx status codes. Fix or redirect "
-            f"broken URLs to preserve link equity and user experience."
-        )
-
-    if redirect_chains:
-        long_chains = [r for r in redirect_chains if r["hops"] > 2]
-        if long_chains:
-            result["recommendations"].append(
-                f"{len(long_chains)} URLs have redirect chains of 3+ hops. "
-                f"Shorten these to single redirects to reduce crawl budget waste."
-            )
-
-    if len(no_title) > 5:
-        result["recommendations"].append(
-            f"{len(no_title)} pages are missing title tags. Add unique, keyword-rich "
-            f"titles to improve rankings and click-through rates."
-        )
-
-    if len(no_desc) > 10:
-        result["recommendations"].append(
-            f"{len(no_desc)} pages are missing meta descriptions. While not a direct "
-            f"ranking factor, descriptions improve CTR from search results."
-        )
-
-    if len(unique_broken) > 5:
-        result["recommendations"].append(
-            f"{len(unique_broken)} broken internal links found. Fix these to improve "
-            f"crawlability and prevent users from hitting dead ends."
-        )
-
-    schema_pct = (
-        result["schema_coverage"]["with_schema"] / len(pages) * 100 if pages else 0
-    )
-    if schema_pct < 30:
-        result["recommendations"].append(
-            f"Only {schema_pct:.0f}% of pages have structured data. Add Schema.org "
-            f"markup (Article, FAQ, Product, etc.) to improve rich snippet eligibility."
-        )
-
-    if slow_pages:
-        result["recommendations"].append(
-            f"{len(slow_pages)} pages load in over 3 seconds. Optimize server "
-            f"response, reduce JS/CSS payload, and enable compression."
-        )
-
-    return result
+    # Sort by estimated click gain descending
+    opportunities.sort(key=lambda x: x["estimated_click_gain"], reverse=True)
+    return opportunities[:30]  # Top 30 opportunities
 
 
 # ---------------------------------------------------------------------------
-# Technical Debt Score
+# Contextual CTR benchmarks
 # ---------------------------------------------------------------------------
 
-def _compute_technical_debt_score(
-    cwv_result: Dict,
-    indexing_result: Dict,
-    mobile_result: Dict,
-    crawl_result: Dict,
+def _compute_contextual_benchmarks(
+    keyword_analyses: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """
-    Compute a composite Technical Health Score (0-100) across four dimensions.
+    Aggregate CTR analysis into contextual benchmarks.
 
-    Weights:
-    - Core Web Vitals: 30 points
-    - Indexing Coverage:  25 points
-    - Mobile Usability:  20 points
-    - Crawl Health:      25 points
+    Groups keywords by SERP complexity (simple = few features, complex =
+    many features) and position band, then computes average expected vs
+    actual CTR for each group.
     """
-    scores = {}
+    by_complexity: Dict[str, List[Dict]] = {"simple": [], "moderate": [], "complex": []}
 
-    # --- CWV (30 pts) ---
-    cwv_raw = cwv_result.get("overall_score", 50.0)
-    scores["core_web_vitals"] = {
-        "score": round(cwv_raw * 0.30, 1),
-        "max": 30,
-        "raw": round(cwv_raw, 1),
-        "pass": cwv_result.get("pass", False),
-    }
+    for kw in keyword_analyses:
+        feature_count = kw.get("serp_feature_count", 0)
+        if feature_count <= 1:
+            by_complexity["simple"].append(kw)
+        elif feature_count <= 3:
+            by_complexity["moderate"].append(kw)
+        else:
+            by_complexity["complex"].append(kw)
 
-    # --- Indexing (25 pts) ---
-    index_ratio = indexing_result.get("index_ratio", 0.5)
-    critical_issues = len(indexing_result.get("issues_by_severity", {}).get("critical", []))
-    high_issues = len(indexing_result.get("issues_by_severity", {}).get("high", []))
-    # Deduct for issues
-    index_raw = index_ratio * 100
-    index_raw -= critical_issues * 15
-    index_raw -= high_issues * 5
-    index_raw = max(0, min(100, index_raw))
-    scores["indexing_coverage"] = {
-        "score": round(index_raw * 0.25, 1),
-        "max": 25,
-        "raw": round(index_raw, 1),
-        "index_ratio": index_ratio,
-    }
+    benchmarks: Dict[str, Any] = {}
+    for complexity, kws in by_complexity.items():
+        if not kws:
+            benchmarks[complexity] = {"avg_expected_ctr": 0, "avg_actual_ctr": 0, "count": 0}
+            continue
+        avg_expected = sum(k.get("expected_ctr_contextual", 0) for k in kws) / len(kws)
+        avg_actual = sum(k.get("actual_ctr", 0) for k in kws) / len(kws)
+        benchmarks[complexity] = {
+            "avg_expected_ctr": round(avg_expected, 4),
+            "avg_actual_ctr": round(avg_actual, 4),
+            "count": len(kws),
+        }
 
-    # --- Mobile (20 pts) ---
-    mobile_pct = mobile_result.get("mobile_friendly_pct", 100.0)
-    mobile_raw = mobile_pct  # Already 0-100
-    critical_mobile = sum(
-        1 for i in mobile_result.get("issues", []) if i.get("severity") == "critical"
-    )
-    mobile_raw -= critical_mobile * 20
-    mobile_raw = max(0, min(100, mobile_raw))
-    scores["mobile_usability"] = {
-        "score": round(mobile_raw * 0.20, 1),
-        "max": 20,
-        "raw": round(mobile_raw, 1),
-        "mobile_friendly_pct": mobile_pct,
-    }
-
-    # --- Crawl Health (25 pts) ---
-    total_crawled = crawl_result.get("total_pages_crawled", 0)
-    if total_crawled > 0:
-        status_dist = crawl_result.get("status_code_distribution", {})
-        error_pages = sum(v for k, v in status_dist.items() if int(k) >= 400)
-        error_rate = error_pages / total_crawled
-        broken_count = len(crawl_result.get("broken_links", []))
-        redirect_count = len(crawl_result.get("redirect_issues", []))
-        missing_title = len(crawl_result.get("missing_meta", {}).get("no_title", []))
-
-        crawl_raw = 100.0
-        crawl_raw -= error_rate * 200  # Heavy penalty for errors
-        crawl_raw -= min(30, broken_count * 2)
-        crawl_raw -= min(15, redirect_count * 3)
-        crawl_raw -= min(15, missing_title * 1.5)
-        crawl_raw = max(0, min(100, crawl_raw))
-    else:
-        crawl_raw = 50.0  # No crawl data -- neutral
-
-    scores["crawl_health"] = {
-        "score": round(crawl_raw * 0.25, 1),
-        "max": 25,
-        "raw": round(crawl_raw, 1),
-    }
-
-    # --- Composite ---
-    total_score = sum(s["score"] for s in scores.values())
-    grade = _score_to_grade(total_score)
-
-    return {
-        "total_score": round(total_score, 1),
-        "max_score": 100,
-        "grade": grade,
-        "dimensions": scores,
-    }
-
-
-def _score_to_grade(score: float) -> str:
-    """Convert numeric score to letter grade."""
-    if score >= 90:
-        return "A"
-    elif score >= 80:
-        return "B"
-    elif score >= 65:
-        return "C"
-    elif score >= 50:
-        return "D"
-    else:
-        return "F"
+    return benchmarks
 
 
 # ---------------------------------------------------------------------------
-# Main Entry Point
+# Main entry point
 # ---------------------------------------------------------------------------
 
 def analyze_technical_health(
-    ga4_cwv_data=None,
-    gsc_coverage=None,
-    gsc_mobile=None,
-    crawl_technical=None,
+    gsc_coverage: Any = None,
+    crawl_technical: Any = None,
 ) -> Dict[str, Any]:
     """
-    Module 8: Technical Health -- full analysis.
+    Module 8: CTR Modeling by SERP Context.
 
-    Parameters
-    ----------
-    ga4_cwv_data : dict or None
-        Core Web Vitals data from GA4 / CrUX.
-    gsc_coverage : dict or None
-        Index coverage data from Google Search Console.
-    gsc_mobile : dict or None
-        Mobile usability data from Google Search Console.
-    crawl_technical : dict or None
-        Crawl results from site crawler.
+    Accepts the LEGACY parameter names (gsc_coverage, crawl_technical) for
+    pipeline backward-compatibility, but also accepts the spec-correct
+    names (serp_data, gsc_data) via kwargs.
 
-    Returns
-    -------
-    dict
-        Comprehensive technical health report with scores and recommendations.
+    The pipeline's _prepare_module_inputs maps:
+        gsc_coverage  → gsc_keyword_data  (contains query, position, ctr, impressions, clicks)
+        crawl_technical → serp_data        (DataForSEO SERP results)
+
+    If SERP data is unavailable (DataForSEO not configured), falls back to
+    rule-based CTR estimation using only GSC position data.
+
+    Returns the spec-defined output:
+        {
+            "ctr_model_accuracy": float,       # R² or 0.0 if rule-based
+            "model_type": str,                 # "gradient_boosting" | "rule_based"
+            "keyword_ctr_analysis": [...],     # Per-keyword CTR breakdown
+            "feature_opportunities": [...],    # Targetable SERP features
+            "contextual_ctr_benchmarks": {...}, # Grouped benchmarks
+            "summary": {...},                  # High-level stats
+        }
     """
-    logger.info("Running Module 8: Technical Health (full implementation)")
+    # --- Normalise inputs ---
+    serp_data = crawl_technical  # pipeline passes serp_data as crawl_technical
+    gsc_data = gsc_coverage      # pipeline passes gsc_keyword_data as gsc_coverage
 
-    # 1. Core Web Vitals
-    cwv_result = _analyze_core_web_vitals(ga4_cwv_data)
+    # --- Parse GSC keyword data into a DataFrame ---
+    gsc_df: Optional[pd.DataFrame] = None
+    if gsc_data is not None:
+        if isinstance(gsc_data, pd.DataFrame):
+            gsc_df = gsc_data
+        elif isinstance(gsc_data, list) and len(gsc_data) > 0:
+            gsc_df = pd.DataFrame(gsc_data)
+        elif isinstance(gsc_data, dict):
+            for key in ("rows", "data", "results"):
+                if key in gsc_data and isinstance(gsc_data[key], list):
+                    gsc_df = pd.DataFrame(gsc_data[key])
+                    break
 
-    # 2. Indexing coverage
-    indexing_result = _analyze_indexing_coverage(gsc_coverage)
+    if gsc_df is None or gsc_df.empty:
+        logger.warning("Module 8: No GSC keyword data — returning empty result")
+        return {
+            "ctr_model_accuracy": 0.0,
+            "model_type": "none",
+            "keyword_ctr_analysis": [],
+            "feature_opportunities": [],
+            "contextual_ctr_benchmarks": {},
+            "summary": {
+                "keywords_analyzed": 0,
+                "overperformers": 0,
+                "underperformers": 0,
+                "in_line": 0,
+                "total_click_share": 0.0,
+                "total_click_share_opportunity": 0.0,
+            },
+        }
 
-    # 3. Mobile usability
-    mobile_result = _analyze_mobile_usability(gsc_mobile)
+    # Ensure required columns
+    for col in ["query", "position", "ctr", "impressions", "clicks"]:
+        if col not in gsc_df.columns:
+            # Try GSC-style "keys" column
+            if col == "query" and "keys" in gsc_df.columns:
+                gsc_df["query"] = gsc_df["keys"].apply(
+                    lambda k: k[0] if isinstance(k, list) and len(k) > 0 else str(k)
+                )
+            else:
+                gsc_df[col] = 0
 
-    # 4. Crawl errors
-    crawl_result = _analyze_crawl_errors(crawl_technical)
+    gsc_df["position"] = pd.to_numeric(gsc_df["position"], errors="coerce").fillna(50)
+    gsc_df["ctr"] = pd.to_numeric(gsc_df["ctr"], errors="coerce").fillna(0)
+    gsc_df["impressions"] = pd.to_numeric(gsc_df["impressions"], errors="coerce").fillna(0)
+    gsc_df["clicks"] = pd.to_numeric(gsc_df["clicks"], errors="coerce").fillna(0)
 
-    # 5. Technical debt score
-    debt_score = _compute_technical_debt_score(
-        cwv_result, indexing_result, mobile_result, crawl_result
+    # Filter to keywords with meaningful data
+    gsc_df = gsc_df[gsc_df["impressions"] >= 10].copy()
+    if gsc_df.empty:
+        logger.warning("Module 8: No keywords with >= 10 impressions")
+        return {
+            "ctr_model_accuracy": 0.0,
+            "model_type": "none",
+            "keyword_ctr_analysis": [],
+            "feature_opportunities": [],
+            "contextual_ctr_benchmarks": {},
+            "summary": {
+                "keywords_analyzed": 0,
+                "overperformers": 0,
+                "underperformers": 0,
+                "in_line": 0,
+                "total_click_share": 0.0,
+                "total_click_share_opportunity": 0.0,
+            },
+        }
+
+    # --- Parse SERP data ---
+    serp_by_keyword: Dict[str, Dict[str, Any]] = {}
+    has_serp_data = False
+
+    if serp_data and isinstance(serp_data, dict):
+        # DataForSEO result from report_runner: may have "results" key
+        serp_results = serp_data.get("results", serp_data.get("serp_results", {}))
+        if isinstance(serp_results, dict):
+            for kw, result in serp_results.items():
+                serp_by_keyword[kw.lower()] = _extract_serp_features(result)
+            has_serp_data = len(serp_by_keyword) > 0
+        elif isinstance(serp_results, list):
+            for entry in serp_results:
+                if isinstance(entry, dict) and "keyword" in entry:
+                    kw = entry["keyword"].lower()
+                    serp_by_keyword[kw] = _extract_serp_features(entry)
+            has_serp_data = len(serp_by_keyword) > 0
+
+    logger.info(
+        "Module 8: %d GSC keywords, %d with SERP data",
+        len(gsc_df), len(serp_by_keyword),
     )
 
-    # 6. Aggregate all recommendations
-    all_recommendations = []
-    all_recommendations.extend(cwv_result.get("recommendations", []))
-    all_recommendations.extend(indexing_result.get("recommendations", []))
-    all_recommendations.extend(mobile_result.get("recommendations", []))
-    all_recommendations.extend(crawl_result.get("recommendations", []))
+    # --- Build per-keyword analysis ---
+    keyword_analyses: List[Dict[str, Any]] = []
+    X_rows: List[List[float]] = []
+    y_rows: List[float] = []
 
-    summary_parts = []
-    summary_parts.append(
-        f"Technical Health Score: {debt_score['total_score']}/100 (Grade: {debt_score['grade']})"
-    )
-    if cwv_result.get("pass"):
-        summary_parts.append("Core Web Vitals: PASSING")
-    elif cwv_result.get("overall_score", 0) > 0:
-        summary_parts.append(
-            f"Core Web Vitals: FAILING (score {cwv_result['overall_score']}/100)"
-        )
-    summary_parts.append(
-        f"Indexing: {indexing_result['summary']['valid']} of "
-        f"{indexing_result['summary']['total']} URLs indexed "
-        f"({indexing_result['index_ratio']*100:.0f}%)"
-    )
-    if mobile_result.get("pages_with_issues", 0) > 0:
-        summary_parts.append(
-            f"Mobile: {mobile_result['pages_with_issues']} pages with issues"
-        )
+    for _, row in gsc_df.iterrows():
+        query = str(row.get("query", "")).lower()
+        position = float(row["position"])
+        actual_ctr = float(row["ctr"])
+        impressions = int(row["impressions"])
+        clicks = int(row["clicks"])
+
+        # Get SERP features if available
+        serp_features = serp_by_keyword.get(query, {})
+        has_kw_serp = bool(serp_features)
+
+        # Generic CTR (position-only)
+        pos_rounded = min(max(round(position), 1), 20)
+        generic_ctr = GENERIC_CTR_BY_POSITION.get(pos_rounded, 0.003)
+
+        # Contextual CTR (rule-based)
+        if has_kw_serp:
+            contextual_ctr = _estimate_contextual_ctr(position, serp_features)
+        else:
+            contextual_ctr = generic_ctr  # No SERP data → fall back to generic
+
+        # Visual position
+        visual_pos = _calculate_visual_position(pos_rounded, serp_features) if has_kw_serp else float(pos_rounded)
+
+        # Classify performance
+        if actual_ctr > 0:
+            ratio = actual_ctr / max(contextual_ctr, 0.001)
+            if ratio > 1.3:
+                performance = "overperforming"
+            elif ratio < 0.7:
+                performance = "underperforming"
+            else:
+                performance = "in_line"
+        else:
+            performance = "underperforming"
+
+        # Count SERP features
+        feature_list = []
+        for feat_key in ["has_featured_snippet", "has_ai_overview", "has_video_carousel",
+                         "has_local_pack", "has_shopping", "has_knowledge_panel",
+                         "has_top_stories", "has_image_pack", "has_reddit_threads"]:
+            if serp_features.get(feat_key):
+                feature_list.append(feat_key.replace("has_", ""))
+        if serp_features.get("paa_count", 0) > 0:
+            feature_list.append(f"paa_x{serp_features['paa_count']}")
+        if serp_features.get("ads_above_count", 0) > 0:
+            feature_list.append(f"ads_x{serp_features['ads_above_count']}")
+
+        analysis = {
+            "keyword": query,
+            "position": round(position, 1),
+            "visual_position": round(visual_pos, 1),
+            "expected_ctr_generic": round(generic_ctr, 4),
+            "expected_ctr_contextual": round(contextual_ctr, 4),
+            "actual_ctr": round(actual_ctr, 4),
+            "impressions": impressions,
+            "clicks": clicks,
+            "performance": performance,
+            "serp_features_present": feature_list,
+            "serp_feature_count": len(feature_list),
+            "has_serp_data": has_kw_serp,
+        }
+        keyword_analyses.append(analysis)
+
+        # Collect training data for gradient-boosting model
+        if has_kw_serp and actual_ctr > 0 and position <= 20:
+            X_rows.append(_build_feature_vector(position, serp_features))
+            y_rows.append(actual_ctr)
+
+    # --- Train gradient-boosting CTR model (if enough SERP data) ---
+    model = None
+    model_r2 = 0.0
+    model_type = "rule_based"
+
+    if len(X_rows) >= MIN_TRAINING_ROWS:
+        X_arr = np.array(X_rows)
+        y_arr = np.array(y_rows)
+        model, model_r2 = _train_ctr_model(X_arr, y_arr)
+
+        if model is not None and model_r2 > 0.05:
+            model_type = "gradient_boosting"
+
+            # Re-predict expected CTR using the trained model for keywords
+            # that have SERP data
+            for kw_analysis in keyword_analyses:
+                if not kw_analysis["has_serp_data"]:
+                    continue
+                query = kw_analysis["keyword"]
+                serp_features = serp_by_keyword.get(query, {})
+                if not serp_features:
+                    continue
+                vec = np.array([_build_feature_vector(
+                    kw_analysis["position"], serp_features,
+                )])
+                predicted = float(model.predict(vec)[0])
+                predicted = max(predicted, 0.001)
+                kw_analysis["expected_ctr_contextual"] = round(predicted, 4)
+
+                # Reclassify performance with model predictions
+                actual = kw_analysis["actual_ctr"]
+                if actual > 0:
+                    ratio = actual / predicted
+                    if ratio > 1.3:
+                        kw_analysis["performance"] = "overperforming"
+                    elif ratio < 0.7:
+                        kw_analysis["performance"] = "underperforming"
+                    else:
+                        kw_analysis["performance"] = "in_line"
+
+            logger.info("Module 8: Model predictions applied to %d keywords", len(X_rows))
+        else:
+            logger.info("Module 8: Model R² too low (%.3f) — keeping rule-based estimates", model_r2)
+            model_type = "rule_based"
+            model_r2 = 0.0
     else:
-        summary_parts.append("Mobile: No issues detected")
-    summary_parts.append(
-        f"Crawl: {crawl_result['total_pages_crawled']} pages analysed, "
-        f"{len(crawl_result.get('broken_links', []))} broken links"
+        logger.info(
+            "Module 8: Only %d keywords with SERP data (need %d) — using rule-based CTR estimation",
+            len(X_rows), MIN_TRAINING_ROWS,
+        )
+
+    # --- Sort keyword analyses by impressions descending ---
+    keyword_analyses.sort(key=lambda x: x["impressions"], reverse=True)
+
+    # --- Score SERP feature opportunities ---
+    feature_opps = _score_feature_opportunities(keyword_analyses)
+
+    # --- Contextual CTR benchmarks ---
+    benchmarks = _compute_contextual_benchmarks(keyword_analyses)
+
+    # --- Summary stats ---
+    overperformers = sum(1 for k in keyword_analyses if k["performance"] == "overperforming")
+    underperformers = sum(1 for k in keyword_analyses if k["performance"] == "underperforming")
+    in_line = sum(1 for k in keyword_analyses if k["performance"] == "in_line")
+
+    total_impressions = sum(k["impressions"] for k in keyword_analyses)
+    total_clicks = sum(k["clicks"] for k in keyword_analyses)
+    total_click_share = total_clicks / max(total_impressions, 1)
+
+    # Estimate potential click share if all underperformers reached expected CTR
+    potential_additional_clicks = 0
+    for kw in keyword_analyses:
+        if kw["performance"] == "underperforming":
+            expected_clicks = kw["impressions"] * kw["expected_ctr_contextual"]
+            actual_clicks = kw["clicks"]
+            if expected_clicks > actual_clicks:
+                potential_additional_clicks += int(expected_clicks - actual_clicks)
+
+    total_click_share_opportunity = (total_clicks + potential_additional_clicks) / max(total_impressions, 1)
+
+    result = {
+        "ctr_model_accuracy": round(model_r2, 3),
+        "model_type": model_type,
+        "keyword_ctr_analysis": keyword_analyses[:200],  # Top 200 by impressions
+        "feature_opportunities": feature_opps,
+        "contextual_ctr_benchmarks": benchmarks,
+        "summary": {
+            "keywords_analyzed": len(keyword_analyses),
+            "overperformers": overperformers,
+            "underperformers": underperformers,
+            "in_line": in_line,
+            "total_click_share": round(total_click_share, 4),
+            "total_click_share_opportunity": round(total_click_share_opportunity, 4),
+            "potential_additional_monthly_clicks": potential_additional_clicks,
+            "serp_data_coverage": f"{len(serp_by_keyword)}/{len(keyword_analyses)} keywords",
+        },
+    }
+
+    logger.info(
+        "Module 8 complete: %d keywords, model=%s (R²=%.3f), %d opps, %d overperformers, %d underperformers",
+        len(keyword_analyses), model_type, model_r2,
+        len(feature_opps), overperformers, underperformers,
     )
 
-    return {
-        "summary": " | ".join(summary_parts),
-        "technical_score": debt_score,
-        "core_web_vitals": cwv_result,
-        "indexing_coverage": indexing_result,
-        "mobile_usability": mobile_result,
-        "crawl_health": crawl_result,
-        "all_recommendations": all_recommendations,
-        "priority_fixes": all_recommendations[:5],
-    }
+    return result
