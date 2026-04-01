@@ -314,6 +314,12 @@ export default function HomePage() {
               <p className="text-xs sm:text-sm text-slate-400 text-center mt-3 sm:mt-4 px-2">
                 Report generation takes 2-5 minutes. You'll be redirected to the progress page.
               </p>
+              <p className="text-xs text-slate-500 text-center mt-2">
+                Already have reports?{' '}
+                <Link href="/compare" className="text-blue-400 hover:text-blue-300 underline">
+                  Compare previous reports →
+                </Link>
+              </p>
             </div>
           )}
         </main>
