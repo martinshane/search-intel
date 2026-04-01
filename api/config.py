@@ -5,9 +5,17 @@ from typing import Optional
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Shared version constant — used by main.py, health.py, and any other module
+APP_VERSION = "1.0.0"
+
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
+    """Application settings loaded from environment variables.
+    
+    All fields that depend on external secrets use Optional[str] = None
+    so the app can start even when env vars are missing.  Individual
+    endpoints validate that the config they need is present at runtime.
+    """
     
     # Application
     app_name: str = "Search Intelligence Report API"
@@ -19,8 +27,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     
-    # Security
-    secret_key: str
+    # Security — optional so app boots without them; endpoints that
+    # need auth validate at request time.
+    secret_key: str = ""
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
     
@@ -30,10 +39,10 @@ class Settings(BaseSettings):
         "http://localhost:5173",
     ]
     
-    # Google OAuth
-    google_client_id: str
-    google_client_secret: str
-    google_redirect_uri: str
+    # Google OAuth — optional; auth endpoints check at request time
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = ""
     google_auth_uri: str = "https://accounts.google.com/o/oauth2/v2/auth"
     google_token_uri: str = "https://oauth2.googleapis.com/token"
     
@@ -46,15 +55,13 @@ class Settings(BaseSettings):
         "https://www.googleapis.com/auth/analytics.readonly",   # GA4 read-only
     ]
     
-    # Supabase
-    supabase_url: str
-    supabase_key: str
-    supabase_service_role_key: str
+    # Supabase — optional; endpoints that use Supabase check at runtime
+    supabase_url: str = ""
+    supabase_key: str = ""
+    supabase_service_role_key: str = ""
     
     # Database encryption key for OAuth tokens
-    # This should be a 32-byte URL-safe base64-encoded key
-    # Generate with: from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())
-    encryption_key: str
+    encryption_key: str = ""
     
     # External APIs
     dataforseo_login: Optional[str] = None
@@ -113,9 +120,6 @@ def get_settings() -> Settings:
     
     Uses lru_cache to ensure settings are loaded only once
     and reused across the application.
-    
-    Returns:
-        Settings: Application settings instance
     """
     return Settings()
 
