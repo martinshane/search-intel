@@ -335,3 +335,95 @@ async def email_status() -> Dict[str, Any]:
         return {"configured": False, "error": "Email delivery module not available"}
     except Exception as e:
         return {"configured": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Consulting CTA endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{report_id}/ctas")
+async def get_report_ctas(
+    report_id: str,
+    max_ctas: int = Query(default=5, ge=1, le=10),
+) -> Dict[str, Any]:
+    """
+    Generate contextual consulting CTAs for a completed report.
+
+    Analyses each module's results and returns data-driven CTAs ranked
+    by urgency.  Used by the frontend to render CTA banners, cards, and
+    inline prompts throughout the report UI.
+    """
+    supabase = _get_supabase()
+
+    # 1. Validate report exists and is completed
+    try:
+        result = supabase.table("reports").select("*").eq("id", report_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Report not found")
+        report_data = result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch report: {str(e)}")
+
+    if report_data.get("status") not in ("completed", "done", "ready"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Report is not yet completed (status: {report_data.get('status')}). "
+                   "CTAs are only available for finished reports.",
+        )
+
+    # 2. Fetch module results
+    try:
+        modules_result = (
+            supabase.table("report_modules")
+            .select("module_number, results")
+            .eq("report_id", report_id)
+            .order("module_number")
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch module results: {str(e)}")
+
+    module_results: Dict[int, Dict[str, Any]] = {}
+    for row in modules_result.data or []:
+        num = row.get("module_number")
+        data = row.get("results")
+        if num is not None and data:
+            module_results[int(num)] = data if isinstance(data, dict) else {}
+
+    # 3. Generate CTAs
+    try:
+        from api.services.consulting_ctas import generate_report_ctas
+        return generate_report_ctas(module_results, max_ctas=max_ctas)
+    except ImportError as e:
+        logger.error(f"Consulting CTA module missing: {e}")
+        raise HTTPException(status_code=500, detail="CTA generation not available.")
+    except Exception as e:
+        logger.exception("CTA generation failed")
+        raise HTTPException(status_code=500, detail=f"Failed to generate CTAs: {str(e)}")
+
+
+@router.get("/consulting/services")
+async def list_consulting_services() -> Dict[str, Any]:
+    """
+    Return the full catalogue of consulting services.
+
+    Used by the frontend to render a services page, pricing table,
+    or consulting menu.
+    """
+    try:
+        from api.services.consulting_ctas import get_available_services, CONTACT_URL, BOOKING_URL, AUDIT_URL
+        return {
+            "services": get_available_services(),
+            "contact_url": CONTACT_URL,
+            "booking_url": BOOKING_URL,
+            "audit_url": AUDIT_URL,
+        }
+    except ImportError as e:
+        logger.error(f"Consulting CTA module missing: {e}")
+        raise HTTPException(status_code=500, detail="Consulting services not available.")
+    except Exception as e:
+        logger.exception("Failed to list consulting services")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
