@@ -607,4 +607,26 @@ class TestEndToEnd:
         print(f"  ✓ 30-day forecast: {health_result['forecast']['30d']['clicks']} clicks")
         
         # Step 3: Module 2 Analysis
-        print("\n
+        print("\n📋 Step 3: Page Triage Analysis")
+        triage_result = analyze_page_triage(gsc_page_summary, ga4_landing_data)
+        print(f"  ✓ Pages analyzed: {triage_result['total_pages']}")
+        print(f"  ✓ Priority pages: {len(triage_result['priority_pages'])}")
+        
+        # Step 4: Module 5 Analysis
+        print("\n🎯 Step 4: Game Plan Generation")
+        gameplan_result = generate_gameplan(
+            health_result=health_result,
+            triage_result=triage_result
+        )
+        print(f"  ✓ Recommendations generated: {len(gameplan_result['recommendations'])}")
+        print(f"  ✓ Top priority: {gameplan_result['recommendations'][0]['title'] if gameplan_result['recommendations'] else 'None'}")
+        
+        # Verify all results are well-formed
+        assert health_result is not None
+        assert "overall_direction" in health_result
+        assert triage_result is not None
+        assert "total_pages" in triage_result
+        assert gameplan_result is not None
+        assert "recommendations" in gameplan_result
+        
+        print("\n✅ Complete pipeline test passed!")
