@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
 import Link from 'next/link';
+import NavHeader from '../components/NavHeader';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -133,27 +134,7 @@ export default function HomePage() {
       </Head>
 
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-        {/* Header */}
-        <header className="border-b border-slate-700 bg-slate-900/50 backdrop-blur-sm">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-              <h1 className="text-xl sm:text-2xl font-bold text-white">
-                Search Intelligence Report
-              </h1>
-              {user && (
-                <div className="flex items-center gap-3 text-sm sm:text-base text-slate-300">
-                  <span className="truncate max-w-[200px]">{user.email}</span>
-                  <Link 
-                    href="/dashboard"
-                    className="px-3 py-1.5 sm:px-4 sm:py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors whitespace-nowrap"
-                  >
-                    Dashboard
-                  </Link>
-                </div>
-              )}
-            </div>
-          </div>
-        </header>
+        <NavHeader email={user?.email} activePage="home" />
 
         {/* Main Content */}
         <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12 lg:py-16">
