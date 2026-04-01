@@ -367,7 +367,7 @@ export default function ReportPage() {
             <div className="space-y-3">
               {moduleOrder.map((name, idx) => {
                 const num = idx + 1;
-                const status = progress[`module_${num}`] || (num < currentMod ? 'success' : num === currentMod ? 'running' : 'pending');
+                const status = progress[`module_${num}`] || (num === currentMod ? 'analyzing' : 'pending');
                 const meta = MODULE_META[name] || { title: name, number: num };
                 return (
                   <div key={name} className="flex items-center justify-between">
