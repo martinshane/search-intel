@@ -5,16 +5,33 @@ const nextConfig = {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
   },
   async rewrites() {
-    // Allow proxying API requests in development
+    const rewrites = [
+      // ---------------------------------------------------------------
+      // Frontend route aliases
+      // ---------------------------------------------------------------
+      // All frontend links use /reports/:id (plural) but the page file
+      // lives at pages/report/[id].tsx (/report/:id singular).
+      // This rewrite bridges the gap so both paths resolve correctly.
+      {
+        source: '/reports/:path*',
+        destination: '/report/:path*',
+      },
+      // index.tsx links to /dashboard but the page is /progress
+      {
+        source: '/dashboard',
+        destination: '/progress',
+      },
+    ];
+
+    // In development, also proxy API requests to the backend
     if (process.env.NODE_ENV === 'development') {
-      return [
-        {
-          source: '/api/:path*',
-          destination: `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/:path*`,
-        },
-      ];
+      rewrites.push({
+        source: '/api/:path*',
+        destination: `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/:path*`,
+      });
     }
-    return [];
+
+    return rewrites;
   },
   // Enable SWC minification for better performance
   swcMinify: true,
