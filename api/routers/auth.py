@@ -3,7 +3,7 @@ Authentication router for Google OAuth flow.
 
 Public endpoints (no JWT required):
   GET /login     — generate OAuth URL
-  GET /callback  — handle Google redirect
+  GET /callback  — handle Google redirect, issue JWT, redirect to frontend
 
 Protected / optional-auth endpoints:
   GET  /status          — check auth status + connected services
@@ -13,10 +13,18 @@ Protected / optional-auth endpoints:
   GET  /ga4/properties  — list GA4 properties for current user
   POST /revoke          — revoke OAuth tokens for current user
 """
+import logging
+import os
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..auth.dependencies import get_current_user, get_current_user_optional
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
+
+from ..auth.dependencies import (
+    create_access_token,
+    get_current_user,
+    get_current_user_optional,
+)
 from ..auth.oauth import (
     generate_auth_url,
     handle_oauth_callback,
@@ -25,7 +33,32 @@ from ..auth.oauth import (
     revoke_user_tokens,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_frontend_url() -> str:
+    """
+    Determine the frontend URL for post-OAuth redirects.
+
+    Checks, in order:
+      1. FRONTEND_URL env var (set in Railway)
+      2. Falls back to http://localhost:3000 for local dev
+    """
+    return (
+        os.getenv("FRONTEND_URL", "").rstrip("/")
+        or "http://localhost:3000"
+    )
+
+
+def _uid(user: dict) -> str:
+    """Extract canonical user ID from the JWT-decoded user dict."""
+    return user.get("sub", user.get("id", user.get("user_id", "")))
 
 
 # ---------------------------------------------------------------------------
@@ -51,17 +84,65 @@ async def login() -> Dict[str, Any]:
 
 @router.get("/callback")
 async def callback(
+    request: Request,
     code: str = Query(..., description="Authorization code from Google"),
     state: str = Query(..., description="State parameter for CSRF validation"),
-) -> Dict[str, Any]:
+):
     """
     Handle OAuth callback from Google.
 
-    Exchanges authorization code for tokens and stores them.
-    Returns a JWT access token for subsequent API calls.
+    1. Exchanges the authorization code for Google OAuth tokens.
+    2. Stores encrypted tokens in Supabase.
+    3. Generates a JWT access token for the Search Intel API.
+    4. Sets the JWT as an HttpOnly cookie (``access_token``).
+    5. Redirects the user's browser back to the frontend.
+
+    The frontend uses ``credentials: 'include'`` on all API calls,
+    so the cookie is sent automatically — no client-side token
+    management needed.
     """
     result = await handle_oauth_callback(code, state)
-    return result
+
+    # Generate a JWT for our API (30-day expiry)
+    user_id = str(result.get("user_id", ""))
+    email = result.get("email", "")
+
+    if not user_id:
+        raise HTTPException(
+            status_code=500,
+            detail="OAuth succeeded but no user_id was returned",
+        )
+
+    jwt_token = create_access_token(
+        data={"sub": user_id, "email": email}
+    )
+
+    # Redirect to the frontend.  Append ?auth=success so the
+    # frontend can show a success toast or re-check /api/auth/status.
+    frontend = _get_frontend_url()
+    redirect_url = f"{frontend}/?auth=success"
+
+    response = RedirectResponse(url=redirect_url, status_code=302)
+
+    # Set JWT as an HttpOnly cookie.  In production (HTTPS) the cookie
+    # is Secure + SameSite=Lax.  In dev (HTTP) we omit Secure.
+    is_https = frontend.startswith("https://")
+    response.set_cookie(
+        key="access_token",
+        value=jwt_token,
+        httponly=True,
+        secure=is_https,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 30,  # 30 days
+        path="/",
+    )
+
+    logger.info(
+        "OAuth complete for %s (%s) — redirecting to %s",
+        email, user_id, redirect_url,
+    )
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -175,11 +256,6 @@ async def ga4_authorize() -> Dict[str, Any]:
 # Protected (JWT required) — user must already be authenticated
 # ---------------------------------------------------------------------------
 
-def _uid(user: dict) -> str:
-    """Extract canonical user ID from the JWT-decoded user dict."""
-    return user.get("sub", user.get("id", user.get("user_id", "")))
-
-
 @router.get("/gsc/properties")
 async def gsc_properties(
     user: dict = Depends(get_current_user),
@@ -211,3 +287,22 @@ async def revoke_tokens(
     if not uid:
         raise HTTPException(status_code=401, detail="Cannot determine user identity")
     return await revoke_user_tokens(uid)
+
+
+@router.post("/logout")
+async def logout() -> Dict[str, Any]:
+    """
+    Clear the JWT cookie and end the session.
+
+    The frontend can call this to log the user out.  On success,
+    subsequent requests will no longer carry the ``access_token``
+    cookie and the ``/status`` endpoint will return unauthenticated.
+    """
+    from fastapi.responses import JSONResponse
+
+    response = JSONResponse(content={"success": True, "message": "Logged out"})
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+    )
+    return response
