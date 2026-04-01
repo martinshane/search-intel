@@ -5,20 +5,42 @@ Provides reusable dependencies for:
 - Extracting current user from JWT tokens (Bearer header OR HttpOnly cookie)
 - Verifying OAuth tokens
 - Requiring authentication on protected routes
+
+JWT configuration is read from the central ``api.config.settings`` object
+which resolves the signing key from JWT_SECRET_KEY / SECRET_KEY env vars
+(see ``Settings.jwt_secret_key`` for precedence rules).
 """
 
+import logging
 from typing import Optional
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from datetime import datetime, timezone
-import os
 
+from ..config import settings
 from ..database import get_supabase_client
 
-# JWT configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
-ALGORITHM = "HS256"
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# JWT configuration — single source of truth from Settings
+# ---------------------------------------------------------------------------
+# These module-level references are resolved once at import time (for the
+# algorithm) and lazily per call (for the secret, via the property).  Other
+# modules that import SECRET_KEY / ALGORITHM from here get consistent values.
+# ---------------------------------------------------------------------------
+
+def _get_secret_key() -> str:
+    """Return the JWT signing key from settings.
+
+    Using a function rather than a bare module constant ensures the
+    ephemeral-key warning in config.py fires at first use, not at
+    import time (when logging may not yet be configured).
+    """
+    return settings.jwt_secret_key
+
+ALGORITHM = settings.algorithm
 
 # Security scheme for bearer token (auto_error=False so we can fall back to cookie)
 security = HTTPBearer(auto_error=False)
@@ -38,7 +60,7 @@ def _decode_jwt(token: str) -> dict:
     )
 
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, _get_secret_key(), algorithms=[ALGORITHM])
 
         user_id: str = payload.get("sub")
         if user_id is None:
@@ -315,7 +337,7 @@ def create_access_token(data: dict, expires_delta: Optional[int] = None) -> str:
 
     to_encode.update({"exp": expire})
 
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, _get_secret_key(), algorithm=ALGORITHM)
     return encoded_jwt
 
 
