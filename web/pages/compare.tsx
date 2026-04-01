@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
 import Link from 'next/link';
+import NavHeader from '../components/NavHeader';
 import {
   BarChart,
   Bar,
@@ -521,20 +522,7 @@ export default function ComparePage() {
       </Head>
 
       <div className="min-h-screen bg-gray-50">
-        {/* Header */}
-        <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Link href="/" className="text-gray-400 hover:text-gray-600 transition-colors">
-                <ArrowLeft size={20} />
-              </Link>
-              <div className="flex items-center gap-2">
-                <GitCompare size={22} className="text-blue-600" />
-                <h1 className="text-lg font-bold text-gray-900">Compare Reports</h1>
-              </div>
-            </div>
-          </div>
-        </header>
+        <NavHeader activePage="compare" />
 
         <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
           {/* Report Picker */}
