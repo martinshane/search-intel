@@ -396,7 +396,7 @@ export default function ComparePage() {
   const router = useRouter();
   const { current, baseline } = router.query;
 
-  const [token, setToken] = useState<string | null>(null);
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [history, setHistory] = useState<ReportHistoryItem[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [selectedCurrent, setSelectedCurrent] = useState<string>('');
@@ -406,11 +406,19 @@ export default function ComparePage() {
   const [error, setError] = useState<string | null>(null);
   const [openModules, setOpenModules] = useState<Set<number>>(new Set());
 
-  // Auth token
+  // Check auth status via cookie-based session (matches index.tsx pattern)
   useEffect(() => {
-    const t = localStorage.getItem('auth_token') ||
-              new URLSearchParams(window.location.search).get('token');
-    setToken(t);
+    fetch(`${API_BASE}/api/auth/status`, { credentials: 'include' })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(data => {
+        setAuthenticated(!!data.authenticated);
+      })
+      .catch(() => {
+        setAuthenticated(false);
+      });
   }, []);
 
   // Pre-fill from URL params
@@ -419,12 +427,12 @@ export default function ComparePage() {
     if (baseline && typeof baseline === 'string') setSelectedBaseline(baseline);
   }, [current, baseline]);
 
-  // Fetch report history
+  // Fetch report history once authenticated
   useEffect(() => {
-    if (!token) return;
+    if (!authenticated) return;
     setLoadingHistory(true);
     fetch(`${API_BASE}/api/v1/reports/user/history?limit=20`, {
-      headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
     })
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -440,17 +448,17 @@ export default function ComparePage() {
       })
       .catch(e => setError(`Failed to load report history: ${e.message}`))
       .finally(() => setLoadingHistory(false));
-  }, [token]);
+  }, [authenticated]);
 
   // Auto-run comparison if both params come from URL
   useEffect(() => {
-    if (current && baseline && token && selectedCurrent && selectedBaseline) {
+    if (current && baseline && authenticated && selectedCurrent && selectedBaseline) {
       runComparison();
     }
-  }, [selectedCurrent, selectedBaseline, token]);
+  }, [selectedCurrent, selectedBaseline, authenticated]);
 
   const runComparison = useCallback(async () => {
-    if (!selectedCurrent || !selectedBaseline || !token) return;
+    if (!selectedCurrent || !selectedBaseline || !authenticated) return;
     if (selectedCurrent === selectedBaseline) {
       setError('Please select two different reports to compare.');
       return;
@@ -462,7 +470,7 @@ export default function ComparePage() {
     try {
       const res = await fetch(
         `${API_BASE}/api/v1/reports/${selectedCurrent}/compare?baseline_id=${selectedBaseline}`,
-        { headers: { Authorization: `Bearer ${token}` } },
+        { credentials: 'include' },
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -477,7 +485,7 @@ export default function ComparePage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedCurrent, selectedBaseline, token]);
+  }, [selectedCurrent, selectedBaseline, authenticated]);
 
   const toggleModule = (mod: number) => {
     setOpenModules(prev => {
@@ -502,7 +510,15 @@ export default function ComparePage() {
   // Render
   // ---------------------------------------------------------------------------
 
-  if (!token) {
+  if (authenticated === null) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <Loader2 size={24} className="animate-spin text-gray-400" />
+      </div>
+    );
+  }
+
+  if (!authenticated) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
