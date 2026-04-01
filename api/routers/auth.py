@@ -16,6 +16,7 @@ Protected / optional-auth endpoints:
 import logging
 import os
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
@@ -61,6 +62,77 @@ def _uid(user: dict) -> str:
     return user.get("sub", user.get("id", user.get("user_id", "")))
 
 
+def _is_cross_origin(api_url: str, frontend_url: str) -> bool:
+    """
+    Determine whether the API and frontend are cross-origin.
+
+    Two URLs are cross-origin if they differ in scheme, host, or port.
+    More importantly for SameSite cookies, two URLs are cross-*site* if
+    their registrable domains differ.  On the Public Suffix List,
+    ``railway.app`` is a public suffix, so
+    ``search-intel-api-xxx.up.railway.app`` and
+    ``search-intel-web-xxx.up.railway.app`` are different *sites*.
+
+    We use a conservative check: if the hostnames differ at all, treat
+    them as cross-origin and set SameSite=None.
+    """
+    try:
+        api_host = urlparse(api_url).hostname or ""
+        fe_host = urlparse(frontend_url).hostname or ""
+        # Same host → same-origin → SameSite=Lax is fine
+        return api_host.lower() != fe_host.lower()
+    except Exception:
+        # If we can't parse, assume cross-origin for safety
+        return True
+
+
+def _cookie_params(frontend_url: str) -> Dict[str, Any]:
+    """
+    Return the correct cookie parameters based on whether the API and
+    frontend are cross-origin.
+
+    When cross-origin (separate Railway services, different subdomains):
+      - SameSite=None + Secure=True — required for the browser to send
+        cookies on cross-origin fetch() with credentials:'include'.
+      - This is safe because: cookie is HttpOnly (no JS access), CORS
+        restricts which origins can read responses, and JWT validation
+        protects against forgery.
+
+    When same-origin (local dev, or custom domain reverse proxy):
+      - SameSite=Lax + Secure only on HTTPS — standard cookie security.
+    """
+    is_https = frontend_url.startswith("https://")
+
+    # Determine the API's own URL for cross-origin comparison
+    api_url = os.getenv("API_URL", "") or os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    if api_url and not api_url.startswith("http"):
+        api_url = f"https://{api_url}"
+
+    cross_origin = _is_cross_origin(api_url, frontend_url) if api_url else False
+
+    if cross_origin:
+        logger.info(
+            "Cross-origin deployment detected (API=%s, frontend=%s) — "
+            "using SameSite=None; Secure for auth cookie",
+            api_url, frontend_url,
+        )
+        return {
+            "httponly": True,
+            "secure": True,          # Required for SameSite=None
+            "samesite": "none",      # Allow cross-origin fetch with credentials
+            "max_age": 60 * 60 * 24 * 30,  # 30 days
+            "path": "/",
+        }
+    else:
+        return {
+            "httponly": True,
+            "secure": is_https,
+            "samesite": "lax",
+            "max_age": 60 * 60 * 24 * 30,  # 30 days
+            "path": "/",
+        }
+
+
 # ---------------------------------------------------------------------------
 # Public (unauthenticated) — required for the initial OAuth handshake
 # ---------------------------------------------------------------------------
@@ -97,9 +169,15 @@ async def callback(
     4. Sets the JWT as an HttpOnly cookie (``access_token``).
     5. Redirects the user's browser back to the frontend.
 
-    The frontend uses ``credentials: 'include'`` on all API calls,
-    so the cookie is sent automatically — no client-side token
-    management needed.
+    Cookie SameSite policy:
+    - Same-origin (local dev / reverse proxy): SameSite=Lax
+    - Cross-origin (separate Railway services): SameSite=None; Secure
+
+    SameSite=None is required because railway.app is on the Public
+    Suffix List, making each Railway subdomain a separate "site".
+    Without SameSite=None, browsers refuse to send the cookie on
+    cross-origin fetch() calls with credentials:'include', silently
+    breaking ALL authenticated API requests from the frontend.
     """
     result = await handle_oauth_callback(code, state)
 
@@ -124,22 +202,13 @@ async def callback(
 
     response = RedirectResponse(url=redirect_url, status_code=302)
 
-    # Set JWT as an HttpOnly cookie.  In production (HTTPS) the cookie
-    # is Secure + SameSite=Lax.  In dev (HTTP) we omit Secure.
-    is_https = frontend.startswith("https://")
-    response.set_cookie(
-        key="access_token",
-        value=jwt_token,
-        httponly=True,
-        secure=is_https,
-        samesite="lax",
-        max_age=60 * 60 * 24 * 30,  # 30 days
-        path="/",
-    )
+    # Set JWT as an HttpOnly cookie with correct SameSite policy
+    cookie_params = _cookie_params(frontend)
+    response.set_cookie(key="access_token", value=jwt_token, **cookie_params)
 
     logger.info(
-        "OAuth complete for %s (%s) — redirecting to %s",
-        email, user_id, redirect_url,
+        "OAuth complete for %s (%s) — cookie SameSite=%s, redirecting to %s",
+        email, user_id, cookie_params["samesite"], redirect_url,
     )
 
     return response
@@ -297,12 +366,25 @@ async def logout() -> Dict[str, Any]:
     The frontend can call this to log the user out.  On success,
     subsequent requests will no longer carry the ``access_token``
     cookie and the ``/status`` endpoint will return unauthenticated.
+
+    Uses the same SameSite policy as the callback — if the cookie was
+    set with SameSite=None, the delete must also specify SameSite=None
+    or the browser won't match the cookie for deletion.
     """
     from fastapi.responses import JSONResponse
 
     response = JSONResponse(content={"success": True, "message": "Logged out"})
+
+    # Use the same cookie params as setting, for consistent deletion
+    frontend = _get_frontend_url()
+    cookie_params = _cookie_params(frontend)
+
+    # delete_cookie only accepts: key, path, domain, secure, httponly, samesite
     response.delete_cookie(
         key="access_token",
-        path="/",
+        path=cookie_params["path"],
+        secure=cookie_params["secure"],
+        httponly=cookie_params["httponly"],
+        samesite=cookie_params["samesite"],
     )
     return response
