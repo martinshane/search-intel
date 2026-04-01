@@ -339,7 +339,7 @@ export default function HomePage() {
               </p>
               <p className="text-xs text-slate-500 text-center mt-2">
                 Already have reports?{' '}
-                <Link href="/report" className="text-blue-400 hover:text-blue-300 underline">
+                <Link href="/reports" className="text-blue-400 hover:text-blue-300 underline">
                   View past reports →
                 </Link>
                 <span className="text-slate-600 mx-2">·</span>
