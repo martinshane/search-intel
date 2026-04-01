@@ -11,7 +11,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Body
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -112,7 +112,7 @@ def _fetch_module_results(report_id: str) -> Dict[int, Dict[str, Any]]:
 
 def _require_completed(report_data: dict, action: str = "This action") -> None:
     """Raise 400 if the report is not in a completed state."""
-    if report_data.get("status") not in ("completed", "done", "ready"):
+    if report_data.get("status") not in ("completed", "complete", "done", "ready", "partial"):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -129,20 +129,24 @@ def _require_completed(report_data: dict, action: str = "This action") -> None:
 @router.post("/create", response_model=ReportResponse)
 async def create_report(
     req: ReportRequest,
+    background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
     Create a new search intelligence report.
 
     The authenticated user is automatically set as the report owner.
+    The analysis pipeline is triggered as a background task — poll
+    GET /reports/{id} for status updates.
     """
     supabase = _get_supabase()
     report_id = str(uuid.uuid4())
+    uid = _user_id(user)
 
     try:
         supabase.table("reports").insert({
             "id": report_id,
-            "user_id": _user_id(user),
+            "user_id": uid,
             "gsc_property": req.gsc_property,
             "ga4_property": req.ga4_property,
             "domain": req.domain,
@@ -152,10 +156,72 @@ async def create_report(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create report: {str(e)}")
 
+    # Trigger the analysis pipeline in the background
+    try:
+        from api.worker.report_runner import run_report_pipeline
+        background_tasks.add_task(
+            run_report_pipeline,
+            report_id=report_id,
+            user_id=uid,
+            gsc_property=req.gsc_property,
+            ga4_property=req.ga4_property,
+            domain=req.domain,
+        )
+        logger.info("Background pipeline queued for report %s", report_id)
+    except Exception as e:
+        logger.error("Failed to queue pipeline for report %s: %s", report_id, e)
+        # Report is created — pipeline can be retried via /reports/{id}/retry
+        supabase.table("reports").update({
+            "error_message": f"Failed to queue pipeline: {str(e)}",
+        }).eq("id", report_id).execute()
+
     return {
         "report_id": report_id,
         "status": "queued",
-        "message": "Report created. Analysis pipeline will start shortly.",
+        "message": "Report created. Analysis pipeline will start shortly. Poll GET /reports/{id} for progress.",
+    }
+
+
+@router.post("/{report_id}/retry", response_model=ReportResponse)
+async def retry_report(
+    report_id: str,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Retry a failed or stalled report by re-running the pipeline.
+    """
+    report = await _get_owned_report(report_id, user)
+    uid = _user_id(user)
+
+    if report.get("status") in ("running", "ingesting", "analyzing"):
+        raise HTTPException(status_code=409, detail="Report is already running")
+
+    # Reset status
+    supabase = _get_supabase()
+    supabase.table("reports").update({
+        "status": "queued",
+        "error_message": None,
+        "updated_at": datetime.utcnow().isoformat(),
+    }).eq("id", report_id).execute()
+
+    try:
+        from api.worker.report_runner import run_report_pipeline
+        background_tasks.add_task(
+            run_report_pipeline,
+            report_id=report_id,
+            user_id=uid,
+            gsc_property=report.get("gsc_property", ""),
+            ga4_property=report.get("ga4_property"),
+            domain=report.get("domain", ""),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to queue pipeline: {str(e)}")
+
+    return {
+        "report_id": report_id,
+        "status": "queued",
+        "message": "Report re-queued. Pipeline will restart shortly.",
     }
 
 
@@ -178,7 +244,7 @@ async def list_my_reports(
     try:
         result = (
             supabase.table("reports")
-            .select("id, domain, status, created_at")
+            .select("id, domain, status, created_at, current_module, progress")
             .eq("user_id", uid)
             .order("created_at", desc=True)
             .execute()
