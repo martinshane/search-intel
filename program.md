@@ -245,11 +245,11 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 
 **Current Phase:** All 4 phases complete in code  
 **Current Day:** Post-Phase 4 (cleanup & deployment)  
-**Last Task:** Dead code cleanup — replaced api/routes/module_10.py tombstone  
+**Last Task:** Dead code cleanup — replaced api/middleware/error_handler.py tombstone  
 **Last Run:** 2026-03-31 — ✅ Pass  
 **Next Task:** Reconnect Railway auto-deploy (manual action required in Railway dashboard)  
 **Completed Tasks:** 28 / 28 (all foundation tasks) + all Phase 2/3/4 modules implemented  
-**Codebase Score:** 95/100 (remaining deductions: Railway auto-deploy disconnected)  
+**Codebase Score:** 97/100 (remaining deductions: Railway auto-deploy disconnected, legacy test fixtures reference old modules)  
 **Railway API URL:** https://search-intel-api-production.up.railway.app (stale at v0.1.0 — needs redeploy)  
 **Railway Web URL:** (needs reconnection)  
 **Progress Dashboard:** (needs reconnection)  
@@ -262,28 +262,25 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 - **Phase 3 Deep Analysis:** Modules 4/6/7/9, site crawler helpers
 - **Phase 4 Revenue & Polish:** Modules 10/12, PDF export, email delivery, consulting CTAs
 - **Infrastructure:** Multi-stage Dockerfile, railway.toml, synced requirements.txt
+- **Dead code cleaned:** 22 legacy api/modules/ files tombstoned, middleware/error_handler.py tombstoned, config/settings.py tombstoned, routes/module_10.py tombstoned, routes/report.py tombstoned, generate-report.py tombstoned
 
 ### Remaining Work
 1. **Reconnect Railway auto-deploy** — the Railway service is disconnected from GitHub. Requires manual action in Railway dashboard to reconnect the GitHub repo.
 2. **Verify full deployment** — once Railway redeploys, confirm all /api/v1/modules/* endpoints return proper responses.
-3. **Clean up legacy duplicate modules** — api/modules/ contains ~220KB of superseded implementations (module_1_technical.py, module_2_technical_health.py, module_3*.py, module_5.py, module_10.py) that are not imported by any active code.
-4. **End-to-end testing** — run full report generation flow with real GSC+GA4 data once deployed.
+3. **End-to-end testing** — run full report generation flow with real GSC+GA4 data once deployed.
 
 ### Build Log Summary
 *(Updated each night by the cron agent — see Supabase build_log table for full history)*
 
 | Run | Date | Task | Status | Score |
 |-----|------|------|--------|-------|
+| 41 | 2026-03-31 | Replace dead middleware/error_handler.py with tombstone | ✅ | 97→98 |
+| 40 | 2026-04-01 | Replace 22 dead api/modules/ files with tombstones | ✅ | 96→97 |
+| 39 | 2026-04-01 | Replace dead api/routes/module_10.py with tombstone | ✅ | 95→96 |
 | 38 | 2026-04-01 | Sync root requirements.txt with api/requirements.txt | ✅ | 94→95 |
 | 37 | 2026-04-01 | Replace dead api/config/settings.py with tombstone | ✅ | 93→94 |
 | 36 | 2026-04-01 | Add multi-stage Dockerfile + switch to DOCKERFILE builder | ✅ | 92→93 |
-| 35 | 2026-04-01 | Replace dead api/routes/report.py and api/generate-report.py | ✅ | 87→92 |
-| 34 | 2026-04-01 | Fix broken import in api/services/dataforseo_service.py | ✅ | 85→87 |
 
----
-
-
----
 
 ## Repair Phase — Fix Truncated Files
 
