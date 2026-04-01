@@ -3,12 +3,16 @@ Analysis pipeline coordinator with comprehensive error handling.
 
 Orchestrates the execution of all analysis modules, continuing on failures,
 tracking errors, and generating partial reports when necessary.
+
+Supports a real-time progress_callback so the caller (report_runner) can
+push per-module status updates to Supabase as each module finishes — giving
+the frontend live progress instead of a single bulk update at the end.
 """
 
 import logging
 import traceback
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 
 import pandas as pd
@@ -58,6 +62,11 @@ class PipelineResult:
     errors: List[ModuleError]
     total_execution_time: float
     completed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+# Type alias for the optional progress callback.
+# Signature: callback(module_name: str, module_result: ModuleResult) -> None
+ProgressCallback = Callable[[str, "ModuleResult"], None]
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +202,24 @@ class AnalysisPipeline:
     outputs from ALL other modules (1-4, 6-12).  The module numbering
     reflects the report section order, not the execution order.
     """
+    
+    # Map module names to their report section numbers (1-12).
+    # Used by the progress callback to report which module number
+    # is running or completed.
+    MODULE_NUMBERS: Dict[str, int] = {
+        "health_trajectory": 1,
+        "page_triage": 2,
+        "serp_landscape": 3,
+        "content_intelligence": 4,
+        "gameplan": 5,
+        "algorithm_impact": 6,
+        "intent_migration": 7,
+        "technical_health": 8,
+        "site_architecture": 9,
+        "branded_split": 10,
+        "competitive_threats": 11,
+        "revenue_attribution": 12,
+    }
     
     def __init__(self):
         # Execution order: modules 1-4, then 6-12, then gameplan (5) last.
@@ -567,7 +594,11 @@ class AnalysisPipeline:
         
         return msg
     
-    def execute(self, data_context: Dict[str, Any]) -> PipelineResult:
+    def execute(
+        self,
+        data_context: Dict[str, Any],
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> PipelineResult:
         """
         Execute the complete analysis pipeline.
         
@@ -589,6 +620,10 @@ class AnalysisPipeline:
                 - crawl_data: Crawler result dict (pages, link_graph, stats)
                 - internal_link_graph: Alias for crawl_data (Module 9)
                 - brand_terms: List of brand keywords
+            progress_callback: Optional callable invoked after each module
+                completes.  Signature: (module_name, ModuleResult) -> None.
+                Used by report_runner to push real-time progress to Supabase
+                so the frontend can display per-module status updates.
         
         Returns:
             PipelineResult with all module results and any errors
@@ -615,6 +650,18 @@ class AnalysisPipeline:
             
             if result.error:
                 all_errors.append(result.error)
+
+            # Notify the caller of per-module progress so it can push
+            # real-time status updates to Supabase / the frontend.
+            if progress_callback is not None:
+                try:
+                    progress_callback(module_name, result)
+                except Exception as cb_err:
+                    # Never let a callback failure abort the pipeline.
+                    logger.warning(
+                        "progress_callback failed for %s: %s",
+                        module_name, cb_err,
+                    )
         
         # Re-order results so the report JSON has modules in section order
         # (1-12) rather than execution order (1-4, 6-12, 5).
@@ -691,16 +738,20 @@ class AnalysisPipeline:
         return report
 
 
-def run_analysis_pipeline(data_context: Dict[str, Any]) -> Dict[str, Any]:
+def run_analysis_pipeline(
+    data_context: Dict[str, Any],
+    progress_callback: Optional[ProgressCallback] = None,
+) -> Dict[str, Any]:
     """
     Convenience function to execute pipeline and return report data.
     
     Args:
         data_context: All input data required for analysis
+        progress_callback: Optional per-module progress callback
         
     Returns:
         Complete report data structure ready for rendering
     """
     pipeline = AnalysisPipeline()
-    result = pipeline.execute(data_context)
+    result = pipeline.execute(data_context, progress_callback=progress_callback)
     return pipeline.get_report_data(result)
