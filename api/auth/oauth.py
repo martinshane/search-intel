@@ -215,7 +215,7 @@ async def handle_oauth_callback(code: str, state: str) -> Dict[str, Any]:
             }).eq("id", user_id).execute()
         else:
             # Create new user
-            insert_result = supabase.table("users").insert({
+            insert_result = _get_supabase().table("users").insert({
                 "email": user_email,
                 "gsc_token": encrypted_token,
                 "ga4_token": encrypted_token,
