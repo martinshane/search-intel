@@ -66,6 +66,8 @@ interface ReportData {
   domain: string;
   status: string;
   generated_at?: string;
+  current_module?: number;
+  progress?: Record<string, string>;
   summary?: {
     monthly_clicks?: number;
     trend?: string;
@@ -95,8 +97,15 @@ export default function ReportPage() {
     if (!id) return;
 
     try {
-      const response = await fetch(`${API_BASE}/api/report/${id}`);
+      const response = await fetch(`${API_BASE}/api/v1/reports/${id}`, {
+        credentials: 'include',
+      });
       if (!response.ok) {
+        if (response.status === 401) {
+          // Auth expired — redirect to home to re-authenticate
+          window.location.href = '/?auth=expired';
+          return;
+        }
         if (response.status === 404) {
           setError('Report not found');
           setLoading(false);
@@ -105,7 +114,36 @@ export default function ReportPage() {
         throw new Error(`Failed to fetch report: ${response.statusText}`);
       }
 
-      const data: ReportData = await response.json();
+      const raw = await response.json();
+
+      // Transform API response (raw Supabase row) to frontend shape.
+      // The API returns: { id, domain, status, report_data: { metadata, sections, errors }, ... }
+      // Each section has: { status, execution_time_seconds, data: { ... } }
+      // The frontend expects a flat modules record: { module_key: module_data }
+      const reportData = raw.report_data || {};
+      const sections = reportData.sections || {};
+
+      const modules: Record<string, any> = {};
+      for (const [key, section] of Object.entries(sections)) {
+        if (section && typeof section === 'object') {
+          const s = section as any;
+          if (s.status === 'success' && s.data) {
+            modules[key] = s.data;
+          }
+        }
+      }
+
+      const data: ReportData = {
+        report_id: raw.id || (id as string),
+        domain: raw.domain || '',
+        status: raw.status || 'unknown',
+        generated_at: raw.completed_at || raw.created_at,
+        current_module: raw.current_module,
+        progress: raw.progress,
+        summary: reportData.metadata || undefined,
+        modules,
+      };
+
       setReport(data);
       setError(null);
 
@@ -153,27 +191,52 @@ export default function ReportPage() {
   // Loading State
   // ---------------------------------------------------------------------------
   if (loading) {
+    // Calculate progress from module status
+    const progress = report?.progress || {};
+    const completedModules = Object.values(progress).filter(
+      (s) => s === 'success' || s === 'completed' || s === 'failed' || s === 'skipped'
+    ).length;
+    const totalModules = 12;
+    const progressPct = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
+    const currentModuleNum = report?.current_module || 0;
+    const currentModuleName = Object.entries(MODULE_META).find(
+      ([, meta]) => meta.number === currentModuleNum
+    )?.[1]?.title;
+
     return (
       <>
         <Head>
           <title>Generating Report | Search Intelligence</title>
         </Head>
         <NavHeader />
-        <main className="min-h-screen bg-gray-50 py-12 px-4">
+        <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 py-12 px-4">
           <div className="max-w-4xl mx-auto text-center">
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12">
-              <RefreshCw className="w-16 h-16 text-blue-600 mx-auto mb-6 animate-spin" />
-              <h1 className="text-2xl font-bold text-gray-900 mb-3">
+            <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-12">
+              <RefreshCw className="w-16 h-16 text-blue-400 mx-auto mb-6 animate-spin" />
+              <h1 className="text-2xl font-bold text-white mb-3">
                 Generating Your Report
               </h1>
-              <p className="text-gray-600 mb-6">
-                {report?.status === 'processing'
-                  ? 'Analyzing your site data. This typically takes 2-5 minutes...'
+              <p className="text-slate-300 mb-6">
+                {report?.status === 'analyzing' && currentModuleName
+                  ? `Running: ${currentModuleName} (${completedModules}/${totalModules} modules)`
+                  : report?.status === 'ingesting'
+                  ? 'Pulling data from Google Search Console and GA4...'
                   : 'Initializing report generation...'}
               </p>
+              {completedModules > 0 && (
+                <div className="max-w-md mx-auto mb-4">
+                  <div className="w-full bg-slate-700 rounded-full h-3">
+                    <div
+                      className="bg-gradient-to-r from-blue-500 to-purple-500 h-3 rounded-full transition-all duration-500"
+                      style={{ width: `${progressPct}%` }}
+                    />
+                  </div>
+                  <p className="text-sm text-slate-400 mt-2">{progressPct}% complete</p>
+                </div>
+              )}
               {report?.domain && (
-                <p className="text-sm text-gray-500">
-                  Domain: <span className="font-mono">{report.domain}</span>
+                <p className="text-sm text-slate-400">
+                  Domain: <span className="font-mono text-slate-300">{report.domain}</span>
                 </p>
               )}
             </div>
@@ -193,22 +256,30 @@ export default function ReportPage() {
           <title>Error | Search Intelligence</title>
         </Head>
         <NavHeader />
-        <main className="min-h-screen bg-gray-50 py-12 px-4">
+        <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 py-12 px-4">
           <div className="max-w-4xl mx-auto text-center">
-            <div className="bg-white rounded-lg shadow-sm border border-red-200 p-12">
-              <AlertTriangle className="w-16 h-16 text-red-600 mx-auto mb-6" />
-              <h1 className="text-2xl font-bold text-gray-900 mb-3">
+            <div className="bg-slate-800/50 border border-red-800 rounded-lg p-12">
+              <AlertTriangle className="w-16 h-16 text-red-400 mx-auto mb-6" />
+              <h1 className="text-2xl font-bold text-white mb-3">
                 Unable to Load Report
               </h1>
-              <p className="text-gray-600 mb-6">
+              <p className="text-slate-300 mb-6">
                 {error || 'Report data could not be retrieved'}
               </p>
-              <button
-                onClick={() => router.push('/connect')}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-              >
-                Generate New Report
-              </button>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <button
+                  onClick={() => router.push('/')}
+                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+                >
+                  Generate New Report
+                </button>
+                <button
+                  onClick={() => router.push('/reports')}
+                  className="px-6 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition"
+                >
+                  My Reports
+                </button>
+              </div>
             </div>
           </div>
         </main>
@@ -226,23 +297,31 @@ export default function ReportPage() {
           <title>Report Failed | Search Intelligence</title>
         </Head>
         <NavHeader />
-        <main className="min-h-screen bg-gray-50 py-12 px-4">
+        <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 py-12 px-4">
           <div className="max-w-4xl mx-auto text-center">
-            <div className="bg-white rounded-lg shadow-sm border border-yellow-200 p-12">
-              <AlertTriangle className="w-16 h-16 text-yellow-600 mx-auto mb-6" />
-              <h1 className="text-2xl font-bold text-gray-900 mb-3">
+            <div className="bg-slate-800/50 border border-yellow-800 rounded-lg p-12">
+              <AlertTriangle className="w-16 h-16 text-yellow-400 mx-auto mb-6" />
+              <h1 className="text-2xl font-bold text-white mb-3">
                 Report Generation Failed
               </h1>
-              <p className="text-gray-600 mb-6">
+              <p className="text-slate-300 mb-6">
                 We encountered an error while generating your report for{' '}
-                <span className="font-mono">{report.domain}</span>
+                <span className="font-mono text-slate-200">{report.domain}</span>
               </p>
-              <button
-                onClick={() => router.push('/connect')}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-              >
-                Try Again
-              </button>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <button
+                  onClick={() => router.push('/')}
+                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+                >
+                  Try Again
+                </button>
+                <button
+                  onClick={() => router.push('/reports')}
+                  className="px-6 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition"
+                >
+                  My Reports
+                </button>
+              </div>
             </div>
           </div>
         </main>
