@@ -1,6 +1,17 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
+import dynamic from 'next/dynamic';
+
+// D3 force-directed network graph — client-only (SSR-disabled)
+const NetworkGraph = dynamic(() => import('../../components/NetworkGraph'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-48 bg-gray-50 rounded-lg border border-dashed border-gray-300 text-sm text-gray-500">
+      Loading network graph...
+    </div>
+  ),
+});
 import {
   LineChart,
   Line,
@@ -1071,6 +1082,27 @@ export default function ReportPage() {
 
                 {expandedSections.has('site_architecture') && (
                   <div className="px-4 sm:px-6 py-4 sm:py-6 border-t border-gray-200">
+                    {/* D3 Force-directed network graph */}
+                    {(arch.graph_nodes || arch.link_graph_nodes) && (
+                      <div className="mb-6">
+                        <NetworkGraph
+                          nodes={(arch.graph_nodes || arch.link_graph_nodes || []).map((n: any) => ({
+                            id: n.id || n.url || n.page || '',
+                            pagerank: n.pagerank || n.page_rank || 0,
+                            silo: n.silo || n.cluster || n.category || 'unknown',
+                            internal_links_in: n.internal_links_in || n.inbound_links || 0,
+                            internal_links_out: n.internal_links_out || n.outbound_links || 0,
+                            is_orphan: n.is_orphan || false,
+                          }))}
+                          links={(arch.graph_edges || arch.link_graph_edges || []).map((e: any) => ({
+                            source: e.source || e.from || e.from_url || '',
+                            target: e.target || e.to || e.to_url || '',
+                            weight: e.weight || 1,
+                          }))}
+                        />
+                      </div>
+                    )}
+
                     {/* Content silos */}
                     {arch.content_silos && arch.content_silos.length > 0 && (
                       <div className="mb-6">
