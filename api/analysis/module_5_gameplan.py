@@ -15,8 +15,8 @@ from datetime import datetime
 def generate_gameplan(
     health: Dict[str, Any],
     triage: Dict[str, Any],
-    serp: Dict[str, Any],
-    content: Dict[str, Any],
+    serp: Optional[Dict[str, Any]] = None,
+    content: Optional[Dict[str, Any]] = None,
     algorithm: Optional[Dict[str, Any]] = None,
     intent: Optional[Dict[str, Any]] = None,
     ctr: Optional[Dict[str, Any]] = None,
@@ -27,12 +27,17 @@ def generate_gameplan(
 ) -> Dict[str, Any]:
     """
     Synthesize all module outputs into a prioritized action plan.
-    
+
+    Only health (Module 1) and triage (Module 2) are required.  All other
+    module outputs are optional enrichments — the gameplan produces a useful
+    action plan with just GSC-based health + triage data, and becomes
+    progressively richer as more module outputs are available.
+
     Args:
-        health: Output from Module 1 (Health & Trajectory)
-        triage: Output from Module 2 (Page-Level Triage)
-        serp: Output from Module 3 (SERP Landscape)
-        content: Output from Module 4 (Content Intelligence)
+        health: Output from Module 1 (Health & Trajectory) — REQUIRED
+        triage: Output from Module 2 (Page-Level Triage) — REQUIRED
+        serp: Optional output from Module 3 (SERP Landscape)
+        content: Optional output from Module 4 (Content Intelligence)
         algorithm: Optional output from Module 6
         intent: Optional output from Module 7
         ctr: Optional output from Module 8
@@ -40,7 +45,7 @@ def generate_gameplan(
         branded: Optional output from Module 10
         competitive: Optional output from Module 11
         revenue: Optional output from Module 12
-    
+
     Returns:
         Dictionary with prioritized actions and narrative synthesis
     """
