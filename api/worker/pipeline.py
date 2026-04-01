@@ -212,12 +212,17 @@ class AnalysisPipeline:
             ("gameplan", generate_gameplan),
         ]
         
-        # Gameplan now depends on modules 1-4 (required) and benefits
-        # from 6-12 (optional — passed if available).
+        # Gameplan depends on modules 1 + 2 (required).  Modules 3-4 and
+        # 6-12 are optional enrichments — passed when available but the
+        # gameplan generates a useful action plan from health + triage alone.
+        #
+        # technical_health and competitive_threats were previously gated on
+        # serp_landscape, but they don't consume serp_landscape *output* —
+        # they read raw data_context keys (crawl_data, gsc_keyword_data,
+        # serp_data).  Removing the false dependency so they run even when
+        # DataForSEO is not configured.
         self.module_dependencies = {
-            "gameplan": ["health_trajectory", "page_triage", "serp_landscape", "content_intelligence"],
-            "technical_health": ["serp_landscape"],
-            "competitive_threats": ["serp_landscape"],
+            "gameplan": ["health_trajectory", "page_triage"],
         }
         
         self.user_friendly_errors = {
