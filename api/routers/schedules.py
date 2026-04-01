@@ -347,13 +347,25 @@ CRON_SECRET = os.getenv("CRON_SECRET", "")
 async def _run_single_schedule(schedule: dict) -> Dict[str, Any]:
     """Execute a single scheduled report: generate, compare, email.
 
+    Orchestrates:
+      1. Create report row in Supabase
+      2. Run the full report pipeline (ingestion → analysis → storage)
+      3. Wait for completion
+      4. Optionally compare to the previous report
+      5. Optionally generate PDF
+      6. Send email with results
+      7. Update schedule metadata
+
     Returns a dict with the outcome for logging.
     """
     import traceback as tb
+    import asyncio
 
     schedule_id = schedule["id"]
     domain = schedule["domain"]
     user_id = schedule["user_id"]
+    gsc_property = schedule["gsc_property"]
+    ga4_property = schedule.get("ga4_property")
     result: Dict[str, Any] = {"schedule_id": schedule_id, "domain": domain}
 
     try:
@@ -365,16 +377,27 @@ async def _run_single_schedule(schedule: dict) -> Dict[str, Any]:
             "id": report_id,
             "user_id": user_id,
             "domain": domain,
-            "gsc_property": schedule["gsc_property"],
-            "ga4_property": schedule.get("ga4_property"),
+            "gsc_property": gsc_property,
+            "ga4_property": ga4_property,
             "status": "pending",
         }).execute()
 
-        # 2. Run the analysis pipeline
-        from api.worker.pipeline import run_analysis_pipeline
-        await run_analysis_pipeline(report_id)
+        # 2. Run the full report pipeline (sync function — run in executor
+        #    to avoid blocking the async event loop)
+        from api.worker.report_runner import run_report_pipeline
 
-        # 3. Refresh report status
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            run_report_pipeline,
+            report_id,
+            user_id,
+            gsc_property,
+            ga4_property,
+            domain,
+        )
+
+        # 3. Refresh report status from DB
         report_row = (
             sb.table("reports")
             .select("*")
@@ -418,17 +441,17 @@ async def _run_single_schedule(schedule: dict) -> Dict[str, Any]:
         if schedule.get("include_pdf", True):
             try:
                 from api.services.pdf_export import generate_report_pdf
-                # Gather module results for PDF
+                # Gather module results for PDF — column name is "results"
                 module_results = {}
                 mod_rows = (
                     sb.table("report_modules")
-                    .select("module_number, result_data")
+                    .select("module_number, results")
                     .eq("report_id", report_id)
                     .order("module_number")
                     .execute()
                 )
                 for mr in (mod_rows.data or []):
-                    module_results[mr["module_number"]] = mr.get("result_data", {})
+                    module_results[mr["module_number"]] = mr.get("results", {})
 
                 pdf_bytes = generate_report_pdf(
                     report_data=report_data.get("report_data", {}),
@@ -442,11 +465,24 @@ async def _run_single_schedule(schedule: dict) -> Dict[str, Any]:
         # 6. Send email
         try:
             from api.services.email_delivery import send_report_email
+
+            # Build a report_data dict enriched with domain + id for the
+            # email template, plus embed comparison summary if available.
+            email_report_data = report_data.get("report_data", {})
+            if not isinstance(email_report_data, dict):
+                email_report_data = {}
+            email_report_data.setdefault("domain", domain)
+            email_report_data.setdefault("id", report_id)
+
+            # Include comparison highlights in the email report data so
+            # the template can reference them if desired.
+            if comparison:
+                email_report_data["comparison_summary"] = comparison.get("summary", {})
+
             email_result = await send_report_email(
                 to_email=schedule["email_to"],
-                report_data=report_data.get("report_data", {}),
+                report_data=email_report_data,
                 pdf_bytes=pdf_bytes,
-                comparison=comparison,
                 subject=f"Search Intelligence Report — {domain} ({datetime.now(timezone.utc).strftime('%b %d, %Y')})",
             )
             result["email"] = "sent" if email_result.get("success") else f"failed: {email_result.get('error')}"
