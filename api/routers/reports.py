@@ -182,6 +182,20 @@ async def create_report(
     }
 
 
+@router.post("/generate", response_model=ReportResponse)
+async def generate_report(
+    req: ReportRequest,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Alias for ``/create`` — the frontend calls ``/api/reports/generate``.
+
+    Delegates to ``create_report`` so both paths produce identical behaviour.
+    """
+    return await create_report(req, background_tasks, user)
+
+
 @router.post("/{report_id}/retry", response_model=ReportResponse)
 async def retry_report(
     report_id: str,
