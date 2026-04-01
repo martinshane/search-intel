@@ -257,7 +257,7 @@ except Exception as e:
     logger.warning("Could not load schedule routes: %s", e)
 
 try:
-    from .routes.modules import router as modules_router
+    from .routers.modules import router as modules_router
     app.include_router(modules_router, prefix="/api/v1/modules", tags=["Modules"])
     logger.info("Module routes loaded at /api/v1/modules")
 except Exception as e:
