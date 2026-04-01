@@ -24,8 +24,8 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown events."""
     # Startup
     logger.info("Starting Search Intelligence Report API v%s", APP_VERSION)
-    logger.info(f"Environment: {settings.environment}")
-    logger.info(f"Debug mode: {settings.debug}")
+    logger.info("Environment: %s", settings.environment)
+    logger.info("Debug mode: %s", settings.debug)
 
     # Check critical dependencies
     try:
@@ -35,11 +35,12 @@ async def lifespan(app: FastAPI):
             logger.warning("Some dependencies are unhealthy:")
             for dep, status_info in health_status.get("dependencies", {}).items():
                 if not status_info.get("healthy", False):
-                    logger.warning(f"  - {dep}: {status_info.get(\'error\', \'Unknown error\')}")
+                    err_msg = status_info.get("error", "Unknown error")
+                    logger.warning("  - %s: %s", dep, err_msg)
         else:
             logger.info("All dependencies are healthy")
     except Exception as e:
-        logger.error(f"Failed to check dependencies on startup: {str(e)}")
+        logger.error("Failed to check dependencies on startup: %s", str(e))
 
     yield
 
@@ -74,7 +75,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         message = error["msg"]
         errors.append({"field": field or "request", "message": message})
 
-    logger.warning(f"Validation error on {request.url.path}: {errors}")
+    logger.warning("Validation error on %s: %s", request.url.path, errors)
 
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -89,7 +90,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(HTTPError)
 async def http_exception_handler(request: Request, exc: HTTPError) -> JSONResponse:
     """Handle external HTTP errors with retry guidance."""
-    logger.error(f"External HTTP error on {request.url.path}: {str(exc)}")
+    logger.error("External HTTP error on %s: %s", request.url.path, str(exc))
 
     is_transient = False
     status_code = status.HTTP_502_BAD_GATEWAY
@@ -115,7 +116,7 @@ async def http_exception_handler(request: Request, exc: HTTPError) -> JSONRespon
 @app.exception_handler(TimeoutException)
 async def timeout_exception_handler(request: Request, exc: TimeoutException) -> JSONResponse:
     """Handle timeout errors with retry guidance."""
-    logger.error(f"Request timeout on {request.url.path}: {str(exc)}")
+    logger.error("Request timeout on %s: %s", request.url.path, str(exc))
 
     return JSONResponse(
         status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -130,7 +131,7 @@ async def timeout_exception_handler(request: Request, exc: TimeoutException) -> 
 @app.exception_handler(ValueError)
 async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
     """Handle value errors with user-friendly messages."""
-    logger.warning(f"Value error on {request.url.path}: {str(exc)}")
+    logger.warning("Value error on %s: %s", request.url.path, str(exc))
 
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
@@ -144,13 +145,13 @@ async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle all other exceptions with safe error messages."""
-    logger.exception(f"Unhandled exception on {request.url.path}")
+    logger.exception("Unhandled exception on %s", request.url.path)
 
     message = "An unexpected error occurred. Our team has been notified."
     details = None
 
     if settings.debug:
-        message = f"Internal error: {type(exc).__name__}"
+        message = "Internal error: %s" % type(exc).__name__
         details = str(exc)
 
     return JSONResponse(
@@ -167,19 +168,19 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """Log all incoming requests and responses."""
-    logger.info(f"\u2192 {request.method} {request.url.path}")
+    logger.info("-> %s %s", request.method, request.url.path)
 
     try:
         response = await call_next(request)
-        logger.info(f"\u2190 {request.method} {request.url.path} - {response.status_code}")
+        logger.info("<- %s %s - %s", request.method, request.url.path, response.status_code)
         return response
     except Exception as e:
-        logger.exception(f"Request failed: {request.method} {request.url.path}")
+        logger.exception("Request failed: %s %s", request.method, request.url.path)
         raise
 
 
-# Include routers \u2014 each wrapped in try/except so one failure
-# doesn\u2019t prevent the remaining routers from loading.
+# Include routers -- each wrapped in try/except so one failure
+# does not prevent the remaining routers from loading.
 app.include_router(health.router, prefix="/health", tags=["Health"])
 
 try:
@@ -187,21 +188,21 @@ try:
     app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
     logger.info("Auth routes loaded successfully")
 except Exception as e:
-    logger.warning(f"Could not load auth routes (will retry on first request): {e}")
+    logger.warning("Could not load auth routes (will retry on first request): %s", e)
 
 try:
     from .routers.reports import router as reports_router
     app.include_router(reports_router, prefix="/reports", tags=["Reports"])
     logger.info("Report routes loaded successfully")
 except Exception as e:
-    logger.warning(f"Could not load report routes: {e}")
+    logger.warning("Could not load report routes: %s", e)
 
 try:
     from .routes.modules import router as modules_router
     app.include_router(modules_router, prefix="/api/v1/modules", tags=["Modules"])
     logger.info("Module routes loaded successfully")
 except Exception as e:
-    logger.warning(f"Could not load module routes: {e}")
+    logger.warning("Could not load module routes: %s", e)
 
 
 @app.get("/", include_in_schema=False)
