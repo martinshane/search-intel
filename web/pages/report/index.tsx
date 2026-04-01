@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
+import NavHeader from '../../components/NavHeader';
 import { useRouter } from 'next/router';
 import {
   BarChart2,
@@ -249,45 +250,7 @@ export default function MyReportsPage() {
       </Head>
 
       <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-white">
-        {/* ── Header ── */}
-        <header className="border-b border-slate-800">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
-            <Link href="/" className="flex items-center gap-2 text-white hover:text-blue-400 transition">
-              <Activity className="w-5 h-5 text-blue-500" />
-              <span className="font-bold text-lg">Search Intelligence</span>
-            </Link>
-
-            <nav className="hidden sm:flex items-center gap-6 text-sm">
-              <Link href="/reports" className="text-blue-400 font-medium">
-                My Reports
-              </Link>
-              <Link href="/compare" className="text-slate-400 hover:text-white transition">
-                Compare
-              </Link>
-              <Link href="/schedules" className="text-slate-400 hover:text-white transition">
-                Schedules
-              </Link>
-              <Link
-                href="/"
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-sm font-medium transition"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                New Report
-              </Link>
-            </nav>
-
-            {/* Mobile menu */}
-            <div className="sm:hidden flex items-center gap-3">
-              <Link
-                href="/"
-                className="p-2 bg-blue-600 rounded-lg"
-                title="New Report"
-              >
-                <Plus className="w-4 h-4" />
-              </Link>
-            </div>
-          </div>
-        </header>
+        <NavHeader activePage="reports" />
 
         <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
           {/* ── Page Title ── */}
