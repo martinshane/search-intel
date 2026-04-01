@@ -548,4 +548,20 @@ class TestPullLiveSerps:
             mock_client_instance.close = AsyncMock()
             MockClient.return_value = mock_client_instance
             
-            with patch('ing
+            with patch('ingestion.dataforseo.get_supabase_client') as mock_supabase:
+                mock_db = Mock()
+                mock_supabase.return_value = mock_db
+                
+                with patch('ingestion.dataforseo.asyncio.sleep', new_callable=AsyncMock):
+                    with pytest.raises(Exception):
+                        await pull_live_serps(
+                            gsc_keywords=sample_gsc_keywords[:1],
+                            brand_terms=["testsite"],
+                            max_keywords=1,
+                            dataforseo_login="test",
+                            dataforseo_password="test",
+                            max_retries=2
+                        )
+        
+        # Should have retried the maximum number of times
+        assert mock_client_instance.pull_serp.call_count >= 2
