@@ -415,23 +415,54 @@ async def _run_single_schedule(schedule: dict) -> Dict[str, Any]:
         result["report_id"] = report_id
 
         # 4. Compare to previous report (if enabled and available)
+        #    compare_reports() expects module results keyed by module number,
+        #    NOT raw report_data.  We must fetch from report_modules table.
         comparison = None
         previous_id = schedule.get("last_report_id")
         if schedule.get("include_comparison", True) and previous_id:
             try:
                 from api.services.report_comparison import compare_reports
-                prev_row = (
-                    sb.table("reports")
-                    .select("report_data")
-                    .eq("id", previous_id)
+
+                # Fetch module results for the CURRENT report
+                current_mod_rows = (
+                    sb.table("report_modules")
+                    .select("module_number, results")
+                    .eq("report_id", report_id)
+                    .order("module_number")
                     .execute()
                 )
-                if prev_row.data and prev_row.data[0].get("report_data"):
+                current_modules: Dict[int, Dict[str, Any]] = {}
+                for mr in (current_mod_rows.data or []):
+                    num = mr.get("module_number")
+                    res = mr.get("results")
+                    if num is not None and res and isinstance(res, dict):
+                        current_modules[int(num)] = res
+
+                # Fetch module results for the BASELINE (previous) report
+                baseline_mod_rows = (
+                    sb.table("report_modules")
+                    .select("module_number, results")
+                    .eq("report_id", previous_id)
+                    .order("module_number")
+                    .execute()
+                )
+                baseline_modules: Dict[int, Dict[str, Any]] = {}
+                for mr in (baseline_mod_rows.data or []):
+                    num = mr.get("module_number")
+                    res = mr.get("results")
+                    if num is not None and res and isinstance(res, dict):
+                        baseline_modules[int(num)] = res
+
+                if current_modules and baseline_modules:
                     comparison = compare_reports(
-                        current=report_data.get("report_data", {}),
-                        baseline=prev_row.data[0]["report_data"],
+                        current_modules=current_modules,
+                        baseline_modules=baseline_modules,
+                        current_meta=report_data,
+                        baseline_meta={"id": previous_id, "domain": domain},
                     )
                     result["comparison"] = "included"
+                else:
+                    result["comparison"] = "skipped (no module results available)"
             except Exception as cmp_err:
                 logger.warning("Comparison failed for schedule %s: %s", schedule_id, cmp_err)
                 result["comparison"] = f"failed: {cmp_err}"
@@ -440,7 +471,7 @@ async def _run_single_schedule(schedule: dict) -> Dict[str, Any]:
         pdf_bytes = None
         if schedule.get("include_pdf", True):
             try:
-                from api.services.pdf_export import generate_report_pdf
+                from api.services.pdf_export import generate_pdf_report
                 # Gather module results for PDF — column name is "results"
                 module_results = {}
                 mod_rows = (
@@ -453,7 +484,7 @@ async def _run_single_schedule(schedule: dict) -> Dict[str, Any]:
                 for mr in (mod_rows.data or []):
                     module_results[mr["module_number"]] = mr.get("results", {})
 
-                pdf_bytes = generate_report_pdf(
+                pdf_bytes = generate_pdf_report(
                     report_data=report_data.get("report_data", {}),
                     module_results=module_results,
                 )
