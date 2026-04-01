@@ -32,7 +32,6 @@ import {
 } from 'recharts';
 import { Menu, X, ChevronDown, ChevronUp, ExternalLink, Download, Calendar, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Target, Zap, RefreshCw, Clock, BarChart2, Shield, Globe, DollarSign, Search, FileText, Activity, Layers, Users } from 'lucide-react';
 import NavHeader from '../../components/NavHeader';
-import Module5IndexingCoverage from '../../components/Module5IndexingCoverage';
 
 // ---------------------------------------------------------------------------
 // Config — API base URL from env, falls back to relative path
@@ -49,15 +48,14 @@ const MODULE_META: Record<string, { title: string; icon: string; number: number 
   page_triage:          { title: 'Page-Level Triage',       icon: 'target',      number: 2  },
   serp_landscape:       { title: 'SERP Landscape',          icon: 'search',      number: 3  },
   content_intelligence: { title: 'Content Intelligence',    icon: 'file-text',   number: 4  },
-  indexing_coverage:    { title: 'Indexing & Coverage',     icon: 'layers',      number: 5  },
-  gameplan:             { title: 'The Gameplan',            icon: 'zap',         number: 6  },
-  algorithm_impact:     { title: 'Algorithm Impact',        icon: 'shield',      number: 7  },
-  intent_migration:     { title: 'Intent Migration',        icon: 'layers',      number: 8  },
-  technical_health:     { title: 'CTR Modeling',            icon: 'bar-chart',   number: 9  },
-  site_architecture:    { title: 'Site Architecture',       icon: 'globe',       number: 10 },
-  branded_split:        { title: 'Branded vs Non-Branded',  icon: 'users',       number: 11 },
-  competitive_threats:  { title: 'Competitive Radar',       icon: 'users',       number: 12 },
-  revenue_attribution:  { title: 'Revenue Attribution',     icon: 'dollar',      number: 13 },
+  gameplan:             { title: 'The Gameplan',            icon: 'zap',         number: 5  },
+  algorithm_impact:     { title: 'Algorithm Impact',        icon: 'shield',      number: 6  },
+  intent_migration:     { title: 'Intent Migration',        icon: 'layers',      number: 7  },
+  technical_health:     { title: 'CTR Modeling',            icon: 'bar-chart',   number: 8  },
+  site_architecture:    { title: 'Site Architecture',       icon: 'globe',       number: 9  },
+  branded_split:        { title: 'Branded vs Non-Branded',  icon: 'users',       number: 10 },
+  competitive_threats:  { title: 'Competitive Radar',       icon: 'users',       number: 11 },
+  revenue_attribution:  { title: 'Revenue Attribution',     icon: 'dollar',      number: 12 },
 };
 
 // ---------------------------------------------------------------------------
@@ -373,18 +371,7 @@ export default function ReportPage() {
             </ModuleSection>
           )}
 
-          {/* Module 5: Indexing & Coverage */}
-          {modules.indexing_coverage && (
-            <ModuleSection
-              moduleKey="indexing_coverage"
-              expanded={expandedSections.has('indexing_coverage')}
-              onToggle={() => toggleSection('indexing_coverage')}
-            >
-              <Module5IndexingCoverage data={modules.indexing_coverage} />
-            </ModuleSection>
-          )}
-
-          {/* Module 6: The Gameplan */}
+          {/* Module 5: The Gameplan */}
           {modules.gameplan && (
             <ModuleSection
               moduleKey="gameplan"
@@ -395,7 +382,7 @@ export default function ReportPage() {
             </ModuleSection>
           )}
 
-          {/* Module 7: Algorithm Impact */}
+          {/* Module 6: Algorithm Impact */}
           {modules.algorithm_impact && (
             <ModuleSection
               moduleKey="algorithm_impact"
@@ -406,7 +393,7 @@ export default function ReportPage() {
             </ModuleSection>
           )}
 
-          {/* Module 8: Intent Migration */}
+          {/* Module 7: Intent Migration */}
           {modules.intent_migration && (
             <ModuleSection
               moduleKey="intent_migration"
@@ -417,7 +404,7 @@ export default function ReportPage() {
             </ModuleSection>
           )}
 
-          {/* Module 9: Technical Health */}
+          {/* Module 8: CTR Modeling */}
           {modules.technical_health && (
             <ModuleSection
               moduleKey="technical_health"
@@ -428,7 +415,7 @@ export default function ReportPage() {
             </ModuleSection>
           )}
 
-          {/* Module 10: Site Architecture */}
+          {/* Module 9: Site Architecture */}
           {modules.site_architecture && (
             <ModuleSection
               moduleKey="site_architecture"
@@ -439,7 +426,7 @@ export default function ReportPage() {
             </ModuleSection>
           )}
 
-          {/* Module 11: Branded Split */}
+          {/* Module 10: Branded vs Non-Branded */}
           {modules.branded_split && (
             <ModuleSection
               moduleKey="branded_split"
@@ -450,7 +437,7 @@ export default function ReportPage() {
             </ModuleSection>
           )}
 
-          {/* Module 12: Competitive Threats */}
+          {/* Module 11: Competitive Radar */}
           {modules.competitive_threats && (
             <ModuleSection
               moduleKey="competitive_threats"
@@ -461,7 +448,7 @@ export default function ReportPage() {
             </ModuleSection>
           )}
 
-          {/* Module 13: Revenue Attribution */}
+          {/* Module 12: Revenue Attribution */}
           {modules.revenue_attribution && (
             <ModuleSection
               moduleKey="revenue_attribution"
