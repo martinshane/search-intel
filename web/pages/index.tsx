@@ -319,6 +319,10 @@ export default function HomePage() {
                 <Link href="/compare" className="text-blue-400 hover:text-blue-300 underline">
                   Compare previous reports →
                 </Link>
+                <span className="text-slate-600 mx-2">·</span>
+                <Link href="/schedules" className="text-purple-400 hover:text-purple-300 underline">
+                  Manage scheduled reports →
+                </Link>
               </p>
             </div>
           )}
