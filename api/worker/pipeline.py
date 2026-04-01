@@ -472,9 +472,44 @@ class AnalysisPipeline:
             }
         
         elif module_name == "site_architecture":
-            # Module 9 handles the crawler dict format directly (reads "link_graph" key).
+            # Module 9: Site Architecture & Authority Flow.
+            # link_graph → crawler dict with pages + link_graph + stats
+            # page_performance → GSC page-level aggregates (clicks, impressions, position per URL)
+            # sitemap_urls → list of URLs from sitemap (extracted during crawl)
+            # query_data → GSC keyword data for topical relevance in link recommendations
+            crawl = data_context.get("internal_link_graph") or data_context.get("crawl_data")
+
+            # Extract sitemap_urls from crawl result if available
+            sitemap_urls = None
+            if isinstance(crawl, dict):
+                sitemap_urls = crawl.get("sitemap_urls")
+            # Also check top-level data_context (report_runner stores it there too)
+            if not sitemap_urls:
+                sitemap_urls = data_context.get("sitemap_urls")
+
+            # Convert page_performance to list-of-dicts (Module 9 expects this format)
+            page_perf_raw = data_context.get("gsc_page_summary")
+            page_performance = None
+            if page_perf_raw is not None:
+                if isinstance(page_perf_raw, pd.DataFrame) and not page_perf_raw.empty:
+                    page_performance = page_perf_raw.to_dict("records")
+                elif isinstance(page_perf_raw, list):
+                    page_performance = page_perf_raw
+
+            # Convert query_data to list-of-dicts
+            query_raw = data_context.get("gsc_keyword_data")
+            query_data = None
+            if query_raw is not None:
+                if isinstance(query_raw, pd.DataFrame) and not query_raw.empty:
+                    query_data = query_raw.to_dict("records")
+                elif isinstance(query_raw, list):
+                    query_data = query_raw
+
             inputs = {
-                "link_graph": data_context.get("internal_link_graph") or data_context.get("crawl_data"),
+                "link_graph": crawl,
+                "page_performance": page_performance,
+                "sitemap_urls": sitemap_urls,
+                "query_data": query_data,
             }
         
         elif module_name == "branded_split":
