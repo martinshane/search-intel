@@ -1242,16 +1242,173 @@ function IntentMigrationContent({ data }: { data: any }) {
 function TechnicalHealthContent({ data }: { data: any }) {
   if (!data) return <div className="text-gray-500">No data available</div>;
 
+  const keywordAnalysis = data.keyword_ctr_analysis || [];
+  const opportunities = data.serp_feature_opportunities || [];
+
+  // Prepare scatter data: expected vs actual CTR
+  const scatterData = keywordAnalysis.slice(0, 50).map((kw: any) => ({
+    keyword: kw.keyword,
+    expected: parseFloat(((kw.expected_ctr_contextual || kw.expected_ctr_generic || 0) * 100).toFixed(2)),
+    actual: parseFloat(((kw.actual_ctr || 0) * 100).toFixed(2)),
+    impressions: kw.impressions || 0,
+    position: kw.position || 0,
+    performance: (kw.actual_ctr || 0) > (kw.expected_ctr_contextual || kw.expected_ctr_generic || 0)
+      ? 'overperformer' : 'underperformer',
+  }));
+
+  const overperformers = keywordAnalysis.filter(
+    (kw: any) => (kw.actual_ctr || 0) > (kw.expected_ctr_contextual || kw.expected_ctr_generic || 0)
+  );
+  const underperformers = keywordAnalysis.filter(
+    (kw: any) => (kw.actual_ctr || 0) <= (kw.expected_ctr_contextual || kw.expected_ctr_generic || 0)
+  );
+
   return (
     <div className="space-y-6">
-      <div className="bg-white p-4 rounded-lg border border-gray-200">
-        <h3 className="text-sm font-semibold text-gray-700 mb-4">
-          CTR Performance Analysis
-        </h3>
-        <p className="text-sm text-gray-600">
-          Detailed CTR modeling and anomaly detection coming soon.
-        </p>
+      {/* Summary Metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <MetricCard
+          label="Model Accuracy (R\u00b2)"
+          value={data.ctr_model_accuracy ? `${(data.ctr_model_accuracy * 100).toFixed(0)}%` : 'N/A'}
+        />
+        <MetricCard
+          label="Overperformers"
+          value={overperformers.length}
+          className="text-green-600"
+        />
+        <MetricCard
+          label="Underperformers"
+          value={underperformers.length}
+          className="text-red-600"
+        />
       </div>
+
+      {/* CTR Scatter Plot: Expected vs Actual */}
+      {scatterData.length > 0 && (
+        <div className="bg-white p-4 rounded-lg border border-gray-200">
+          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+            Expected vs Actual CTR
+          </h3>
+          <p className="text-xs text-gray-500 mb-3">
+            Points above the diagonal are overperforming; below are underperforming relative to SERP context.
+          </p>
+          <ResponsiveContainer width="100%" height={350}>
+            <ScatterChart margin={{ top: 10, right: 20, bottom: 20, left: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis
+                type="number"
+                dataKey="expected"
+                name="Expected CTR"
+                tick={{ fontSize: 11 }}
+                label={{ value: 'Expected CTR (%)', position: 'insideBottom', offset: -10, fontSize: 12 }}
+              />
+              <YAxis
+                type="number"
+                dataKey="actual"
+                name="Actual CTR"
+                tick={{ fontSize: 11 }}
+                label={{ value: 'Actual CTR (%)', angle: -90, position: 'insideLeft', offset: 0, fontSize: 12 }}
+              />
+              <Tooltip
+                content={({ active, payload }: any) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0].payload;
+                  return (
+                    <div className="bg-white p-3 rounded shadow-lg border text-xs">
+                      <div className="font-semibold text-gray-900 mb-1">{d.keyword}</div>
+                      <div>Position: #{d.position}</div>
+                      <div>Expected CTR: {d.expected}%</div>
+                      <div>Actual CTR: {d.actual}%</div>
+                      <div>Impressions: {d.impressions.toLocaleString()}</div>
+                    </div>
+                  );
+                }}
+              />
+              <Scatter data={scatterData} fill="#3b82f6">
+                {scatterData.map((entry: any, index: number) => (
+                  <Cell
+                    key={index}
+                    fill={entry.performance === 'overperformer' ? '#22c55e' : '#ef4444'}
+                  />
+                ))}
+              </Scatter>
+              <ReferenceLine
+                segment={[{ x: 0, y: 0 }, { x: Math.max(...scatterData.map((d: any) => Math.max(d.expected, d.actual)), 10), y: Math.max(...scatterData.map((d: any) => Math.max(d.expected, d.actual)), 10) }]}
+                stroke="#94a3b8"
+                strokeDasharray="5 5"
+                label=""
+              />
+            </ScatterChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Top Underperformers — Title Rewrite Candidates */}
+      {underperformers.length > 0 && (
+        <div className="bg-white p-4 rounded-lg border border-gray-200">
+          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+            Title/Snippet Rewrite Candidates
+          </h3>
+          <p className="text-xs text-gray-500 mb-3">
+            Keywords where actual CTR is significantly below what the SERP context predicts — likely a title or meta description problem.
+          </p>
+          <div className="space-y-2">
+            {underperformers
+              .sort((a: any, b: any) => {
+                const gapA = (a.expected_ctr_contextual || a.expected_ctr_generic || 0) - (a.actual_ctr || 0);
+                const gapB = (b.expected_ctr_contextual || b.expected_ctr_generic || 0) - (b.actual_ctr || 0);
+                return gapB - gapA;
+              })
+              .slice(0, 10)
+              .map((kw: any, idx: number) => {
+                const expected = kw.expected_ctr_contextual || kw.expected_ctr_generic || 0;
+                const gap = expected - (kw.actual_ctr || 0);
+                return (
+                  <div key={idx} className="flex items-center justify-between p-3 bg-red-50 border border-red-100 rounded">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-gray-900 text-sm truncate">{kw.keyword}</div>
+                      <div className="text-xs text-gray-600 mt-1">
+                        Position #{kw.position} · {(kw.impressions || 0).toLocaleString()} impressions/mo
+                      </div>
+                    </div>
+                    <div className="text-right ml-4 flex-shrink-0">
+                      <div className="text-sm text-red-600 font-medium">
+                        -{(gap * 100).toFixed(1)}% CTR gap
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {((kw.actual_ctr || 0) * 100).toFixed(1)}% actual vs {(expected * 100).toFixed(1)}% expected
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
+      {/* SERP Feature Opportunities */}
+      {opportunities.length > 0 && (
+        <div className="bg-white p-4 rounded-lg border border-gray-200">
+          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+            SERP Feature Opportunities
+          </h3>
+          <div className="space-y-2">
+            {opportunities.slice(0, 8).map((opp: any, idx: number) => (
+              <div key={idx} className="flex items-center justify-between p-3 bg-green-50 border border-green-100 rounded">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-gray-900 text-sm truncate">{opp.keyword}</div>
+                  <div className="text-xs text-gray-600 mt-1">{opp.feature_type || opp.opportunity}</div>
+                </div>
+                <div className="text-right ml-4 flex-shrink-0">
+                  <div className="text-sm text-green-600 font-medium">
+                    +{(opp.estimated_click_gain || 0).toLocaleString()} clicks/mo
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1427,7 +1584,7 @@ function CompetitiveThreatsContent({ data }: { data: any }) {
   );
 }
 
-// Module 13: Revenue Attribution
+// Module 12: Revenue Attribution
 function RevenueAttributionContent({ data }: { data: any }) {
   if (!data) return <div className="text-gray-500">No data available</div>;
 
@@ -1513,4 +1670,37 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function PriorityBadge({ score }: {
+function PriorityBadge({ score }: { score: number }) {
+  const color =
+    score >= 80
+      ? 'bg-red-100 text-red-800'
+      : score >= 50
+      ? 'bg-yellow-100 text-yellow-800'
+      : 'bg-green-100 text-green-800';
+  const label =
+    score >= 80 ? 'Critical' : score >= 50 ? 'High' : 'Normal';
+
+  return (
+    <span className={`px-2 py-1 text-xs font-medium rounded ${color}`}>
+      {label} ({score.toFixed(0)})
+    </span>
+  );
+}
+
+function ThreatBadge({ level }: { level: string }) {
+  const colors: Record<string, string> = {
+    high: 'bg-red-100 text-red-800',
+    medium: 'bg-yellow-100 text-yellow-800',
+    low: 'bg-green-100 text-green-800',
+  };
+
+  return (
+    <span
+      className={`px-2 py-1 text-xs font-medium rounded ${
+        colors[level] || 'bg-gray-100 text-gray-800'
+      }`}
+    >
+      {level}
+    </span>
+  );
+}
