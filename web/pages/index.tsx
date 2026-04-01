@@ -20,6 +20,35 @@ interface User {
   ga4_properties: Property[];
 }
 
+/**
+ * Extract a bare domain from a GSC property URL.
+ *
+ * GSC properties come in several formats:
+ *   sc-domain:example.com   → "example.com"
+ *   https://example.com/    → "example.com"
+ *   http://www.example.com/ → "www.example.com"
+ *
+ * The API needs a bare domain (no protocol, no trailing slash) to
+ * build brand-term lists and to crawl the site.
+ */
+function extractDomain(gscProperty: string): string {
+  // sc-domain: prefix
+  if (gscProperty.startsWith('sc-domain:')) {
+    return gscProperty.replace('sc-domain:', '').trim();
+  }
+  // Full URL — strip protocol + trailing slash
+  try {
+    const url = new URL(gscProperty);
+    return url.hostname;
+  } catch {
+    // Fallback: strip common prefixes
+    return gscProperty
+      .replace(/^https?:\/\//, '')
+      .replace(/\/+$/, '')
+      .trim();
+  }
+}
+
 export default function HomePage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -33,6 +62,14 @@ export default function HomePage() {
     checkAuthStatus();
   }, []);
 
+  // Show a success message if redirected from OAuth
+  useEffect(() => {
+    if (router.query.auth === 'success') {
+      // Clean up the URL param
+      router.replace('/', undefined, { shallow: true });
+    }
+  }, [router.query.auth]);
+
   const checkAuthStatus = async () => {
     try {
       const response = await fetch(`${API_URL}/api/auth/status`, {
@@ -41,14 +78,16 @@ export default function HomePage() {
       
       if (response.ok) {
         const data = await response.json();
-        setUser(data);
-        
-        // Auto-select first property if only one exists
-        if (data.gsc_properties?.length === 1) {
-          setSelectedGscProperty(data.gsc_properties[0].id);
-        }
-        if (data.ga4_properties?.length === 1) {
-          setSelectedGa4Property(data.ga4_properties[0].id);
+        if (data.authenticated) {
+          setUser(data);
+
+          // Auto-select first property if only one exists
+          if (data.gsc_properties?.length === 1) {
+            setSelectedGscProperty(data.gsc_properties[0].id);
+          }
+          if (data.ga4_properties?.length === 1) {
+            setSelectedGa4Property(data.ga4_properties[0].id);
+          }
         }
       }
     } catch (err) {
@@ -92,6 +131,8 @@ export default function HomePage() {
     setError(null);
 
     try {
+      const domain = extractDomain(selectedGscProperty);
+
       const response = await fetch(`${API_URL}/api/reports/generate`, {
         method: 'POST',
         headers: {
@@ -101,16 +142,17 @@ export default function HomePage() {
         body: JSON.stringify({
           gsc_property: selectedGscProperty,
           ga4_property: selectedGa4Property || null,
+          domain: domain,
         }),
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to generate report');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || errorData.message || 'Failed to generate report');
       }
 
       const data = await response.json();
-      router.push(`/reports/${data.report_id}`);
+      router.push(`/report/${data.report_id}`);
     } catch (err: any) {
       setError(err.message || 'Failed to generate report');
       setGeneratingReport(false);
@@ -297,8 +339,8 @@ export default function HomePage() {
               </p>
               <p className="text-xs text-slate-500 text-center mt-2">
                 Already have reports?{' '}
-                <Link href="/compare" className="text-blue-400 hover:text-blue-300 underline">
-                  Compare previous reports →
+                <Link href="/report" className="text-blue-400 hover:text-blue-300 underline">
+                  View past reports →
                 </Link>
                 <span className="text-slate-600 mx-2">·</span>
                 <Link href="/schedules" className="text-purple-400 hover:text-purple-300 underline">
@@ -314,12 +356,12 @@ export default function HomePage() {
           <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
             <div className="flex flex-col sm:flex-row justify-between items-center gap-4 text-sm text-slate-400">
               <p className="text-center sm:text-left">
-                © 2025 Search Intelligence Report. All rights reserved.
+                © 2026 Clanker Marketing. All rights reserved.
               </p>
               <div className="flex flex-wrap justify-center gap-4 sm:gap-6">
+                <a href="https://clankermarketing.com" className="hover:text-white transition-colors">Consulting</a>
                 <a href="/privacy" className="hover:text-white transition-colors">Privacy Policy</a>
                 <a href="/terms" className="hover:text-white transition-colors">Terms of Service</a>
-                <a href="mailto:support@searchintel.report" className="hover:text-white transition-colors">Contact</a>
               </div>
             </div>
           </div>
