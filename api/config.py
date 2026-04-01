@@ -1,13 +1,56 @@
 """Configuration management for environment variables and settings."""
 
+import logging
 import os
 import re
+import uuid
 from typing import List, Optional
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger(__name__)
+
 # Shared version constant — used by main.py, health.py, and any other module
 APP_VERSION = "1.0.0"
+
+# ---------------------------------------------------------------------------
+# Generate a stable ephemeral secret if no env var is set.  Logged once at
+# import time so operators know they need to configure JWT_SECRET_KEY.
+# ---------------------------------------------------------------------------
+_EPHEMERAL_SECRET: Optional[str] = None
+
+
+def _resolve_jwt_secret() -> str:
+    """Resolve the JWT signing secret from environment variables.
+
+    Checks in order:
+      1. JWT_SECRET_KEY   (preferred — explicit for JWT signing)
+      2. SECRET_KEY        (generic fallback)
+      3. Generates a random UUID and logs a loud warning.
+
+    The ephemeral fallback keeps the app bootable in dev but any
+    production deployment MUST set one of the env vars — otherwise
+    every restart invalidates all user sessions.
+    """
+    global _EPHEMERAL_SECRET
+
+    jwt_key = os.getenv("JWT_SECRET_KEY", "").strip()
+    if jwt_key and jwt_key != "your-secret-key-change-in-production":
+        return jwt_key
+
+    secret_key = os.getenv("SECRET_KEY", "").strip()
+    if secret_key:
+        return secret_key
+
+    # Neither env var is set — generate ephemeral key
+    if _EPHEMERAL_SECRET is None:
+        _EPHEMERAL_SECRET = uuid.uuid4().hex + uuid.uuid4().hex  # 64 hex chars
+        logger.warning(
+            "⚠️  No JWT_SECRET_KEY or SECRET_KEY configured! "
+            "Using an ephemeral random key — all sessions will be lost on restart. "
+            "Set JWT_SECRET_KEY in your environment for persistent authentication."
+        )
+    return _EPHEMERAL_SECRET
 
 
 class Settings(BaseSettings):
@@ -109,6 +152,16 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore"
     )
+
+    @property
+    def jwt_secret_key(self) -> str:
+        """The actual secret used to sign and verify JWT tokens.
+
+        Resolves from JWT_SECRET_KEY → SECRET_KEY → ephemeral random.
+        All JWT-related code should use this property instead of
+        ``self.secret_key`` directly.
+        """
+        return _resolve_jwt_secret()
     
     def get_cors_origins(self) -> list[str]:
         """Build the full list of allowed CORS origins.
