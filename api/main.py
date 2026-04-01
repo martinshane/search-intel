@@ -203,35 +203,54 @@ async def log_requests(request: Request, call_next):
         raise
 
 
-# Include routers -- each wrapped in try/except so one failure
+# ---------------------------------------------------------------------------
+# Include routers — each wrapped in try/except so one broken import
 # does not prevent the remaining routers from loading.
+#
+# MOUNT STRATEGY (matches frontend URL expectations):
+#   Auth:      /api/auth/*      (index.tsx, schedules.tsx)
+#              /auth/*           (OAuth callback redirect URI compat)
+#   Reports:   /api/v1/reports/* (report/[id].tsx, compare.tsx)
+#              /api/reports/*    (index.tsx, progress.tsx)
+#              /reports/*        (legacy / direct API callers)
+#   Schedules: /schedules/*     (schedules.tsx)
+#   Modules:   /api/v1/modules/* (individual module endpoints)
+# ---------------------------------------------------------------------------
 app.include_router(health.router, prefix="/health", tags=["Health"])
 
 try:
     from .routers.auth import router as auth_router
-    app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
-    logger.info("Auth routes loaded successfully")
+    # Primary mount — matches frontend fetch("/api/auth/status") etc.
+    app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
+    # Secondary mount — keeps OAuth redirect URIs at /auth/callback working
+    app.include_router(auth_router, prefix="/auth", tags=["Authentication (compat)"])
+    logger.info("Auth routes loaded at /api/auth and /auth")
 except Exception as e:
     logger.warning("Could not load auth routes (will retry on first request): %s", e)
 
 try:
     from .routers.reports import router as reports_router
-    app.include_router(reports_router, prefix="/reports", tags=["Reports"])
-    logger.info("Report routes loaded successfully")
+    # Primary mount — matches report/[id].tsx fetch("/api/v1/reports/...")
+    app.include_router(reports_router, prefix="/api/v1/reports", tags=["Reports"])
+    # Secondary mount — matches index.tsx fetch("/api/reports/generate")
+    app.include_router(reports_router, prefix="/api/reports", tags=["Reports (v0)"])
+    # Tertiary mount — direct /reports/* for backward compat
+    app.include_router(reports_router, prefix="/reports", tags=["Reports (compat)"])
+    logger.info("Report routes loaded at /api/v1/reports, /api/reports, /reports")
 except Exception as e:
     logger.warning("Could not load report routes: %s", e)
 
 try:
     from .routers.schedules import router as schedules_router
     app.include_router(schedules_router, prefix="/schedules", tags=["Schedules"])
-    logger.info("Schedule routes loaded successfully")
+    logger.info("Schedule routes loaded at /schedules")
 except Exception as e:
     logger.warning("Could not load schedule routes: %s", e)
 
 try:
     from .routes.modules import router as modules_router
     app.include_router(modules_router, prefix="/api/v1/modules", tags=["Modules"])
-    logger.info("Module routes loaded successfully")
+    logger.info("Module routes loaded at /api/v1/modules")
 except Exception as e:
     logger.warning("Could not load module routes: %s", e)
 
