@@ -95,14 +95,30 @@ def _store_module_result(
     results: Optional[Dict],
     status: str,
 ) -> None:
-    """Upsert a row in report_modules for one analysis module."""
+    """Upsert a row in report_modules for one analysis module.
+
+    The report_modules table has a CHECK constraint limiting status to:
+    ('pending', 'running', 'completed', 'failed').  The pipeline also
+    produces 'skipped' (dependency not met) and 'success' statuses —
+    we map those to DB-safe values here.
+    """
+    # Map pipeline statuses to DB-allowed values
+    ALLOWED_STATUSES = {"pending", "running", "completed", "failed"}
+    if status == "success":
+        db_status = "completed"
+    elif status in ALLOWED_STATUSES:
+        db_status = status
+    else:
+        # 'skipped' and any unexpected status → 'failed'
+        db_status = "failed"
+
     row = {
         "report_id": report_id,
         "module_number": module_number,
         "module_name": module_name,
         "results": results,
-        "status": status,
-        "completed_at": datetime.utcnow().isoformat() if status in ("completed", "failed") else None,
+        "status": db_status,
+        "completed_at": datetime.utcnow().isoformat() if db_status in ("completed", "failed") else None,
     }
     try:
         # Try insert first; on conflict (report_id, module_number) do update
@@ -472,13 +488,29 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
             module_name = module_result.module_name
             module_num = MODULE_NUMBERS.get(module_name, 0)
 
+            # For skipped modules, store a structured result explaining why
+            # so the frontend can display a meaningful message.
+            if module_result.status == "skipped":
+                skip_reason = (
+                    module_result.error.user_message
+                    if module_result.error and module_result.error.user_message
+                    else "This analysis was skipped because a required previous analysis did not complete successfully."
+                )
+                results_to_store = {
+                    "skipped": True,
+                    "reason": skip_reason,
+                    "dependency_error": module_result.error.error_message if module_result.error else None,
+                }
+            else:
+                results_to_store = module_result.data
+
             _store_module_result(
                 supabase,
                 report_id,
                 module_name,
                 module_num,
-                module_result.data,
-                "completed" if module_result.status == "success" else module_result.status,
+                results_to_store,
+                module_result.status,
             )
             progress[f"module_{module_num}"] = module_result.status
 
