@@ -453,3 +453,114 @@ async def list_consulting_services(
     except Exception as e:
         logger.exception("Failed to list consulting services")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Report comparison (historical delta)
+# ---------------------------------------------------------------------------
+
+class ComparisonResponse(BaseModel):
+    """Response for report comparison."""
+    metadata: Dict[str, Any]
+    executive_summary: Dict[str, Any]
+    module_deltas: List[Dict[str, Any]]
+    modules_compared: int
+    modules_missing: List[int]
+
+
+@router.get("/{report_id}/compare")
+async def compare_reports(
+    report_id: str,
+    baseline_id: str = Query(..., description="Report ID of the baseline (older) report to compare against"),
+    user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Compare two completed reports and return a structured delta.
+
+    Compares the current report (report_id) against a baseline report
+    (baseline_id). Both reports must belong to the authenticated user
+    and must be in a completed state.
+
+    The response includes:
+    - executive_summary: high-level highlights and warnings
+    - module_deltas: per-module structured comparison for all 12 modules
+    - metadata: report IDs, domains, timestamps
+
+    Use this for:
+    - Historical comparison (this month vs last month)
+    - Tracking progress after implementing recommendations
+    - Weekly re-run email content
+    """
+    # Fetch both reports (ownership verified inside)
+    current_report = await _get_owned_report(report_id, user)
+    baseline_report = await _get_owned_report(baseline_id, user)
+
+    _require_completed(current_report, "Report comparison")
+    _require_completed(baseline_report, "Report comparison (baseline)")
+
+    # Verify same domain (comparing different sites makes no sense)
+    if current_report.get("domain") != baseline_report.get("domain"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot compare reports for different domains: "
+                f"{current_report.get('domain')} vs {baseline_report.get('domain')}"
+            ),
+        )
+
+    # Fetch module results for both reports
+    current_modules = _fetch_module_results(report_id)
+    baseline_modules = _fetch_module_results(baseline_id)
+
+    if not current_modules:
+        raise HTTPException(status_code=400, detail="No module results found for the current report.")
+    if not baseline_modules:
+        raise HTTPException(status_code=400, detail="No module results found for the baseline report.")
+
+    # Run comparison
+    try:
+        from api.services.report_comparison import compare_reports as do_compare
+        return do_compare(
+            current_modules=current_modules,
+            baseline_modules=baseline_modules,
+            current_meta=current_report,
+            baseline_meta=baseline_report,
+        )
+    except ImportError as e:
+        logger.error("Report comparison module missing: %s", e)
+        raise HTTPException(status_code=500, detail="Report comparison not available.")
+    except Exception as e:
+        logger.exception("Report comparison failed")
+        raise HTTPException(status_code=500, detail=f"Failed to compare reports: {str(e)}")
+
+
+@router.get("/user/history")
+async def list_report_history(
+    domain: Optional[str] = Query(None, description="Filter by domain"),
+    limit: int = Query(default=10, ge=1, le=50),
+    user: dict = Depends(get_current_user),
+) -> List[Dict[str, Any]]:
+    """
+    List completed reports for the user, suitable for selecting comparison pairs.
+
+    Returns reports ordered by creation date (newest first), optionally
+    filtered by domain. Each entry includes the report ID, domain, status,
+    and creation timestamp — enough to populate a comparison picker UI.
+    """
+    supabase = _get_supabase()
+    uid = _user_id(user)
+    try:
+        query = (
+            supabase.table("reports")
+            .select("id, domain, status, created_at, completed_at")
+            .eq("user_id", uid)
+            .in_("status", ["completed", "complete", "partial"])
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        if domain:
+            query = query.eq("domain", domain)
+        result = query.execute()
+        return result.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list report history: {str(e)}")
