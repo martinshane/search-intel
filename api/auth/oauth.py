@@ -39,8 +39,20 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile"
 ]
 
-# Initialize Supabase client
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Lazy Supabase client — avoids crash when env vars are missing at import time
+_supabase_client: Client = None
+
+
+def _get_supabase() -> Client:
+    """Lazy-initialise and return the module-level Supabase client."""
+    global _supabase_client
+    if _supabase_client is None:
+        url = os.getenv("SUPABASE_URL", "")
+        key = os.getenv("SUPABASE_KEY", "")
+        if not url or not key:
+            raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY environment variables")
+        _supabase_client = create_client(url, key)
+    return _supabase_client
 
 
 class TokenEncryption:
@@ -191,12 +203,12 @@ async def handle_oauth_callback(code: str, state: str) -> Dict[str, Any]:
             raise HTTPException(status_code=400, detail="Failed to get user email")
         
         # Check if user exists
-        result = supabase.table("users").select("*").eq("email", user_email).execute()
+        result = _get_supabase().table("users").select("*").eq("email", user_email).execute()
         
         if result.data:
             # Update existing user
             user_id = result.data[0]["id"]
-            supabase.table("users").update({
+            _get_supabase().table("users").update({
                 "gsc_token": encrypted_token,
                 "ga4_token": encrypted_token,  # Same token for both
                 "updated_at": datetime.utcnow().isoformat()
@@ -290,7 +302,7 @@ async def get_user_credentials(user_id: str) -> Credentials:
     """
     try:
         # Fetch user from Supabase
-        result = supabase.table("users").select("*").eq("id", user_id).execute()
+        result = _get_supabase().table("users").select("*").eq("id", user_id).execute()
         
         if not result.data:
             raise HTTPException(status_code=404, detail="User not found")
@@ -338,7 +350,7 @@ async def get_user_credentials(user_id: str) -> Credentials:
             
             encrypted_updated = encryptor.encrypt(updated_token_data)
             
-            supabase.table("users").update({
+            _get_supabase().table("users").update({
                 "gsc_token": encrypted_updated,
                 "ga4_token": encrypted_updated,
                 "updated_at": datetime.utcnow().isoformat()
@@ -379,7 +391,7 @@ async def revoke_user_tokens(user_id: str) -> Dict[str, bool]:
             )
         
         # Remove tokens from database
-        supabase.table("users").update({
+        _get_supabase().table("users").update({
             "gsc_token": None,
             "ga4_token": None,
             "updated_at": datetime.utcnow().isoformat()
