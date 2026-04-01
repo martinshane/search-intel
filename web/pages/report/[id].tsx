@@ -215,7 +215,7 @@ export default function ReportPage() {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const response = await fetch(`${API_BASE}/api/v1/reports/${id}`, { headers });
+      const response = await fetch(`${API_BASE}/api/v1/reports/${id}`, { headers, credentials: 'include' });
       if (!response.ok) {
         if (response.status === 401) {
           router.push('/');
@@ -285,6 +285,32 @@ export default function ReportPage() {
 
   const getBucketColor = (b: string) =>
     ({ growing: '#10b981', stable: '#6b7280', decaying: '#f59e0b', critical: '#ef4444' }[b] || '#6b7280');
+
+  // ---- PDF download with auth ----
+  const downloadPdf = useCallback(async () => {
+    if (!report) return;
+    try {
+      const tkn = typeof window !== 'undefined' ? localStorage.getItem('auth_token') || '' : '';
+      const hdrs: Record<string, string> = {};
+      if (tkn) hdrs['Authorization'] = `Bearer ${tkn}`;
+      const res = await fetch(`${API_BASE}/api/v1/reports/${report.id}/pdf`, {
+        headers: hdrs,
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error(`PDF export failed (HTTP ${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `search_intelligence_${(report.domain || 'report').replace(/\./g, '_')}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to download PDF');
+    }
+  }, [report]);
 
   // ---- Loading state ----
   if (loading) {
@@ -446,7 +472,7 @@ export default function ReportPage() {
               </div>
               <div className="flex items-center space-x-2 sm:space-x-4 ml-4">
                 <button
-                  onClick={() => window.open(`${API_BASE}/api/v1/reports/${report.id}/pdf`, '_blank')}
+                  onClick={downloadPdf}
                   className="hidden sm:flex items-center space-x-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition"
                 >
                   <Download className="w-4 h-4" />
@@ -465,7 +491,7 @@ export default function ReportPage() {
             <div className="sm:hidden border-t border-gray-200 bg-white">
               <div className="px-4 py-3 space-y-2">
                 <button
-                  onClick={() => window.open(`${API_BASE}/api/v1/reports/${report.id}/pdf`, '_blank')}
+                  onClick={downloadPdf}
                   className="w-full flex items-center space-x-2 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-50 rounded-lg hover:bg-gray-100 transition"
                 >
                   <Download className="w-4 h-4" />
