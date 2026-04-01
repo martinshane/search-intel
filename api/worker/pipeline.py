@@ -462,10 +462,13 @@ class AnalysisPipeline:
             }
         
         elif module_name == "technical_health":
-            # Module 8 accepts crawl_technical as a dict — no conversion needed.
+            # Module 8: CTR Modeling by SERP Context.
+            # gsc_coverage  → GSC keyword data (query, position, ctr, impressions)
+            # crawl_technical → SERP data from DataForSEO (features, competitors)
+            # The function uses legacy param names for pipeline backward-compat.
             inputs = {
                 "gsc_coverage": data_context.get("gsc_keyword_data"),
-                "crawl_technical": data_context.get("crawl_data"),
+                "crawl_technical": data_context.get("serp_data"),
             }
         
         elif module_name == "site_architecture":
