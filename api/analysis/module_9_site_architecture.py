@@ -773,6 +773,11 @@ class SiteArchitectureAnalyzer:
             key=lambda x: -x["pagerank_pct"],
         )[:30]
 
+        # D3 force-directed graph data (top 200 pages by PageRank)
+        graph_nodes, graph_edges = self._build_graph_data(
+            pagerank, orphans, hub_spoke, max_nodes=200,
+        )
+
         result = {
             "summary": summary,
             "graph_stats": {
@@ -792,10 +797,96 @@ class SiteArchitectureAnalyzer:
             "link_equity_bottlenecks": bottlenecks,
             "conversion_paths": conversion,
             "recommendations": recommendations,
+            "graph_nodes": graph_nodes,
+            "graph_edges": graph_edges,
         }
 
         logger.info("Site architecture analysis complete: %s", summary)
         return result
+
+    # ------------------------------------------------------------------
+    # 10. D3 graph data for frontend visualisation
+    # ------------------------------------------------------------------
+
+    def _build_graph_data(
+        self,
+        pagerank: Dict[str, float],
+        orphans: List[Dict[str, Any]],
+        hub_spoke: Dict[str, Any],
+        max_nodes: int = 200,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Build node and edge lists suitable for a D3 force-directed graph.
+
+        Selects the top *max_nodes* pages by PageRank (always including
+        orphan pages so they are visible in the graph).  Returns only edges
+        that connect pages within the selected set.
+
+        Each node carries:
+            id, pagerank, silo, internal_links_in, internal_links_out, is_orphan
+
+        Each edge carries:
+            source, target, weight (number of links between the pair)
+        """
+        orphan_urls = {o["url"] for o in orphans if isinstance(o, dict) and "url" in o}
+
+        # Build hub-based silo mapping: pages linked by a hub share its label
+        silo_map: Dict[str, str] = {}
+        for cluster in hub_spoke.get("clusters", []):
+            hub_url = cluster.get("hub_url", "")
+            if not hub_url:
+                continue
+            # Use last path segment of hub as silo name
+            try:
+                parts = urlparse(hub_url).path.strip("/").split("/")
+                silo_label = parts[0] if parts and parts[0] else "root"
+            except Exception:
+                silo_label = "root"
+            silo_map[hub_url] = silo_label
+            for target in self.adj.get(hub_url, set()):
+                if target not in silo_map:
+                    silo_map[target] = silo_label
+
+        # Rank all pages by pagerank; always include orphans
+        sorted_pages = sorted(pagerank.items(), key=lambda x: -x[1])
+        selected: set = set()
+        for url, _ in sorted_pages:
+            if len(selected) >= max_nodes:
+                break
+            selected.add(url)
+        # Force-include orphan pages even if outside top N
+        for u in orphan_urls:
+            selected.add(u)
+
+        # Build node list
+        nodes: List[Dict[str, Any]] = []
+        for url in selected:
+            nodes.append({
+                "id": url,
+                "pagerank": round(pagerank.get(url, 0) / 100, 6),  # normalise to 0-1
+                "silo": silo_map.get(url, "other"),
+                "internal_links_in": len(self.reverse_adj.get(url, set())),
+                "internal_links_out": len(self.adj.get(url, set())),
+                "is_orphan": url in orphan_urls,
+            })
+
+        # Build edge list (only between selected nodes)
+        edge_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+        for src in selected:
+            for dst in self.adj.get(src, set()):
+                if dst in selected:
+                    edge_counts[(src, dst)] += 1
+
+        edges: List[Dict[str, Any]] = [
+            {"source": s, "target": t, "weight": w}
+            for (s, t), w in edge_counts.items()
+        ]
+
+        logger.info(
+            "Graph data built: %d nodes, %d edges (from %d total pages)",
+            len(nodes), len(edges), len(self.all_nodes),
+        )
+        return nodes, edges
 
 
 # ---------------------------------------------------------------------------
