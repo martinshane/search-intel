@@ -140,6 +140,55 @@ def _fetch_user_credentials(supabase: Client, user_id: str) -> Dict[str, Any]:
     return {}
 
 
+def _decrypt_token(raw_token: Any) -> Dict[str, Any]:
+    """
+    Decrypt an OAuth token from its stored (potentially encrypted) form.
+
+    The oauth.py module encrypts tokens via Fernet before storing them in
+    Supabase JSONB fields.  The stored value is a base64-encoded encrypted
+    string.  This function handles three cases:
+
+    1. The token is already a plain dict (unencrypted or test data) → return as-is.
+    2. The token is an encrypted string → decrypt via TokenEncryption.
+    3. The token is None / empty → return empty dict.
+
+    Without this step, passing an encrypted string to GSCClient/GA4Client
+    causes AttributeError because str has no .get() method, silently
+    breaking ALL report generation.
+    """
+    if not raw_token:
+        return {}
+
+    # Already a dict — no decryption needed (backward compat / test data)
+    if isinstance(raw_token, dict):
+        # Verify it looks like a credential dict (has at least 'token' or 'access_token')
+        if raw_token.get("token") or raw_token.get("access_token") or raw_token.get("refresh_token"):
+            return raw_token
+        # Could be a nested encrypted structure — try decryption of values
+        logger.warning("Token dict has unexpected structure (keys: %s) — using as-is", list(raw_token.keys()))
+        return raw_token
+
+    # Must be an encrypted string — decrypt it
+    if isinstance(raw_token, str):
+        try:
+            from api.auth.oauth import encryptor
+            decrypted = encryptor.decrypt(raw_token)
+            logger.info("Successfully decrypted OAuth token (%d fields)", len(decrypted))
+            return decrypted
+        except ImportError:
+            logger.error("Cannot import encryptor from api.auth.oauth — token decryption unavailable")
+            return {}
+        except ValueError as exc:
+            logger.error("Failed to decrypt OAuth token: %s", exc)
+            return {}
+        except Exception as exc:
+            logger.error("Unexpected error decrypting token: %s", exc)
+            return {}
+
+    logger.warning("Token has unexpected type %s — returning empty", type(raw_token).__name__)
+    return {}
+
+
 def _ingest_gsc_data(credentials: Dict[str, Any], gsc_property: str) -> Dict[str, Any]:
     """
     Pull GSC data using the ingestion module.
@@ -419,8 +468,8 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
         _update_report_status(supabase, report_id, "ingesting", current_module=0)
 
         user_creds = _fetch_user_credentials(supabase, user_id)
-        gsc_token = user_creds.get("gsc_token") or {}
-        ga4_token = user_creds.get("ga4_token") or {}
+        gsc_token = _decrypt_token(user_creds.get("gsc_token"))
+        ga4_token = _decrypt_token(user_creds.get("ga4_token"))
 
         # Build data context from ingestion
         brand_terms = [domain.replace(".", ""), domain.split(".")[0]]
