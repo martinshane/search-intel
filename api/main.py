@@ -11,6 +11,7 @@ from httpx import HTTPError, TimeoutException
 from .config import settings, APP_VERSION
 
 from .routers import health  # health always loads; others are lazy
+from .middleware.rate_limiter import RateLimitMiddleware
 
 # Configure logging
 logging.basicConfig(
@@ -87,6 +88,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Rate limiting middleware — protects against abuse, especially for
+# report generation (DataForSEO budget) and auth brute-force.
+# Must be added AFTER CORSMiddleware so CORS preflight is not rate-limited.
+# ---------------------------------------------------------------------------
+app.add_middleware(RateLimitMiddleware)
+logger.info("Rate limiting middleware enabled")
 
 
 # Custom exception handlers
