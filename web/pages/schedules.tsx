@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
+import NavHeader from '../components/NavHeader';
 import { useRouter } from 'next/router';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -254,22 +255,7 @@ export default function SchedulesPage() {
       </Head>
 
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-        {/* Nav */}
-        <nav className="border-b border-slate-700/50 bg-slate-900/80 backdrop-blur-sm sticky top-0 z-50">
-          <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-            <Link href="/" className="text-white font-semibold text-lg hover:text-blue-400 transition-colors">
-              ← Search Intelligence
-            </Link>
-            <div className="flex gap-3">
-              <Link href="/compare" className="text-slate-400 hover:text-white text-sm transition-colors">
-                Compare Reports
-              </Link>
-              <Link href="/progress" className="text-slate-400 hover:text-white text-sm transition-colors">
-                Build Progress
-              </Link>
-            </div>
-          </div>
-        </nav>
+        <NavHeader activePage="schedules" />
 
         <main className="max-w-5xl mx-auto px-4 py-8">
           {/* Header */}
