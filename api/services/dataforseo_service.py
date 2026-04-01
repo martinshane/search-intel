@@ -10,7 +10,7 @@ from aiohttp import ClientSession, ClientTimeout
 import backoff
 from supabase import Client as SupabaseClient, create_client
 
-from config import settings
+from api.config import settings
 
 
 class DataForSEOService:
