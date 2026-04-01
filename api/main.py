@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from httpx import HTTPError, TimeoutException
 
 from .config import settings, APP_VERSION
+
 from .routers import health  # health always loads; others are lazy
 
 # Configure logging
@@ -26,6 +27,10 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Search Intelligence Report API v%s", APP_VERSION)
     logger.info("Environment: %s", settings.environment)
     logger.info("Debug mode: %s", settings.debug)
+    logger.info(
+        "CORS origins: %s (+ pattern matching for *.railway.app, *.vercel.app)",
+        settings.get_cors_origins(),
+    )
 
     # Check critical dependencies
     try:
@@ -55,10 +60,29 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
+# ---------------------------------------------------------------------------
+# CORS middleware — supports both explicit origins and regex patterns.
+#
+# Explicit origins come from settings.get_cors_origins() which merges
+# env vars, FRONTEND_URL, ALLOWED_ORIGINS, and hard-coded production
+# domains.  Regex patterns (e.g. *.railway.app) are handled by
+# allow_origin_regex for Railway preview deploys and similar.
+# ---------------------------------------------------------------------------
+
+_cors_origins = settings.get_cors_origins()
+
+# Build a combined regex from all patterns in config
+_cors_patterns = settings.cors_origin_patterns
+_cors_regex = None
+if _cors_patterns:
+    # Combine patterns with | and compile once
+    combined = "|".join(f"({p})" for p in _cors_patterns)
+    _cors_regex = combined
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.get_cors_origins(),
+    allow_origins=_cors_origins,
+    allow_origin_regex=_cors_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
