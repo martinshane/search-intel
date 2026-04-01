@@ -17,7 +17,7 @@ from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from supabase import create_client, Client
 from fastapi import HTTPException
@@ -71,7 +71,7 @@ class TokenEncryption:
             self.key = ENCRYPTION_KEY.encode()
         else:
             # Generate key from a salt (in production, use a proper KMS)
-            kdf = PBKDF2(
+            kdf = PBKDF2HMAC(
                 algorithm=hashes.SHA256(),
                 length=32,
                 salt=b"search_intelligence_salt_2024",  # In prod: unique per deployment
