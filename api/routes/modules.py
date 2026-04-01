@@ -7,15 +7,17 @@ The flow for every module:
     2. Look up the report in Supabase and verify ownership.
     3. Retrieve the user's decrypted OAuth credentials.
     4. Fetch the required data via helpers (GSC, GA4, SERP, crawl).
-    5. Run the analysis function.
-    6. Store results in the report_modules table.
+    5. Convert raw API responses to the format each analysis function expects.
+    6. Run the analysis function.
+    7. Store results in the report_modules table.
 """
 
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth.dependencies import get_current_user
@@ -35,7 +37,7 @@ from api.analysis.module_10_branded_split import analyze_branded_split
 from api.analysis.module_11_competitive_threats import analyze_competitive_threats
 from api.analysis.module_12_revenue_attribution import estimate_revenue_attribution
 
-# Data fetching helpers
+# Data helpers
 from api.helpers.gsc_helper import get_gsc_data
 from api.helpers.ga4_helper import get_ga4_data
 from api.helpers.serp_helper import get_serp_data
@@ -114,6 +116,136 @@ def _store_module_result(report_id: str, module_number: int, module_name: str, r
 
 
 # ---------------------------------------------------------------------------
+# GSC API response → DataFrame converters
+# ---------------------------------------------------------------------------
+
+def _gsc_to_date_df(gsc_response: Dict[str, Any]) -> pd.DataFrame:
+    """Convert GSC API response (dimensions=[date]) to a DataFrame.
+
+    Expected GSC row format:
+        {"keys": ["2025-01-15"], "clicks": 120, "impressions": 5000, "ctr": 0.024, "position": 12.3}
+
+    Returns DataFrame with columns: date, clicks, impressions, ctr, position
+    """
+    rows = gsc_response.get("rows", [])
+    records = []
+    for row in rows:
+        records.append({
+            "date": row["keys"][0],
+            "clicks": row.get("clicks", 0),
+            "impressions": row.get("impressions", 0),
+            "ctr": row.get("ctr", 0.0),
+            "position": row.get("position", 0.0),
+        })
+    df = pd.DataFrame(records)
+    if not df.empty and "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True)
+    return df
+
+
+def _gsc_to_page_date_df(gsc_response: Dict[str, Any]) -> pd.DataFrame:
+    """Convert GSC API response (dimensions=[page, date]) to a DataFrame.
+
+    Returns DataFrame with columns: page, date, clicks, impressions, ctr, position
+    """
+    rows = gsc_response.get("rows", [])
+    records = []
+    for row in rows:
+        records.append({
+            "page": row["keys"][0],
+            "date": row["keys"][1],
+            "clicks": row.get("clicks", 0),
+            "impressions": row.get("impressions", 0),
+            "ctr": row.get("ctr", 0.0),
+            "position": row.get("position", 0.0),
+        })
+    df = pd.DataFrame(records)
+    if not df.empty and "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def _gsc_to_query_page_df(gsc_response: Dict[str, Any]) -> pd.DataFrame:
+    """Convert GSC API response (dimensions=[query, page]) to a DataFrame.
+
+    Returns DataFrame with columns: query, page, clicks, impressions, ctr, position
+    """
+    rows = gsc_response.get("rows", [])
+    records = []
+    for row in rows:
+        records.append({
+            "query": row["keys"][0],
+            "page": row["keys"][1],
+            "clicks": row.get("clicks", 0),
+            "impressions": row.get("impressions", 0),
+            "ctr": row.get("ctr", 0.0),
+            "position": row.get("position", 0.0),
+        })
+    return pd.DataFrame(records)
+
+
+def _gsc_to_query_date_df(gsc_response: Dict[str, Any]) -> pd.DataFrame:
+    """Convert GSC API response (dimensions=[query, date]) to a DataFrame.
+
+    Returns DataFrame with columns: query, date, clicks, impressions, ctr, position
+    """
+    rows = gsc_response.get("rows", [])
+    records = []
+    for row in rows:
+        records.append({
+            "query": row["keys"][0],
+            "date": row["keys"][1],
+            "clicks": row.get("clicks", 0),
+            "impressions": row.get("impressions", 0),
+            "ctr": row.get("ctr", 0.0),
+            "position": row.get("position", 0.0),
+        })
+    df = pd.DataFrame(records)
+    if not df.empty and "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def _gsc_to_query_df(gsc_response: Dict[str, Any]) -> pd.DataFrame:
+    """Convert GSC API response (dimensions=[query]) to a DataFrame.
+
+    Returns DataFrame with columns: query, clicks, impressions, ctr, position
+    """
+    rows = gsc_response.get("rows", [])
+    records = []
+    for row in rows:
+        records.append({
+            "query": row["keys"][0],
+            "clicks": row.get("clicks", 0),
+            "impressions": row.get("impressions", 0),
+            "ctr": row.get("ctr", 0.0),
+            "position": row.get("position", 0.0),
+        })
+    return pd.DataFrame(records)
+
+
+def _derive_brand_terms(domain: str) -> List[str]:
+    """Derive likely brand terms from a domain name.
+
+    E.g. "kixie.com" -> ["kixie"]
+         "tradeify.co" -> ["tradeify"]
+         "my-brand-name.com" -> ["my brand name", "my-brand-name", "mybrandname"]
+    """
+    # Strip TLD and www
+    name = domain.lower().replace("www.", "")
+    name = name.split(".")[0]  # strip TLD
+    terms = [name]
+    if "-" in name:
+        terms.append(name.replace("-", " "))
+        terms.append(name.replace("-", ""))
+    if "_" in name:
+        terms.append(name.replace("_", " "))
+        terms.append(name.replace("_", ""))
+    return terms
+
+
+# ---------------------------------------------------------------------------
 # Module endpoints
 # ---------------------------------------------------------------------------
 
@@ -134,7 +266,8 @@ async def run_module_1(
         )
         if not gsc_data.get("rows"):
             raise HTTPException(status_code=400, detail="Insufficient GSC data for analysis")
-        results = analyze_health_trajectory(gsc_data)
+        df = _gsc_to_date_df(gsc_data)
+        results = analyze_health_trajectory(df)
         _store_module_result(report_id, 1, "health_trajectory", results)
         return {"module": 1, "status": "completed", "results": results}
     except HTTPException:
@@ -162,7 +295,8 @@ async def run_module_2(
         )
         if not gsc_data.get("rows"):
             raise HTTPException(status_code=400, detail="Insufficient GSC data for page triage")
-        results = analyze_page_triage(gsc_data)
+        df = _gsc_to_page_date_df(gsc_data)
+        results = analyze_page_triage(df)
         _store_module_result(report_id, 2, "page_triage", results)
         return {"module": 2, "status": "completed", "results": results}
     except HTTPException:
@@ -205,7 +339,9 @@ async def run_module_3(
             keywords=keywords,
             target_domain=report["domain"],
         )
-        results = analyze_serp_landscape(serp_data)
+        # Also pass GSC keyword data for richer analysis
+        gsc_keyword_df = _gsc_to_query_df(gsc_data)
+        results = analyze_serp_landscape(serp_data, gsc_keyword_data=gsc_keyword_df)
         _store_module_result(report_id, 3, "serp_landscape", results)
         return {"module": 3, "status": "completed", "results": results}
     except HTTPException:
@@ -231,8 +367,28 @@ async def run_module_4(
             site_url=report["gsc_property"],
             dimensions=["query", "page"],
         )
+        gsc_query_page_df = _gsc_to_query_page_df(gsc_data)
+
         crawl_data = await get_crawl_data(domain=report["domain"], max_pages=200)
-        results = analyze_content_intelligence(gsc_data, crawl_data)
+        # crawl_data is a dict with page-level info; convert to DataFrame for page_data
+        page_records = crawl_data.get("pages", []) if isinstance(crawl_data, dict) else []
+        page_data_df = pd.DataFrame(page_records) if page_records else pd.DataFrame()
+
+        # GA4 engagement data (optional — pass empty DataFrame if not available)
+        ga4_engagement_df = pd.DataFrame()
+        if report.get("ga4_property"):
+            try:
+                ga4_raw = await get_ga4_data(
+                    access_token=access_token,
+                    property_id=report["ga4_property"],
+                    metrics=["sessions", "engagementRate", "averageSessionDuration"],
+                    dimensions=["pagePath"],
+                )
+                ga4_engagement_df = pd.DataFrame(ga4_raw.get("rows", []))
+            except Exception as ga4_err:
+                logger.warning("GA4 engagement data unavailable for module 4: %s", ga4_err)
+
+        results = analyze_content_intelligence(gsc_query_page_df, page_data_df, ga4_engagement_df)
         _store_module_result(report_id, 4, "content_intelligence", results)
         return {"module": 4, "status": "completed", "results": results}
     except HTTPException:
@@ -252,17 +408,29 @@ async def run_module_5(
     report = await _get_report(report_id, current_user)
     _update_report_status(report_id, "running", 5)
     try:
-        # Gather results from modules 1-4
+        # Gather results from all previously completed modules
         sb = _get_supabase()
         prior = (
             sb.table("report_modules")
             .select("module_number, results")
             .eq("report_id", report_id)
-            .in_("module_number", [1, 2, 3, 4])
+            .in_("module_number", list(range(1, 13)))
             .execute()
         )
-        prior_results = {r["module_number"]: r["results"] for r in (prior.data or [])}
-        results = generate_gameplan(prior_results)
+        prior_map = {r["module_number"]: r["results"] for r in (prior.data or [])}
+
+        # Unpack into the keyword args that generate_gameplan expects
+        results = generate_gameplan(
+            health=prior_map.get(1, {}),
+            triage=prior_map.get(2, {}),
+            serp=prior_map.get(3, {}),
+            content=prior_map.get(4, {}),
+            algorithm=prior_map.get(6),
+            intent=prior_map.get(7),
+            ctr=prior_map.get(8),
+            architecture=prior_map.get(9),
+            branded=prior_map.get(10),
+        )
         _store_module_result(report_id, 5, "gameplan", results)
         return {"module": 5, "status": "completed", "results": results}
     except HTTPException:
@@ -288,7 +456,22 @@ async def run_module_6(
             site_url=report["gsc_property"],
             dimensions=["date"],
         )
-        results = analyze_algorithm_impacts(gsc_data)
+        daily_df = _gsc_to_date_df(gsc_data)
+
+        # Optionally feed in change points from module 1 if already completed
+        sb = _get_supabase()
+        m1 = (
+            sb.table("report_modules")
+            .select("results")
+            .eq("report_id", report_id)
+            .eq("module_number", 1)
+            .execute()
+        )
+        change_points = None
+        if m1.data:
+            change_points = m1.data[0]["results"].get("change_points")
+
+        results = analyze_algorithm_impacts(daily_df, change_points_from_module1=change_points)
         _store_module_result(report_id, 6, "algorithm_updates", results)
         return {"module": 6, "status": "completed", "results": results}
     except HTTPException:
@@ -314,7 +497,8 @@ async def run_module_7(
             site_url=report["gsc_property"],
             dimensions=["query", "date"],
         )
-        results = analyze_intent_migration(gsc_data)
+        query_ts_df = _gsc_to_query_date_df(gsc_data)
+        results = analyze_intent_migration(query_ts_df)
         _store_module_result(report_id, 7, "intent_migration", results)
         return {"module": 7, "status": "completed", "results": results}
     except HTTPException:
@@ -341,7 +525,12 @@ async def run_module_8(
             dimensions=["query", "page"],
         )
         crawl_data = await get_crawl_data(domain=report["domain"], max_pages=500)
-        results = analyze_technical_health(gsc_data, crawl_data)
+
+        # Pass data as the keyword args the function expects
+        results = analyze_technical_health(
+            gsc_coverage=gsc_data,
+            crawl_technical=crawl_data,
+        )
         _store_module_result(report_id, 8, "technical_health", results)
         return {"module": 8, "status": "completed", "results": results}
     except HTTPException:
@@ -362,7 +551,7 @@ async def run_module_9(
     _update_report_status(report_id, "running", 9)
     try:
         crawl_data = await get_crawl_data(domain=report["domain"], max_pages=1000)
-        results = analyze_site_architecture(crawl_data)
+        results = analyze_site_architecture(link_graph=crawl_data)
         _store_module_result(report_id, 9, "site_architecture", results)
         return {"module": 9, "status": "completed", "results": results}
     except HTTPException:
@@ -388,7 +577,9 @@ async def run_module_10(
             site_url=report["gsc_property"],
             dimensions=["query", "date"],
         )
-        results = analyze_branded_split(gsc_data, domain=report["domain"])
+        query_date_df = _gsc_to_query_date_df(gsc_data)
+        brand_terms = _derive_brand_terms(report["domain"])
+        results = analyze_branded_split(query_date_df, brand_terms=brand_terms)
         _store_module_result(report_id, 10, "branded_split", results)
         return {"module": 10, "status": "completed", "results": results}
     except HTTPException:
@@ -427,7 +618,11 @@ async def run_module_11(
             keywords=keywords,
             target_domain=report["domain"],
         )
-        results = analyze_competitive_threats(serp_data, domain=report["domain"])
+        results = analyze_competitive_threats(
+            serp_data,
+            gsc_data=gsc_data,
+            user_domain=report["domain"],
+        )
         _store_module_result(report_id, 11, "competitive_threats", results)
         return {"module": 11, "status": "completed", "results": results}
     except HTTPException:
@@ -453,15 +648,46 @@ async def run_module_12(
             site_url=report["gsc_property"],
             dimensions=["query", "page"],
         )
-        ga4_data = None
+
+        # Fetch GA4 data for conversion/engagement/ecommerce if GA4 is connected
+        ga4_conversions = None
+        ga4_engagement = None
+        ga4_ecommerce = None
         if report.get("ga4_property"):
-            ga4_data = await get_ga4_data(
-                access_token=access_token,
-                property_id=report["ga4_property"],
-                metrics=["sessions", "totalUsers", "conversions", "totalRevenue"],
-                dimensions=["pagePath", "date"],
-            )
-        results = estimate_revenue_attribution(gsc_data, ga4_data)
+            try:
+                ga4_conversions = await get_ga4_data(
+                    access_token=access_token,
+                    property_id=report["ga4_property"],
+                    metrics=["conversions", "totalUsers"],
+                    dimensions=["pagePath", "date"],
+                )
+            except Exception as ga4_err:
+                logger.warning("GA4 conversions unavailable for module 12: %s", ga4_err)
+            try:
+                ga4_engagement = await get_ga4_data(
+                    access_token=access_token,
+                    property_id=report["ga4_property"],
+                    metrics=["sessions", "engagementRate"],
+                    dimensions=["pagePath"],
+                )
+            except Exception as ga4_err:
+                logger.warning("GA4 engagement unavailable for module 12: %s", ga4_err)
+            try:
+                ga4_ecommerce = await get_ga4_data(
+                    access_token=access_token,
+                    property_id=report["ga4_property"],
+                    metrics=["totalRevenue", "ecommercePurchases"],
+                    dimensions=["pagePath"],
+                )
+            except Exception as ga4_err:
+                logger.warning("GA4 ecommerce unavailable for module 12: %s", ga4_err)
+
+        results = estimate_revenue_attribution(
+            gsc_data,
+            ga4_conversions=ga4_conversions,
+            ga4_engagement=ga4_engagement,
+            ga4_ecommerce=ga4_ecommerce,
+        )
         _store_module_result(report_id, 12, "revenue_attribution", results)
         _update_report_status(report_id, "completed")
         return {"module": 12, "status": "completed", "results": results}
