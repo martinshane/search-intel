@@ -1,7 +1,8 @@
 """Configuration management for environment variables and settings."""
 
 import os
-from typing import Optional
+import re
+from typing import List, Optional
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -33,10 +34,29 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
     
-    # CORS
+    # CORS — defaults include localhost for dev.  Production origins
+    # are added dynamically by get_cors_origins() from FRONTEND_URL,
+    # ALLOWED_ORIGINS, and auto-detected Railway patterns.
     cors_origins: list[str] = [
         "http://localhost:3000",
         "http://localhost:5173",
+    ]
+    
+    # FRONTEND_URL — set this in Railway to the web service's public URL.
+    # It is automatically appended to CORS allowed origins.
+    # Example: https://search-intel-web-production.up.railway.app
+    frontend_url: str = ""
+    
+    # Comma-separated extra origins to allow beyond the defaults.
+    # Example: https://clankermarketing.com,https://www.clankermarketing.com
+    allowed_origins: str = ""
+    
+    # Regex patterns for dynamic CORS origin matching (e.g. Railway
+    # preview deploys that get unique subdomains).  Evaluated only when
+    # the origin is not in the explicit allow-list.
+    cors_origin_patterns: list[str] = [
+        r"https://.*\.railway\.app$",
+        r"https://.*\.vercel\.app$",
     ]
     
     # Google OAuth — optional; auth endpoints check at request time
@@ -91,10 +111,68 @@ class Settings(BaseSettings):
     )
     
     def get_cors_origins(self) -> list[str]:
-        """Get CORS origins as a list, handling comma-separated env var."""
+        """Build the full list of allowed CORS origins.
+        
+        Merges:
+          1. cors_origins defaults / env var
+          2. FRONTEND_URL (if set)
+          3. ALLOWED_ORIGINS (comma-separated)
+          4. Hard-coded production domains
+        
+        Returns a deduplicated, stripped list.
+        """
+        origins: list[str] = []
+        
+        # 1. Default / env-var origins
         if isinstance(self.cors_origins, str):
-            return [origin.strip() for origin in self.cors_origins.split(",")]
-        return self.cors_origins
+            origins.extend(o.strip() for o in self.cors_origins.split(",") if o.strip())
+        else:
+            origins.extend(self.cors_origins)
+        
+        # 2. FRONTEND_URL — auto-added so operators only need one env var
+        if self.frontend_url:
+            url = self.frontend_url.rstrip("/")
+            origins.append(url)
+            # Also allow the www variant if it's a bare domain
+            if not url.startswith("https://www."):
+                www = url.replace("https://", "https://www.", 1)
+                origins.append(www)
+        
+        # 3. ALLOWED_ORIGINS — additional comma-separated origins
+        if self.allowed_origins:
+            origins.extend(
+                o.strip() for o in self.allowed_origins.split(",") if o.strip()
+            )
+        
+        # 4. Hard-coded production domains (always allowed)
+        origins.extend([
+            "https://clankermarketing.com",
+            "https://www.clankermarketing.com",
+        ])
+        
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for o in origins:
+            o = o.rstrip("/")
+            if o and o not in seen:
+                seen.add(o)
+                unique.append(o)
+        return unique
+    
+    def origin_matches_pattern(self, origin: str) -> bool:
+        """Check if an origin matches any of the dynamic CORS patterns.
+        
+        Used by the CORS middleware to allow Railway preview deploys
+        and other dynamic origins without listing them explicitly.
+        """
+        for pattern in self.cors_origin_patterns:
+            try:
+                if re.match(pattern, origin):
+                    return True
+            except re.error:
+                continue
+        return False
     
     def get_google_scopes(self) -> list[str]:
         """Get Google OAuth scopes as a list, handling comma-separated env var."""
