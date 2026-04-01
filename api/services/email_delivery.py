@@ -75,8 +75,95 @@ def _get_config() -> Dict[str, Any]:
 # Email template
 # ---------------------------------------------------------------------------
 
+def _esc(text: str) -> str:
+    """Escape HTML entities in user data."""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _build_comparison_section(comparison_summary: Dict[str, Any]) -> str:
+    """Build an HTML snippet summarising period-over-period comparison.
+
+    The comparison_summary dict is expected to contain keys such as:
+      - clicks_change_pct: float
+      - impressions_change_pct: float
+      - position_change: float
+      - improved_pages: int
+      - declined_pages: int
+      - summary_text: str (optional human-readable sentence)
+
+    Returns an HTML string to embed in the email body.  If the summary
+    is empty or missing useful keys, returns an empty string.
+    """
+    if not comparison_summary:
+        return ""
+
+    clicks_pct = comparison_summary.get("clicks_change_pct")
+    impressions_pct = comparison_summary.get("impressions_change_pct")
+    improved = comparison_summary.get("improved_pages")
+    declined = comparison_summary.get("declined_pages")
+    summary_text = comparison_summary.get("summary_text", "")
+
+    # Only render if we have at least one meaningful metric
+    has_data = any(v is not None for v in [clicks_pct, impressions_pct, improved, declined])
+    if not has_data and not summary_text:
+        return ""
+
+    rows_html = ""
+
+    if clicks_pct is not None:
+        arrow = "&#9650;" if clicks_pct >= 0 else "&#9660;"
+        colour = "#16a34a" if clicks_pct >= 0 else "#dc2626"
+        rows_html += (
+            f'<tr><td style="padding:6px 12px;color:#475569;font-size:14px;">Clicks</td>'
+            f'<td style="padding:6px 12px;color:{colour};font-size:14px;font-weight:600;">'
+            f'{arrow} {abs(clicks_pct):.1f}%</td></tr>'
+        )
+
+    if impressions_pct is not None:
+        arrow = "&#9650;" if impressions_pct >= 0 else "&#9660;"
+        colour = "#16a34a" if impressions_pct >= 0 else "#dc2626"
+        rows_html += (
+            f'<tr><td style="padding:6px 12px;color:#475569;font-size:14px;">Impressions</td>'
+            f'<td style="padding:6px 12px;color:{colour};font-size:14px;font-weight:600;">'
+            f'{arrow} {abs(impressions_pct):.1f}%</td></tr>'
+        )
+
+    if improved is not None and declined is not None:
+        rows_html += (
+            f'<tr><td style="padding:6px 12px;color:#475569;font-size:14px;">Pages improved</td>'
+            f'<td style="padding:6px 12px;color:#16a34a;font-size:14px;font-weight:600;">{improved}</td></tr>'
+            f'<tr><td style="padding:6px 12px;color:#475569;font-size:14px;">Pages declined</td>'
+            f'<td style="padding:6px 12px;color:#dc2626;font-size:14px;font-weight:600;">{declined}</td></tr>'
+        )
+
+    section = ""
+    if rows_html:
+        section += (
+            '<table role="presentation" cellpadding="0" cellspacing="0" '
+            'style="margin:0 0 16px;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;width:100%;">'
+            '<tr><td colspan="2" style="background-color:#f8fafc;padding:10px 12px;'
+            'font-size:13px;font-weight:600;color:#1e293b;border-bottom:1px solid #e2e8f0;">'
+            'Changes since last report</td></tr>'
+            f'{rows_html}</table>'
+        )
+
+    if summary_text:
+        section += (
+            f'<p style="margin:0 0 16px;color:#475569;font-size:13px;line-height:1.5;">'
+            f'{_esc(str(summary_text))}</p>'
+        )
+
+    return section
+
+
 def _build_html_body(report_data: Dict[str, Any]) -> str:
-    """Build a branded HTML email body."""
+    """Build a branded HTML email body with optional comparison section."""
     domain = report_data.get("domain", "your website")
     created = report_data.get("created_at", "")
     if isinstance(created, str) and len(created) >= 10:
@@ -85,6 +172,11 @@ def _build_html_body(report_data: Dict[str, Any]) -> str:
         date_str = datetime.utcnow().strftime("%Y-%m-%d")
 
     report_id = report_data.get("id", "")
+
+    # Build optional comparison section
+    comparison_html = _build_comparison_section(
+        report_data.get("comparison_summary", {})
+    )
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -120,6 +212,7 @@ def _build_html_body(report_data: Dict[str, Any]) -> str:
             <p style="margin:0 0 24px;color:#1e293b;font-size:15px;line-height:1.6;">
               Report date: <strong>{_esc(date_str)}</strong>
             </p>
+            {comparison_html}
             <!-- CTA -->
             <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto 24px;">
               <tr>
@@ -161,13 +254,35 @@ def _build_html_body(report_data: Dict[str, Any]) -> str:
 
 
 def _build_plain_body(report_data: Dict[str, Any]) -> str:
-    """Build a plain-text email body."""
+    """Build a plain-text email body with optional comparison summary."""
     domain = report_data.get("domain", "your website")
     created = report_data.get("created_at", "")
     if isinstance(created, str) and len(created) >= 10:
         date_str = created[:10]
     else:
         date_str = datetime.utcnow().strftime("%Y-%m-%d")
+
+    comparison = report_data.get("comparison_summary", {})
+    comparison_text = ""
+    if comparison:
+        lines = ["Changes since last report:"]
+        clicks_pct = comparison.get("clicks_change_pct")
+        if clicks_pct is not None:
+            direction = "up" if clicks_pct >= 0 else "down"
+            lines.append(f"  Clicks: {direction} {abs(clicks_pct):.1f}%")
+        impressions_pct = comparison.get("impressions_change_pct")
+        if impressions_pct is not None:
+            direction = "up" if impressions_pct >= 0 else "down"
+            lines.append(f"  Impressions: {direction} {abs(impressions_pct):.1f}%")
+        improved = comparison.get("improved_pages")
+        declined = comparison.get("declined_pages")
+        if improved is not None and declined is not None:
+            lines.append(f"  Pages improved: {improved}")
+            lines.append(f"  Pages declined: {declined}")
+        summary_text = comparison.get("summary_text")
+        if summary_text:
+            lines.append(f"  {summary_text}")
+        comparison_text = "\n".join(lines) + "\n\n"
 
     return f"""Search Intelligence Report
 ===========================
@@ -180,23 +295,12 @@ The full analysis is attached as a PDF. It covers all 12 modules
 including health trajectory, page triage, SERP landscape, content
 intelligence, and revenue attribution.
 
----
+{comparison_text}---
 Want help turning these insights into action?
 Book a consultation: https://clankermarketing.com/contact
 
 Clanker Marketing — https://clankermarketing.com
 """
-
-
-def _esc(text: str) -> str:
-    """Escape HTML entities in user data."""
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -249,11 +353,11 @@ async def _send_via_smtp(
         server.sendmail(config["from_email"], [to_email], msg.as_string())
         server.quit()
 
-        logger.info(f"Email sent via SMTP to {to_email}")
+        logger.info("Email sent via SMTP to %s", to_email)
         return {"success": True, "provider": "smtp"}
 
     except Exception as e:
-        logger.error(f"SMTP send failed: {e}")
+        logger.error("SMTP send failed: %s", e)
         return {"success": False, "error": str(e), "provider": "smtp"}
 
 
@@ -313,15 +417,15 @@ async def _send_via_sendgrid(
             )
 
         if resp.status_code in (200, 201, 202):
-            logger.info(f"Email sent via SendGrid to {to_email}")
+            logger.info("Email sent via SendGrid to %s", to_email)
             return {"success": True, "provider": "sendgrid", "status_code": resp.status_code}
         else:
             body = resp.text
-            logger.error(f"SendGrid error {resp.status_code}: {body}")
+            logger.error("SendGrid error %d: %s", resp.status_code, body)
             return {"success": False, "error": body, "provider": "sendgrid", "status_code": resp.status_code}
 
     except Exception as e:
-        logger.error(f"SendGrid send failed: {e}")
+        logger.error("SendGrid send failed: %s", e)
         return {"success": False, "error": str(e), "provider": "sendgrid"}
 
 
@@ -371,12 +475,12 @@ async def _send_sendgrid_urllib(
         with urllib.request.urlopen(req, timeout=30) as resp:
             status = resp.status
             if status in (200, 201, 202):
-                logger.info(f"Email sent via SendGrid (urllib) to {to_email}")
+                logger.info("Email sent via SendGrid (urllib) to %s", to_email)
                 return {"success": True, "provider": "sendgrid", "status_code": status}
             body = resp.read().decode("utf-8", errors="replace")
             return {"success": False, "error": body, "provider": "sendgrid", "status_code": status}
     except Exception as e:
-        logger.error(f"SendGrid urllib send failed: {e}")
+        logger.error("SendGrid urllib send failed: %s", e)
         return {"success": False, "error": str(e), "provider": "sendgrid"}
 
 
@@ -431,11 +535,11 @@ async def _send_via_ses(
             RawMessage={"Data": msg.as_string()},
         )
         msg_id = response.get("MessageId", "")
-        logger.info(f"Email sent via SES to {to_email} (MessageId: {msg_id})")
+        logger.info("Email sent via SES to %s (MessageId: %s)", to_email, msg_id)
         return {"success": True, "provider": "ses", "message_id": msg_id}
 
     except Exception as e:
-        logger.error(f"SES send failed: {e}")
+        logger.error("SES send failed: %s", e)
         return {"success": False, "error": str(e), "provider": "ses"}
 
 
@@ -459,6 +563,8 @@ async def send_report_email(
         Recipient email address.
     report_data : dict
         Report metadata (must contain at least ``domain`` and ``id``).
+        May also contain ``comparison_summary`` for period-over-period
+        comparison data to embed in the email body.
     pdf_bytes : bytes, optional
         Pre-generated PDF content.  If *None* the email is sent without an
         attachment and the body invites the user to download from the app.
