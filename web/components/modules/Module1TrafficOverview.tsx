@@ -15,7 +15,7 @@ import {
   ResponsiveContainer,
   ComposedChart,
 } from 'recharts';
-import { TrendingUp, TrendingDown, Minus, AlertCircle, Calendar, Activity, Monitor, Smartphone, Tablet } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, AlertCircle, Calendar, Activity } from 'lucide-react';
 
 interface TimeSeriesDataPoint {
   date: string;
@@ -143,24 +143,24 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
   };
 
   const formatPercentage = (num: number): string => {
-    return (num * 100).toFixed(1) + '%';
+    return num.toFixed(1) + '%';
   };
 
-  const formatDate = (dateString: string): string => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const formatPosition = (num: number): string => {
+    return num.toFixed(1);
   };
 
   const getTrendIcon = (direction: string) => {
     switch (direction) {
       case 'strong_growth':
       case 'growth':
-        return <TrendingUp className="w-5 h-5 text-green-600" />;
+        return <TrendingUp className="w-5 h-5 text-green-500" />;
       case 'strong_decline':
       case 'decline':
-        return <TrendingDown className="w-5 h-5 text-red-600" />;
+        return <TrendingDown className="w-5 h-5 text-red-500" />;
+      case 'flat':
       default:
-        return <Minus className="w-5 h-5 text-gray-600" />;
+        return <Minus className="w-5 h-5 text-gray-500" />;
     }
   };
 
@@ -172,6 +172,7 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
       case 'strong_decline':
       case 'decline':
         return 'text-red-600';
+      case 'flat':
       default:
         return 'text-gray-600';
     }
@@ -182,54 +183,70 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
       case 'strong_growth':
         return 'Strong Growth';
       case 'growth':
-        return 'Growing';
+        return 'Growth';
       case 'flat':
         return 'Stable';
       case 'decline':
-        return 'Declining';
+        return 'Decline';
       case 'strong_decline':
-        return 'Sharp Decline';
+        return 'Strong Decline';
       default:
-        return 'Unknown';
+        return direction;
     }
   };
 
-  const getChangeColor = (change: number): string => {
-    if (change > 0) return 'text-green-600';
-    if (change < 0) return 'text-red-600';
-    return 'text-gray-600';
+  const getChangeIndicator = (value: number) => {
+    if (value > 0) {
+      return (
+        <span className="flex items-center text-green-600">
+          <TrendingUp className="w-4 h-4 mr-1" />
+          +{formatPercentage(value)}
+        </span>
+      );
+    } else if (value < 0) {
+      return (
+        <span className="flex items-center text-red-600">
+          <TrendingDown className="w-4 h-4 mr-1" />
+          {formatPercentage(value)}
+        </span>
+      );
+    } else {
+      return (
+        <span className="flex items-center text-gray-600">
+          <Minus className="w-4 h-4 mr-1" />
+          {formatPercentage(value)}
+        </span>
+      );
+    }
   };
 
-  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+  const COLORS = {
+    primary: '#3b82f6',
+    secondary: '#8b5cf6',
+    success: '#10b981',
+    warning: '#f59e0b',
+    danger: '#ef4444',
+    info: '#06b6d4',
+  };
+
+  const DEVICE_COLORS = ['#3b82f6', '#8b5cf6', '#10b981'];
 
   if (loading) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-6">
-        <div className="animate-pulse">
-          <div className="h-8 bg-gray-200 rounded w-1/3 mb-6"></div>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            {[...Array(4)].map((_, i) => (
-              <div key={i} className="h-32 bg-gray-200 rounded"></div>
-            ))}
-          </div>
-          <div className="h-96 bg-gray-200 rounded mb-6"></div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            <div className="h-64 bg-gray-200 rounded"></div>
-            <div className="h-64 bg-gray-200 rounded"></div>
-          </div>
-        </div>
+      <div className="flex items-center justify-center py-12">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-6">
-        <div className="flex items-center gap-3 text-red-600">
-          <AlertCircle className="w-6 h-6" />
+      <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+        <div className="flex items-center">
+          <AlertCircle className="w-6 h-6 text-red-600 mr-3" />
           <div>
-            <h3 className="font-semibold text-lg">Error Loading Data</h3>
-            <p className="text-sm text-red-500">{error}</p>
+            <h3 className="text-lg font-semibold text-red-900">Error Loading Data</h3>
+            <p className="text-red-700 mt-1">{error}</p>
           </div>
         </div>
       </div>
@@ -238,204 +255,157 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
 
   if (!module1) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-6">
-        <div className="flex items-center gap-3 text-gray-600">
-          <AlertCircle className="w-6 h-6" />
-          <p>No data available</p>
-        </div>
+      <div className="bg-gray-50 border border-gray-200 rounded-lg p-6">
+        <p className="text-gray-600">No data available</p>
       </div>
     );
   }
 
-  const { traffic_overview, overall_direction, trend_slope_pct_per_month, change_points, seasonality, anomalies, forecast, top_pages, device_breakdown } = module1;
-
-  const getKeyInsights = (): string[] => {
-    const insights: string[] = [];
-
-    // Overall trend insight
-    const trendLabel = getTrendLabel(overall_direction);
-    const slopeAbs = Math.abs(trend_slope_pct_per_month);
-    insights.push(
-      `Your traffic is ${trendLabel.toLowerCase()} at ${slopeAbs.toFixed(1)}% per month (${trend_slope_pct_per_month > 0 ? '+' : ''}${trend_slope_pct_per_month.toFixed(1)}%/mo)`
-    );
-
-    // Seasonality insight
-    if (seasonality.monthly_cycle) {
-      insights.push(`Seasonal pattern detected: ${seasonality.cycle_description}`);
-    }
-    insights.push(`Best performing day: ${seasonality.best_day}, Worst: ${seasonality.worst_day}`);
-
-    // Change points
-    if (change_points.length > 0) {
-      const mostRecent = change_points[change_points.length - 1];
-      const direction = mostRecent.direction === 'drop' ? 'dropped' : 'spiked';
-      const magnitude = Math.abs(mostRecent.magnitude * 100).toFixed(0);
-      insights.push(
-        `Traffic ${direction} ${magnitude}% on ${formatDate(mostRecent.date)}`
-      );
-    }
-
-    // Anomalies
-    const recentAnomalies = anomalies.filter(a => {
-      const anomalyDate = new Date(a.date);
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      return anomalyDate >= thirtyDaysAgo;
-    });
-    if (recentAnomalies.length > 0) {
-      insights.push(`${recentAnomalies.length} traffic anomalies detected in the last 30 days`);
-    }
-
-    // Forecast
-    const forecast30d = forecast['30d'];
-    const currentClicks = traffic_overview.summary.total_clicks;
-    const projectedChange = ((forecast30d.clicks - currentClicks) / currentClicks * 100);
-    if (Math.abs(projectedChange) > 5) {
-      insights.push(
-        `30-day forecast: ${projectedChange > 0 ? '+' : ''}${projectedChange.toFixed(0)}% clicks (${formatNumber(forecast30d.clicks)} ±${formatNumber(forecast30d.ci_high - forecast30d.clicks)})`
-      );
-    }
-
-    // Device breakdown insight
-    if (device_breakdown && device_breakdown.length > 0) {
-      const topDevice = device_breakdown.reduce((prev, current) => 
-        (current.clicks > prev.clicks) ? current : prev
-      );
-      insights.push(`${topDevice.device} drives ${topDevice.percentage.toFixed(0)}% of your search traffic`);
-    }
-
-    return insights;
-  };
+  const { traffic_overview, summary, overall_direction, trend_slope_pct_per_month, change_points, seasonality, anomalies, forecast, top_pages, device_breakdown } = module1;
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-6 space-y-8">
-      {/* Header */}
-      <div className="border-b pb-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900">Traffic Overview & Health</h2>
-            <p className="text-sm text-gray-600 mt-1">90-day trend analysis, trajectory, and performance metrics</p>
-          </div>
-          <div className={`flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-50 ${getTrendColor(overall_direction)}`}>
+    <div className="space-y-8">
+      {/* Header Section */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-2xl font-bold text-gray-900">Traffic Health & Trajectory</h2>
+          <div className="flex items-center space-x-2">
             {getTrendIcon(overall_direction)}
-            <span className="font-semibold">{getTrendLabel(overall_direction)}</span>
+            <span className={`text-lg font-semibold ${getTrendColor(overall_direction)}`}>
+              {getTrendLabel(overall_direction)}
+            </span>
+          </div>
+        </div>
+        <p className="text-gray-600">
+          Your site is {overall_direction.replace('_', ' ')} at{' '}
+          <span className={`font-semibold ${trend_slope_pct_per_month >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            {trend_slope_pct_per_month > 0 ? '+' : ''}{formatPercentage(trend_slope_pct_per_month)}
+          </span>{' '}
+          per month
+        </p>
+      </div>
+
+      {/* Key Metrics Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-medium text-gray-600">Total Clicks</h3>
+            <Activity className="w-5 h-5 text-blue-500" />
+          </div>
+          <p className="text-3xl font-bold text-gray-900">{formatNumber(summary.total_clicks)}</p>
+          <div className="mt-2">
+            {getChangeIndicator(summary.clicks_change_pct)}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-medium text-gray-600">Total Impressions</h3>
+            <Activity className="w-5 h-5 text-purple-500" />
+          </div>
+          <p className="text-3xl font-bold text-gray-900">{formatNumber(summary.total_impressions)}</p>
+          <div className="mt-2">
+            {getChangeIndicator(summary.impressions_change_pct)}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-medium text-gray-600">Average CTR</h3>
+            <Activity className="w-5 h-5 text-green-500" />
+          </div>
+          <p className="text-3xl font-bold text-gray-900">{formatPercentage(summary.avg_ctr)}</p>
+          <div className="mt-2">
+            {getChangeIndicator(summary.ctr_change_pct)}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-medium text-gray-600">Average Position</h3>
+            <Activity className="w-5 h-5 text-orange-500" />
+          </div>
+          <p className="text-3xl font-bold text-gray-900">{formatPosition(summary.avg_position)}</p>
+          <div className="mt-2">
+            {summary.position_change < 0 ? (
+              <span className="flex items-center text-green-600">
+                <TrendingUp className="w-4 h-4 mr-1" />
+                {Math.abs(summary.position_change).toFixed(1)} (improved)
+              </span>
+            ) : summary.position_change > 0 ? (
+              <span className="flex items-center text-red-600">
+                <TrendingDown className="w-4 h-4 mr-1" />
+                +{summary.position_change.toFixed(1)} (declined)
+              </span>
+            ) : (
+              <span className="flex items-center text-gray-600">
+                <Minus className="w-4 h-4 mr-1" />
+                No change
+              </span>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-blue-900">Total Clicks</span>
-            <Activity className="w-5 h-5 text-blue-600" />
-          </div>
-          <div className="text-2xl font-bold text-blue-900">
-            {formatNumber(traffic_overview.summary.total_clicks)}
-          </div>
-          <div className={`text-sm mt-1 ${getChangeColor(traffic_overview.summary.clicks_change_pct)}`}>
-            {traffic_overview.summary.clicks_change_pct > 0 ? '+' : ''}
-            {traffic_overview.summary.clicks_change_pct.toFixed(1)}% vs prev period
-          </div>
-        </div>
-
-        <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-4 border border-green-200">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-green-900">Total Impressions</span>
-            <Activity className="w-5 h-5 text-green-600" />
-          </div>
-          <div className="text-2xl font-bold text-green-900">
-            {formatNumber(traffic_overview.summary.total_impressions)}
-          </div>
-          <div className={`text-sm mt-1 ${getChangeColor(traffic_overview.summary.impressions_change_pct)}`}>
-            {traffic_overview.summary.impressions_change_pct > 0 ? '+' : ''}
-            {traffic_overview.summary.impressions_change_pct.toFixed(1)}% vs prev period
-          </div>
-        </div>
-
-        <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg p-4 border border-purple-200">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-purple-900">Average CTR</span>
-            <Activity className="w-5 h-5 text-purple-600" />
-          </div>
-          <div className="text-2xl font-bold text-purple-900">
-            {formatPercentage(traffic_overview.summary.avg_ctr)}
-          </div>
-          <div className={`text-sm mt-1 ${getChangeColor(traffic_overview.summary.ctr_change_pct)}`}>
-            {traffic_overview.summary.ctr_change_pct > 0 ? '+' : ''}
-            {traffic_overview.summary.ctr_change_pct.toFixed(1)}% vs prev period
-          </div>
-        </div>
-
-        <div className="bg-gradient-to-br from-orange-50 to-orange-100 rounded-lg p-4 border border-orange-200">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-orange-900">Average Position</span>
-            <Activity className="w-5 h-5 text-orange-600" />
-          </div>
-          <div className="text-2xl font-bold text-orange-900">
-            {traffic_overview.summary.avg_position.toFixed(1)}
-          </div>
-          <div className={`text-sm mt-1 ${getChangeColor(-traffic_overview.summary.position_change)}`}>
-            {traffic_overview.summary.position_change < 0 ? '+' : ''}
-            {Math.abs(traffic_overview.summary.position_change).toFixed(1)} positions
-          </div>
-        </div>
-      </div>
-
-      {/* 90-Day Trend Chart */}
-      <div>
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">90-Day Performance Trend</h3>
+      {/* Traffic Over Time Chart */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Clicks Over Time</h3>
         <ResponsiveContainer width="100%" height={400}>
           <ComposedChart data={traffic_overview.timeseries}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
             <XAxis 
               dataKey="date" 
-              tickFormatter={formatDate}
-              stroke="#6b7280"
-              style={{ fontSize: '12px' }}
+              tick={{ fill: '#6b7280', fontSize: 12 }}
+              tickFormatter={(value) => {
+                const date = new Date(value);
+                return `${date.getMonth() + 1}/${date.getDate()}`;
+              }}
             />
             <YAxis 
               yAxisId="left"
-              stroke="#3b82f6"
-              style={{ fontSize: '12px' }}
+              tick={{ fill: '#6b7280', fontSize: 12 }}
               tickFormatter={formatNumber}
             />
             <YAxis 
               yAxisId="right"
               orientation="right"
-              stroke="#10b981"
-              style={{ fontSize: '12px' }}
+              tick={{ fill: '#6b7280', fontSize: 12 }}
               tickFormatter={formatNumber}
             />
             <Tooltip 
-              contentStyle={{ 
-                backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                border: '1px solid #e5e7eb',
-                borderRadius: '8px',
-                padding: '12px'
+              contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: '0.5rem' }}
+              formatter={(value: any, name: string) => {
+                if (name === 'clicks' || name === 'impressions') {
+                  return formatNumber(Number(value));
+                }
+                if (name === 'ctr') {
+                  return formatPercentage(Number(value));
+                }
+                if (name === 'position') {
+                  return formatPosition(Number(value));
+                }
+                return value;
               }}
-              formatter={(value: number, name: string) => {
-                if (name === 'ctr') return [formatPercentage(value), 'CTR'];
-                if (name === 'position') return [value.toFixed(1), 'Position'];
-                return [formatNumber(value), name];
+              labelFormatter={(label) => {
+                const date = new Date(label);
+                return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
               }}
-              labelFormatter={(label) => formatDate(label)}
             />
             <Legend />
-            <Area
+            <Area 
               yAxisId="right"
-              type="monotone"
-              dataKey="impressions"
-              fill="#10b981"
-              stroke="#10b981"
-              fillOpacity={0.2}
+              type="monotone" 
+              dataKey="impressions" 
+              fill="#e0e7ff" 
+              stroke="#8b5cf6" 
+              strokeWidth={2}
               name="Impressions"
             />
-            <Line
+            <Line 
               yAxisId="left"
-              type="monotone"
-              dataKey="clicks"
-              stroke="#3b82f6"
+              type="monotone" 
+              dataKey="clicks" 
+              stroke="#3b82f6" 
               strokeWidth={2}
               dot={false}
               name="Clicks"
@@ -444,9 +414,161 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
         </ResponsiveContainer>
       </div>
 
-      {/* Top Pages Table */}
+      {/* Change Points Section */}
+      {change_points && change_points.length > 0 && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Significant Changes</h3>
+          <div className="space-y-3">
+            {change_points.map((cp, idx) => (
+              <div key={idx} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                <div className="flex items-center space-x-3">
+                  <Calendar className="w-5 h-5 text-gray-500" />
+                  <div>
+                    <p className="font-medium text-gray-900">
+                      {new Date(cp.date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      {cp.direction === 'drop' ? 'Traffic Drop' : 'Traffic Spike'}
+                    </p>
+                  </div>
+                </div>
+                <div className={`text-lg font-semibold ${cp.direction === 'drop' ? 'text-red-600' : 'text-green-600'}`}>
+                  {cp.magnitude > 0 ? '+' : ''}{formatPercentage(cp.magnitude * 100)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Seasonality Insights */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Seasonality Insights</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between p-4 bg-green-50 rounded-lg">
+              <span className="text-sm font-medium text-gray-700">Best Day</span>
+              <span className="text-lg font-semibold text-green-700">{seasonality.best_day}</span>
+            </div>
+            <div className="flex items-center justify-between p-4 bg-red-50 rounded-lg">
+              <span className="text-sm font-medium text-gray-700">Worst Day</span>
+              <span className="text-lg font-semibold text-red-700">{seasonality.worst_day}</span>
+            </div>
+          </div>
+          <div className="flex flex-col justify-center">
+            {seasonality.monthly_cycle && (
+              <div className="p-4 bg-blue-50 rounded-lg">
+                <p className="text-sm font-medium text-gray-700 mb-1">Monthly Pattern</p>
+                <p className="text-sm text-gray-600">{seasonality.cycle_description}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Forecast Section */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Traffic Forecast</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="p-4 bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg">
+            <p className="text-sm font-medium text-gray-700 mb-2">30 Days</p>
+            <p className="text-2xl font-bold text-blue-900">{formatNumber(forecast['30d'].clicks)}</p>
+            <p className="text-xs text-gray-600 mt-1">
+              {formatNumber(forecast['30d'].ci_low)} - {formatNumber(forecast['30d'].ci_high)} clicks
+            </p>
+          </div>
+          <div className="p-4 bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg">
+            <p className="text-sm font-medium text-gray-700 mb-2">60 Days</p>
+            <p className="text-2xl font-bold text-purple-900">{formatNumber(forecast['60d'].clicks)}</p>
+            <p className="text-xs text-gray-600 mt-1">
+              {formatNumber(forecast['60d'].ci_low)} - {formatNumber(forecast['60d'].ci_high)} clicks
+            </p>
+          </div>
+          <div className="p-4 bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-lg">
+            <p className="text-sm font-medium text-gray-700 mb-2">90 Days</p>
+            <p className="text-2xl font-bold text-indigo-900">{formatNumber(forecast['90d'].clicks)}</p>
+            <p className="text-xs text-gray-600 mt-1">
+              {formatNumber(forecast['90d'].ci_low)} - {formatNumber(forecast['90d'].ci_high)} clicks
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Anomalies Section */}
+      {anomalies && anomalies.length > 0 && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Anomalies Detected</h3>
+          <div className="space-y-3">
+            {anomalies.slice(0, 5).map((anomaly, idx) => (
+              <div key={idx} className="flex items-center justify-between p-4 bg-yellow-50 rounded-lg border border-yellow-200">
+                <div className="flex items-center space-x-3">
+                  <AlertCircle className="w-5 h-5 text-yellow-600" />
+                  <div>
+                    <p className="font-medium text-gray-900">
+                      {new Date(anomaly.date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      {anomaly.type === 'discord' ? 'One-off event' : 'Recurring pattern'}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-lg font-semibold text-yellow-700">
+                  {anomaly.magnitude > 0 ? '+' : ''}{formatPercentage(anomaly.magnitude * 100)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Device Breakdown */}
+      {device_breakdown && device_breakdown.length > 0 && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Traffic by Device</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie
+                  data={device_breakdown}
+                  cx="50%"
+                  cy="50%"
+                  labelLine={false}
+                  label={({ device, percentage }) => `${device}: ${formatPercentage(percentage)}`}
+                  outerRadius={100}
+                  fill="#8884d8"
+                  dataKey="clicks"
+                >
+                  {device_breakdown.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={DEVICE_COLORS[index % DEVICE_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value: any) => formatNumber(Number(value))} />
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="space-y-3">
+              {device_breakdown.map((device, idx) => (
+                <div key={idx} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                  <div className="flex items-center space-x-3">
+                    <div 
+                      className="w-4 h-4 rounded-full" 
+                      style={{ backgroundColor: DEVICE_COLORS[idx % DEVICE_COLORS.length] }}
+                    />
+                    <span className="font-medium text-gray-900">{device.device}</span>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-semibold text-gray-900">{formatNumber(device.clicks)}</p>
+                    <p className="text-xs text-gray-600">{formatPercentage(device.percentage)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Top Pages */}
       {top_pages && top_pages.length > 0 && (
-        <div>
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Performing Pages</h3>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
@@ -473,9 +595,9 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {top_pages.slice(0, 10).map((page, index) => (
-                  <tr key={index} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 text-sm text-gray-900 max-w-md truncate" title={page.url}>
+                {top_pages.slice(0, 10).map((page, idx) => (
+                  <tr key={idx} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">
                       {page.url}
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-900 text-right font-medium">
@@ -484,162 +606,20 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
                     <td className="px-6 py-4 text-sm text-gray-600 text-right">
                       {formatNumber(page.impressions)}
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-900 text-right">
+                    <td className="px-6 py-4 text-sm text-gray-600 text-right">
                       {formatPercentage(page.ctr)}
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-900 text-right">
-                      {page.position.toFixed(1)}
+                    <td className="px-6 py-4 text-sm text-gray-600 text-right">
+                      {formatPosition(page.position)}
                     </td>
-                    <td className={`px-6 py-4 text-sm text-right font-medium ${getChangeColor(page.clicks_change_pct)}`}>
-                      {page.clicks_change_pct > 0 ? '+' : ''}
-                      {page.clicks_change_pct.toFixed(0)}%
+                    <td className="px-6 py-4 text-sm text-right">
+                      {getChangeIndicator(page.clicks_change_pct)}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </div>
-      )}
-
-      {/* Device Breakdown & Forecast */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Device Breakdown Pie Chart */}
-        {device_breakdown && device_breakdown.length > 0 && (
-          <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Device Breakdown</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={device_breakdown}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ device, percentage }) => `${device}: ${percentage.toFixed(0)}%`}
-                  outerRadius={100}
-                  fill="#8884d8"
-                  dataKey="clicks"
-                >
-                  {device_breakdown.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip 
-                  formatter={(value: number) => formatNumber(value)}
-                  contentStyle={{ 
-                    backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                    border: '1px solid #e5e7eb',
-                    borderRadius: '8px'
-                  }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="mt-4 space-y-2">
-              {device_breakdown.map((device, index) => (
-                <div key={index} className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    {device.device === 'DESKTOP' && <Monitor className="w-4 h-4 text-gray-600" />}
-                    {device.device === 'MOBILE' && <Smartphone className="w-4 h-4 text-gray-600" />}
-                    {device.device === 'TABLET' && <Tablet className="w-4 h-4 text-gray-600" />}
-                    <span className="text-sm font-medium text-gray-700">{device.device}</span>
-                  </div>
-                  <span className="text-sm text-gray-600">{formatNumber(device.clicks)} clicks</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Forecast */}
-        <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <Calendar className="w-5 h-5" />
-            Traffic Forecast
-          </h3>
-          <div className="space-y-4">
-            {(['30d', '60d', '90d'] as const).map((period) => {
-              const forecastData = forecast[period];
-              const periodLabel = period === '30d' ? '30 Days' : period === '60d' ? '60 Days' : '90 Days';
-              const changeFromCurrent = ((forecastData.clicks - traffic_overview.summary.total_clicks) / traffic_overview.summary.total_clicks * 100);
-              
-              return (
-                <div key={period} className="bg-white rounded-lg p-4 border border-gray-200">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-gray-700">{periodLabel}</span>
-                    <span className={`text-sm font-semibold ${getChangeColor(changeFromCurrent)}`}>
-                      {changeFromCurrent > 0 ? '+' : ''}{changeFromCurrent.toFixed(0)}%
-                    </span>
-                  </div>
-                  <div className="text-2xl font-bold text-gray-900">
-                    {formatNumber(forecastData.clicks)}
-                  </div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    Range: {formatNumber(forecastData.ci_low)} - {formatNumber(forecastData.ci_high)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* Key Insights */}
-      <div className="bg-blue-50 rounded-lg p-6 border border-blue-200">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-          <AlertCircle className="w-5 h-5 text-blue-600" />
-          Key Insights
-        </h3>
-        <ul className="space-y-2">
-          {getKeyInsights().map((insight, index) => (
-            <li key={index} className="flex items-start gap-2">
-              <span className="text-blue-600 mt-1">•</span>
-              <span className="text-sm text-gray-700">{insight}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {/* Change Points & Anomalies */}
-      {(change_points.length > 0 || anomalies.length > 0) && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {change_points.length > 0 && (
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Detected Change Points</h3>
-              <div className="space-y-2">
-                {change_points.slice(-5).reverse().map((cp, index) => (
-                  <div key={index} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-gray-700">{formatDate(cp.date)}</span>
-                      <span className={`text-sm font-semibold ${cp.direction === 'spike' ? 'text-green-600' : 'text-red-600'}`}>
-                        {cp.direction === 'spike' ? '+' : ''}{(cp.magnitude * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {anomalies.length > 0 && (
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Traffic Anomalies</h3>
-              <div className="space-y-2">
-                {anomalies.slice(-5).reverse().map((anomaly, index) => (
-                  <div key={index} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <span className="text-sm font-medium text-gray-700">{formatDate(anomaly.date)}</span>
-                        <span className="ml-2 text-xs text-gray-500">({anomaly.type})</span>
-                      </div>
-                      <span className="text-sm font-semibold text-gray-900">
-                        {(anomaly.magnitude * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
     </div>
