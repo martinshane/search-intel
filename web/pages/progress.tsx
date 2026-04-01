@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { CheckCircle, Clock, AlertCircle, Loader2, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
+
 interface ProgressStep {
   module: string;
   status: 'pending' | 'running' | 'complete' | 'failed';
@@ -48,8 +50,22 @@ export default function ProgressPage() {
   const [error, setError] = useState<string | null>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+
+  // Check authentication via cookie-based auth status endpoint
+  useEffect(() => {
+    fetch(`${API_BASE}/api/auth/status`, { credentials: 'include' })
+      .then(res => {
+        if (res.ok) return res.json();
+        throw new Error('Not authenticated');
+      })
+      .then(() => setAuthenticated(true))
+      .catch(() => setAuthenticated(false));
+  }, []);
 
   useEffect(() => {
+    if (authenticated !== true) return;
+
     const reportId = new URLSearchParams(window.location.search).get('id');
     if (!reportId) {
       setError('No report ID provided');
@@ -61,15 +77,18 @@ export default function ProgressPage() {
     const interval = setInterval(() => fetchProgress(reportId), 3000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [authenticated]);
 
   const fetchProgress = async (reportId: string) => {
     try {
-      const response = await fetch(`/api/reports/${reportId}/progress`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+      const response = await fetch(`${API_BASE}/api/reports/${reportId}/progress`, {
+        credentials: 'include',
       });
+
+      if (response.status === 401) {
+        setAuthenticated(false);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error('Failed to fetch progress');
@@ -154,6 +173,37 @@ export default function ProgressPage() {
     return new Date(timestamp).toLocaleTimeString();
   };
 
+  // Loading auth check
+  if (authenticated === null) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 text-blue-600 animate-spin mx-auto mb-4" />
+          <p className="text-gray-600">Checking authentication...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Not authenticated
+  if (authenticated === false) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg shadow-lg p-6 sm:p-8 max-w-md w-full text-center">
+          <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-gray-900 mb-2">Not Authenticated</h2>
+          <p className="text-gray-600 mb-4">Please connect your Google Search Console account first.</p>
+          <Link
+            href="/"
+            className="block w-full text-center bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Go to Connect Page
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   if (loading && !report) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
@@ -173,10 +223,10 @@ export default function ProgressPage() {
           <h2 className="text-xl font-bold text-gray-900 mb-2 text-center">Error</h2>
           <p className="text-gray-600 text-center mb-4">{error}</p>
           <Link
-            href="/dashboard"
+            href="/"
             className="block w-full text-center bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors"
           >
-            Back to Dashboard
+            Back to Home
           </Link>
         </div>
       </div>
@@ -201,7 +251,7 @@ export default function ProgressPage() {
             </div>
             {isComplete && (
               <Link
-                href={`/report?id=${report?.id}`}
+                href={`/report/${report?.id}`}
                 className="flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors whitespace-nowrap text-sm sm:text-base"
               >
                 View Report <ExternalLink className="w-4 h-4" />
@@ -348,13 +398,13 @@ export default function ProgressPage() {
           </div>
         </div>
 
-        {/* Back to Dashboard Link */}
+        {/* Back to Home Link */}
         <div className="mt-6 text-center">
           <Link
-            href="/dashboard"
+            href="/"
             className="text-sm sm:text-base text-blue-600 hover:text-blue-700 font-medium"
           >
-            ← Back to Dashboard
+            ← Back to Home
           </Link>
         </div>
       </div>
