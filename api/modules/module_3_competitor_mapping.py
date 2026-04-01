@@ -1,12 +1,3 @@
-"""
-Module 3: Competitor Mapping
-
-Identifies top 3-5 competitors based on keyword overlap from GSC data.
-Queries DataForSEO for user's top keywords, analyzes ranking domains,
-calculates overlap scores, and returns competitor list with shared keywords
-and relative visibility metrics.
-"""
-
 import logging
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
@@ -102,13 +93,14 @@ def is_branded_query(query: str, user_domain: str, brand_name: Optional[str] = N
     if brand_name and brand_name.lower() in query_lower:
         return True
     
-    # Common branded patterns
+    # Check for common branded patterns
     branded_patterns = [
-        f"{base_domain} login",
-        f"{base_domain} sign in",
-        f"{base_domain} contact",
-        f"{base_domain} support",
-        f"{base_domain} pricing",
+        "login",
+        "sign in",
+        "account",
+        "portal",
+        "dashboard",
+        user_domain.replace(".", " ")
     ]
     
     for pattern in branded_patterns:
@@ -118,523 +110,575 @@ def is_branded_query(query: str, user_domain: str, brand_name: Optional[str] = N
     return False
 
 
-def select_top_keywords(
-    gsc_keyword_data: pd.DataFrame,
-    user_domain: str,
-    brand_name: Optional[str] = None,
-    max_keywords: int = 100,
-    include_volatile: bool = True
-) -> List[Dict[str, Any]]:
-    """
-    Select top keywords for SERP analysis.
-    
-    Strategy:
-    1. Filter out branded queries
-    2. Take top N by impressions
-    3. Also include keywords with significant position changes (volatile)
-    
-    Args:
-        gsc_keyword_data: DataFrame with columns: query, clicks, impressions, position
-        user_domain: User's domain for branded filtering
-        brand_name: Optional explicit brand name
-        max_keywords: Maximum keywords to return
-        include_volatile: Whether to include volatile keywords
-    
-    Returns:
-        List of keyword dictionaries with query, impressions, position, clicks
-    """
-    if gsc_keyword_data.empty:
-        logger.warning("No GSC keyword data provided")
-        return []
-    
-    # Filter out branded queries
-    non_branded = []
-    for _, row in gsc_keyword_data.iterrows():
-        query = row.get("query", "")
-        if not is_branded_query(query, user_domain, brand_name):
-            non_branded.append({
-                "query": query,
-                "clicks": row.get("clicks", 0),
-                "impressions": row.get("impressions", 0),
-                "position": row.get("position", 0),
-                "ctr": row.get("ctr", 0)
-            })
-    
-    if not non_branded:
-        logger.warning("No non-branded keywords found")
-        return []
-    
-    # Sort by impressions
-    non_branded_sorted = sorted(
-        non_branded,
-        key=lambda x: x["impressions"],
-        reverse=True
-    )
-    
-    # Take top N by impressions
-    top_by_impressions = non_branded_sorted[:max_keywords]
-    
-    # TODO: Add volatile keyword detection when historical data is available
-    # For now, just return top by impressions
-    
-    logger.info(f"Selected {len(top_by_impressions)} keywords for competitor analysis")
-    return top_by_impressions
-
-
 def calculate_position_based_ctr(position: float) -> float:
     """
-    Estimate CTR based on organic position using empirical curve.
+    Estimate CTR based on position using industry average CTR curve.
     
-    Based on industry averages:
-    - Position 1: ~28%
-    - Position 2: ~15%
-    - Position 3: ~11%
-    - Position 10: ~2.5%
-    - Beyond page 1: <1%
+    Args:
+        position: SERP position
+    
+    Returns:
+        Estimated CTR (0-1)
     """
+    # Industry average CTR by position (approximate)
+    # Source: Various CTR studies
     if position <= 0:
         return 0.0
-    
-    if position <= 1:
-        return 0.28
+    elif position <= 1:
+        return 0.316
     elif position <= 2:
-        return 0.15
+        return 0.158
     elif position <= 3:
-        return 0.11
+        return 0.107
     elif position <= 4:
-        return 0.08
+        return 0.074
     elif position <= 5:
-        return 0.06
+        return 0.059
+    elif position <= 6:
+        return 0.048
+    elif position <= 7:
+        return 0.040
+    elif position <= 8:
+        return 0.034
+    elif position <= 9:
+        return 0.029
     elif position <= 10:
-        # Exponential decay from position 5 to 10
-        return 0.06 * math.exp(-0.3 * (position - 5))
+        return 0.025
+    elif position <= 20:
+        # Exponential decay for positions 11-20
+        return 0.025 * math.exp(-0.15 * (position - 10))
     else:
-        # Very low CTR beyond page 1
-        return 0.01 * math.exp(-0.1 * (position - 10))
+        # Very low CTR for positions beyond 20
+        return 0.005 * math.exp(-0.1 * (position - 20))
 
 
-def calculate_visibility_score(position: float, impressions: float) -> float:
+def calculate_visibility_score(position: float, search_volume: float) -> float:
     """
-    Calculate visibility score for a domain on a keyword.
+    Calculate visibility score for a keyword ranking.
     
-    Visibility = impressions × position_weight
-    Position weight favors higher rankings exponentially.
+    Visibility = CTR × Search Volume
+    
+    Args:
+        position: SERP position
+        search_volume: Monthly search volume (or impressions as proxy)
+    
+    Returns:
+        Visibility score
     """
-    if position <= 0 or impressions <= 0:
-        return 0.0
-    
-    # Position weight (exponential decay)
-    position_weight = math.exp(-0.15 * (position - 1))
-    
-    # Normalize impressions (log scale to handle wide ranges)
-    impression_weight = math.log1p(impressions)
-    
-    return position_weight * impression_weight
+    ctr = calculate_position_based_ctr(position)
+    return ctr * search_volume
 
 
 def determine_threat_level(
-    overlap_percentage: float,
+    overlap_pct: float,
     position_advantage: float,
-    keywords_shared: int,
-    visibility_share: float
+    keywords_shared: int
 ) -> str:
     """
-    Determine competitor threat level based on multiple factors.
+    Determine threat level of a competitor.
     
     Args:
-        overlap_percentage: Percentage of user's keywords where competitor appears
-        position_advantage: Average position difference (negative = competitor ranks better)
-        keywords_shared: Absolute number of shared keywords
-        visibility_share: Estimated visibility share of competitor
+        overlap_pct: Percentage of keywords shared
+        position_advantage: Average position advantage (negative if competitor ranks better)
+        keywords_shared: Number of keywords shared
     
     Returns:
-        Threat level: critical, high, medium, or low
+        Threat level: "low", "medium", "high", or "critical"
     """
-    score = 0
+    # Normalize position advantage (-20 to +20 scale to 0-1)
+    position_score = max(0, min(1, (-position_advantage + 10) / 20))
     
-    # Overlap factor (0-40 points)
-    if overlap_percentage >= 50:
-        score += 40
-    elif overlap_percentage >= 30:
-        score += 30
-    elif overlap_percentage >= 15:
-        score += 20
-    else:
-        score += 10
+    # Normalize overlap (0-100 to 0-1)
+    overlap_score = overlap_pct / 100
     
-    # Position advantage factor (0-30 points)
-    if position_advantage <= -5:  # Competitor ranks 5+ positions better
-        score += 30
-    elif position_advantage <= -2:
-        score += 20
-    elif position_advantage <= 0:
-        score += 10
+    # Normalize keyword count (logarithmic scale, 1-100+ keywords)
+    keyword_score = min(1, math.log(keywords_shared + 1) / math.log(100))
     
-    # Shared keywords volume factor (0-20 points)
-    if keywords_shared >= 50:
-        score += 20
-    elif keywords_shared >= 25:
-        score += 15
-    elif keywords_shared >= 10:
-        score += 10
-    else:
-        score += 5
+    # Weighted threat score
+    threat_score = (
+        position_score * 0.4 +  # How much better they rank
+        overlap_score * 0.35 +   # How much overlap
+        keyword_score * 0.25     # How many keywords
+    )
     
-    # Visibility share factor (0-10 points)
-    if visibility_share >= 0.3:
-        score += 10
-    elif visibility_share >= 0.15:
-        score += 7
-    elif visibility_share >= 0.05:
-        score += 5
-    else:
-        score += 2
-    
-    # Determine level based on total score
-    if score >= 75:
+    if threat_score >= 0.7:
         return "critical"
-    elif score >= 55:
+    elif threat_score >= 0.5:
         return "high"
-    elif score >= 35:
+    elif threat_score >= 0.3:
         return "medium"
     else:
         return "low"
 
 
-async def analyze_competitor_mapping(
-    gsc_keyword_data: pd.DataFrame,
+def select_top_keywords_for_analysis(
+    gsc_data: pd.DataFrame,
     user_domain: str,
-    dataforseo_client: DataForSEOClient,
-    brand_name: Optional[str] = None,
     max_keywords: int = 100,
-    min_competitor_overlap: int = 5,
-    top_n_competitors: int = 5,
-    location_code: int = 2840,  # USA
+    brand_name: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Select top non-branded keywords from GSC data for competitor analysis.
+    
+    Args:
+        gsc_data: GSC query data DataFrame
+        user_domain: User's domain
+        max_keywords: Maximum number of keywords to analyze
+        brand_name: Optional brand name for branded query filtering
+    
+    Returns:
+        List of keyword dictionaries with query, impressions, position
+    """
+    if gsc_data.empty:
+        logger.warning("Empty GSC data provided for keyword selection")
+        return []
+    
+    # Ensure required columns exist
+    required_cols = ['query', 'impressions', 'position']
+    if not all(col in gsc_data.columns for col in required_cols):
+        logger.error(f"GSC data missing required columns. Has: {gsc_data.columns.tolist()}")
+        return []
+    
+    # Filter out branded queries
+    non_branded = gsc_data[
+        ~gsc_data['query'].apply(lambda q: is_branded_query(q, user_domain, brand_name))
+    ].copy()
+    
+    logger.info(f"Filtered {len(gsc_data)} queries to {len(non_branded)} non-branded queries")
+    
+    if non_branded.empty:
+        logger.warning("No non-branded queries found")
+        return []
+    
+    # Sort by impressions descending
+    non_branded = non_branded.sort_values('impressions', ascending=False)
+    
+    # Take top N
+    top_keywords = non_branded.head(max_keywords)
+    
+    # Convert to list of dicts
+    keywords = []
+    for _, row in top_keywords.iterrows():
+        keywords.append({
+            'query': row['query'],
+            'impressions': int(row['impressions']),
+            'position': float(row['position']),
+            'clicks': int(row.get('clicks', 0)),
+            'ctr': float(row.get('ctr', 0))
+        })
+    
+    logger.info(f"Selected {len(keywords)} keywords for competitor analysis")
+    return keywords
+
+
+async def fetch_serp_data_for_keywords(
+    keywords: List[Dict[str, Any]],
+    dataforseo_client: DataForSEOClient,
+    location_code: int = 2840,  # United States
     language_code: str = "en"
 ) -> Dict[str, Any]:
     """
-    Identify top competitors based on keyword overlap and visibility.
+    Fetch SERP data for keywords via DataForSEO.
     
     Args:
-        gsc_keyword_data: DataFrame with GSC keyword performance data
-        user_domain: User's domain
-        dataforseo_client: DataForSEO API client
-        brand_name: Optional brand name for filtering
-        max_keywords: Maximum keywords to analyze
-        min_competitor_overlap: Minimum shared keywords to be considered a competitor
-        top_n_competitors: Number of top competitors to return
-        location_code: DataForSEO location code
-        language_code: Language code
+        keywords: List of keyword dictionaries
+        dataforseo_client: DataForSEO client instance
+        location_code: Location code for SERP
+        language_code: Language code for SERP
     
     Returns:
-        Dictionary with competitor analysis results
+        Dictionary mapping query -> SERP data
     """
-    logger.info("Starting competitor mapping analysis")
+    if not keywords:
+        logger.warning("No keywords provided for SERP fetching")
+        return {}
     
+    logger.info(f"Fetching SERP data for {len(keywords)} keywords")
+    
+    serp_results = {}
+    batch_size = 10  # Process in batches to avoid rate limits
+    
+    for i in range(0, len(keywords), batch_size):
+        batch = keywords[i:i + batch_size]
+        
+        for kw in batch:
+            query = kw['query']
+            
+            try:
+                # Fetch live SERP data
+                serp_data = await dataforseo_client.get_serp_results(
+                    keyword=query,
+                    location_code=location_code,
+                    language_code=language_code
+                )
+                
+                if serp_data and 'items' in serp_data:
+                    serp_results[query] = serp_data
+                    logger.debug(f"Fetched SERP data for: {query}")
+                else:
+                    logger.warning(f"No SERP data returned for: {query}")
+                    
+            except Exception as e:
+                logger.error(f"Error fetching SERP data for '{query}': {str(e)}")
+                continue
+    
+    logger.info(f"Successfully fetched SERP data for {len(serp_results)} keywords")
+    return serp_results
+
+
+def extract_competitors_from_serp(
+    serp_data: Dict[str, Any],
+    user_domain: str,
+    gsc_keywords: List[Dict[str, Any]]
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Extract competitor domains and their positions from SERP data.
+    
+    Args:
+        serp_data: Dictionary mapping query -> SERP results
+        user_domain: User's domain to exclude
+        gsc_keywords: Original keyword list with GSC metrics
+    
+    Returns:
+        Dictionary mapping competitor domain -> list of keyword ranking data
+    """
+    competitor_rankings = defaultdict(list)
+    
+    # Create lookup for GSC data
+    gsc_lookup = {kw['query']: kw for kw in gsc_keywords}
+    
+    for query, serp in serp_data.items():
+        if 'items' not in serp:
+            continue
+        
+        gsc_data = gsc_lookup.get(query, {})
+        user_position = gsc_data.get('position', 0)
+        impressions = gsc_data.get('impressions', 0)
+        
+        # Extract organic results
+        items = serp.get('items', [])
+        if not items:
+            continue
+        
+        # Get organic results (first item usually contains them)
+        organic_results = []
+        for item in items:
+            if item.get('type') == 'organic':
+                organic_results.append(item)
+        
+        # Parse rankings
+        for result in organic_results[:20]:  # Top 20 positions
+            url = result.get('url', '')
+            domain = extract_domain(url)
+            position = result.get('rank_absolute', 0)
+            
+            # Skip if it's the user's domain
+            if domain == user_domain:
+                continue
+            
+            # Skip invalid domains
+            if not domain or domain == '':
+                continue
+            
+            competitor_rankings[domain].append({
+                'query': query,
+                'position': position,
+                'user_position': user_position,
+                'impressions': impressions,
+                'url': url,
+                'title': result.get('title', ''),
+                'description': result.get('description', '')
+            })
+    
+    logger.info(f"Extracted {len(competitor_rankings)} competitors from SERP data")
+    return dict(competitor_rankings)
+
+
+def calculate_competitor_metrics(
+    competitor_rankings: Dict[str, List[Dict[str, Any]]],
+    total_keywords_analyzed: int
+) -> List[CompetitorMetrics]:
+    """
+    Calculate detailed metrics for each competitor.
+    
+    Args:
+        competitor_rankings: Dictionary mapping domain -> keyword rankings
+        total_keywords_analyzed: Total number of keywords analyzed
+    
+    Returns:
+        List of CompetitorMetrics objects
+    """
+    competitors = []
+    
+    for domain, rankings in competitor_rankings.items():
+        if not rankings:
+            continue
+        
+        # Basic counts
+        keywords_shared = len(rankings)
+        overlap_percentage = (keywords_shared / total_keywords_analyzed * 100) if total_keywords_analyzed > 0 else 0
+        
+        # Position metrics
+        positions = [r['position'] for r in rankings if r['position'] > 0]
+        user_positions = [r['user_position'] for r in rankings if r['user_position'] > 0]
+        
+        if not positions:
+            continue
+        
+        avg_position = np.mean(positions)
+        median_position = np.median(positions)
+        avg_user_position = np.mean(user_positions) if user_positions else 0
+        
+        # Position advantage (negative if competitor ranks better)
+        position_advantage = avg_user_position - avg_position
+        
+        # Calculate visibility share
+        total_visibility = 0
+        competitor_visibility = 0
+        
+        for ranking in rankings:
+            impressions = ranking.get('impressions', 0)
+            comp_pos = ranking.get('position', 0)
+            user_pos = ranking.get('user_position', 0)
+            
+            if impressions > 0 and comp_pos > 0:
+                # Total potential visibility for this keyword
+                total_vis = impressions
+                total_visibility += total_vis
+                
+                # Competitor's visibility
+                comp_vis = calculate_visibility_score(comp_pos, impressions)
+                competitor_visibility += comp_vis
+        
+        visibility_share = (competitor_visibility / total_visibility) if total_visibility > 0 else 0
+        
+        # Determine threat level
+        threat_level = determine_threat_level(
+            overlap_percentage,
+            position_advantage,
+            keywords_shared
+        )
+        
+        # Create metrics object
+        competitor = CompetitorMetrics(
+            domain=domain,
+            keywords_shared=keywords_shared,
+            overlap_percentage=overlap_percentage,
+            avg_position=avg_position,
+            median_position=median_position,
+            avg_user_position_for_shared=avg_user_position,
+            position_advantage=position_advantage,
+            estimated_visibility_share=visibility_share,
+            threat_level=threat_level,
+            shared_keywords=rankings
+        )
+        
+        competitors.append(competitor)
+    
+    # Sort by overlap percentage descending
+    competitors.sort(key=lambda c: c.overlap_percentage, reverse=True)
+    
+    logger.info(f"Calculated metrics for {len(competitors)} competitors")
+    return competitors
+
+
+def calculate_aggregate_metrics(
+    competitors: List[CompetitorMetrics],
+    user_domain: str,
+    total_keywords: int
+) -> Dict[str, Any]:
+    """
+    Calculate aggregate competitive metrics.
+    
+    Args:
+        competitors: List of competitor metrics
+        user_domain: User's domain
+        total_keywords: Total keywords analyzed
+    
+    Returns:
+        Dictionary of aggregate metrics
+    """
+    if not competitors:
+        return {
+            "total_competitors_found": 0,
+            "avg_competitors_per_keyword": 0,
+            "competitive_intensity": "low",
+            "user_avg_advantage": 0,
+            "market_concentration": 0
+        }
+    
+    # Count competitors per threat level
+    threat_counts = Counter(c.threat_level for c in competitors)
+    
+    # Calculate average number of competitors per keyword
+    total_appearances = sum(c.keywords_shared for c in competitors)
+    avg_competitors_per_kw = total_appearances / total_keywords if total_keywords > 0 else 0
+    
+    # Competitive intensity classification
+    if avg_competitors_per_kw >= 8:
+        competitive_intensity = "very_high"
+    elif avg_competitors_per_kw >= 6:
+        competitive_intensity = "high"
+    elif avg_competitors_per_kw >= 4:
+        competitive_intensity = "medium"
+    else:
+        competitive_intensity = "low"
+    
+    # Average position advantage across all competitors
+    avg_advantage = np.mean([c.position_advantage for c in competitors])
+    
+    # Market concentration (top 3 competitors' share)
+    top_3_share = sum(c.overlap_percentage for c in competitors[:3])
+    
+    return {
+        "total_competitors_found": len(competitors),
+        "competitors_by_threat": dict(threat_counts),
+        "avg_competitors_per_keyword": round(avg_competitors_per_kw, 2),
+        "competitive_intensity": competitive_intensity,
+        "user_avg_position_advantage": round(avg_advantage, 2),
+        "market_concentration_top3": round(top_3_share, 2),
+        "primary_competitors": [c.domain for c in competitors[:5]]  # Top 5
+    }
+
+
+async def analyze_competitor_mapping(
+    gsc_data: pd.DataFrame,
+    user_domain: str,
+    dataforseo_client: DataForSEOClient,
+    max_keywords: int = 100,
+    brand_name: Optional[str] = None,
+    location_code: int = 2840,
+    language_code: str = "en"
+) -> Dict[str, Any]:
+    """
+    Main function for Module 3: Competitor Mapping Analysis.
+    
+    Identifies top competitors from GSC data by:
+    1. Selecting top non-branded keywords
+    2. Fetching live SERP data via DataForSEO
+    3. Extracting competing domains and their positions
+    4. Calculating competitive metrics (overlap, position delta, visibility share)
+    5. Ranking competitors by threat level
+    
+    Args:
+        gsc_data: DataFrame with GSC query data (query, impressions, position, clicks, ctr)
+        user_domain: User's domain
+        dataforseo_client: DataForSEO API client
+        max_keywords: Maximum number of keywords to analyze
+        brand_name: Optional brand name for branded query filtering
+        location_code: DataForSEO location code
+        language_code: DataForSEO language code
+    
+    Returns:
+        Dictionary containing:
+        - competitors: List of top competitors with detailed metrics
+        - aggregate_metrics: Overall competitive landscape metrics
+        - keywords_analyzed: Number of keywords analyzed
+        - serp_data_coverage: Percentage of keywords with SERP data
+    """
     try:
-        # Select keywords for analysis
-        keywords = select_top_keywords(
-            gsc_keyword_data,
-            user_domain,
-            brand_name,
-            max_keywords
+        logger.info(f"Starting competitor mapping analysis for {user_domain}")
+        
+        # Step 1: Select top keywords for analysis
+        keywords = select_top_keywords_for_analysis(
+            gsc_data=gsc_data,
+            user_domain=user_domain,
+            max_keywords=max_keywords,
+            brand_name=brand_name
         )
         
         if not keywords:
+            logger.warning("No keywords selected for analysis")
             return {
                 "competitors": [],
-                "total_keywords_analyzed": 0,
-                "summary": {
-                    "error": "No non-branded keywords found for analysis"
-                }
+                "aggregate_metrics": {
+                    "total_competitors_found": 0,
+                    "competitive_intensity": "unknown",
+                    "error": "No non-branded keywords found"
+                },
+                "keywords_analyzed": 0,
+                "serp_data_coverage": 0
             }
         
-        # Fetch SERP data for selected keywords
-        logger.info(f"Fetching SERP data for {len(keywords)} keywords")
-        serp_results = await dataforseo_client.get_serp_results(
-            keywords=[k["query"] for k in keywords],
+        # Step 2: Fetch SERP data
+        serp_data = await fetch_serp_data_for_keywords(
+            keywords=keywords,
+            dataforseo_client=dataforseo_client,
             location_code=location_code,
             language_code=language_code
         )
         
-        if not serp_results:
-            logger.error("No SERP results returned from DataForSEO")
+        serp_coverage = (len(serp_data) / len(keywords) * 100) if keywords else 0
+        logger.info(f"SERP data coverage: {serp_coverage:.1f}%")
+        
+        if not serp_data:
+            logger.warning("No SERP data retrieved")
             return {
                 "competitors": [],
-                "total_keywords_analyzed": 0,
-                "summary": {
-                    "error": "Failed to fetch SERP data"
-                }
+                "aggregate_metrics": {
+                    "total_competitors_found": 0,
+                    "competitive_intensity": "unknown",
+                    "error": "Failed to retrieve SERP data"
+                },
+                "keywords_analyzed": len(keywords),
+                "serp_data_coverage": 0
             }
         
-        # Build keyword lookup for impressions and user position
-        keyword_lookup = {k["query"]: k for k in keywords}
-        
-        # Track competitor appearances
-        competitor_data = defaultdict(lambda: {
-            "positions": [],
-            "keywords": [],
-            "visibility_scores": []
-        })
-        
-        user_positions_by_keyword = {}
-        total_keywords_analyzed = 0
-        keywords_with_serp_data = 0
-        
-        # Process SERP results
-        for serp_result in serp_results:
-            keyword = serp_result.get("keyword", "")
-            if not keyword or keyword not in keyword_lookup:
-                continue
-            
-            keyword_data = keyword_lookup[keyword]
-            impressions = keyword_data.get("impressions", 0)
-            user_position = keyword_data.get("position", 0)
-            
-            total_keywords_analyzed += 1
-            
-            organic_results = serp_result.get("organic_results", [])
-            if not organic_results:
-                continue
-            
-            keywords_with_serp_data += 1
-            user_positions_by_keyword[keyword] = user_position
-            
-            # Extract domains and positions from top 20 results
-            for result in organic_results[:20]:
-                url = result.get("url", "")
-                position = result.get("rank_absolute", 0)
-                
-                if not url or position <= 0:
-                    continue
-                
-                domain = extract_domain(url)
-                
-                # Skip user's own domain
-                if domain == user_domain:
-                    continue
-                
-                # Skip empty domains
-                if not domain:
-                    continue
-                
-                # Calculate visibility for this keyword
-                visibility = calculate_visibility_score(position, impressions)
-                
-                # Record competitor data
-                competitor_data[domain]["positions"].append(position)
-                competitor_data[domain]["keywords"].append({
-                    "query": keyword,
-                    "position": position,
-                    "impressions": impressions,
-                    "user_position": user_position,
-                    "visibility": visibility
-                })
-                competitor_data[domain]["visibility_scores"].append(visibility)
-        
-        logger.info(f"Analyzed {total_keywords_analyzed} keywords, {keywords_with_serp_data} with SERP data")
-        logger.info(f"Found {len(competitor_data)} potential competitors")
-        
-        # Filter and score competitors
-        competitors = []
-        total_visibility = sum(
-            sum(data["visibility_scores"])
-            for data in competitor_data.values()
+        # Step 3: Extract competitors from SERP data
+        competitor_rankings = extract_competitors_from_serp(
+            serp_data=serp_data,
+            user_domain=user_domain,
+            gsc_keywords=keywords
         )
         
-        for domain, data in competitor_data.items():
-            keywords_shared = len(data["keywords"])
-            
-            # Filter by minimum overlap
-            if keywords_shared < min_competitor_overlap:
-                continue
-            
-            # Calculate metrics
-            positions = data["positions"]
-            avg_position = np.mean(positions)
-            median_position = np.median(positions)
-            
-            # Calculate user's average position for shared keywords
-            user_positions = [
-                user_positions_by_keyword.get(kw["query"], 0)
-                for kw in data["keywords"]
-            ]
-            avg_user_position = np.mean([p for p in user_positions if p > 0])
-            
-            # Position advantage (negative if competitor ranks better)
-            position_advantage = avg_user_position - avg_position
-            
-            # Visibility metrics
-            competitor_visibility = sum(data["visibility_scores"])
-            visibility_share = competitor_visibility / total_visibility if total_visibility > 0 else 0
-            
-            # Overlap percentage
-            overlap_percentage = (keywords_shared / total_keywords_analyzed) * 100
-            
-            # Determine threat level
-            threat_level = determine_threat_level(
-                overlap_percentage,
-                position_advantage,
-                keywords_shared,
-                visibility_share
-            )
-            
-            competitor = CompetitorMetrics(
-                domain=domain,
-                keywords_shared=keywords_shared,
-                overlap_percentage=overlap_percentage,
-                avg_position=avg_position,
-                median_position=median_position,
-                avg_user_position_for_shared=avg_user_position,
-                position_advantage=position_advantage,
-                estimated_visibility_share=visibility_share,
-                threat_level=threat_level,
-                shared_keywords=data["keywords"]
-            )
-            
-            competitors.append(competitor)
+        if not competitor_rankings:
+            logger.warning("No competitors found in SERP data")
+            return {
+                "competitors": [],
+                "aggregate_metrics": {
+                    "total_competitors_found": 0,
+                    "competitive_intensity": "low",
+                    "message": "No competitors found in analyzed SERPs"
+                },
+                "keywords_analyzed": len(keywords),
+                "serp_data_coverage": serp_coverage
+            }
         
-        # Sort by threat level priority, then visibility share
-        threat_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        competitors.sort(
-            key=lambda c: (threat_order.get(c.threat_level, 4), -c.estimated_visibility_share)
+        # Step 4: Calculate competitor metrics
+        competitors = calculate_competitor_metrics(
+            competitor_rankings=competitor_rankings,
+            total_keywords_analyzed=len(keywords)
         )
         
-        # Take top N
-        top_competitors = competitors[:top_n_competitors]
+        # Step 5: Calculate aggregate metrics
+        aggregate_metrics = calculate_aggregate_metrics(
+            competitors=competitors,
+            user_domain=user_domain,
+            total_keywords=len(keywords)
+        )
         
-        # Calculate summary statistics
-        if top_competitors:
-            total_shared_keywords = sum(c.keywords_shared for c in top_competitors)
-            avg_overlap = np.mean([c.overlap_percentage for c in top_competitors])
-            
-            threat_distribution = Counter(c.threat_level for c in competitors)
-            
-            summary = {
-                "total_competitors_found": len(competitors),
-                "top_competitors_analyzed": len(top_competitors),
-                "total_shared_keyword_instances": total_shared_keywords,
-                "avg_overlap_percentage": round(avg_overlap, 2),
-                "threat_distribution": dict(threat_distribution),
-                "keywords_analyzed": total_keywords_analyzed,
-                "keywords_with_serp_data": keywords_with_serp_data
-            }
-        else:
-            summary = {
-                "total_competitors_found": 0,
-                "message": "No significant competitors found based on current keyword set"
-            }
-        
+        # Prepare final result
         result = {
-            "competitors": [c.to_dict() for c in top_competitors],
-            "total_keywords_analyzed": total_keywords_analyzed,
-            "summary": summary,
-            "analysis_metadata": {
-                "user_domain": user_domain,
-                "max_keywords_requested": max_keywords,
-                "min_overlap_threshold": min_competitor_overlap,
-                "location_code": location_code,
-                "language_code": language_code,
-                "timestamp": datetime.utcnow().isoformat()
-            }
+            "competitors": [c.to_dict() for c in competitors[:10]],  # Top 10 competitors
+            "aggregate_metrics": aggregate_metrics,
+            "keywords_analyzed": len(keywords),
+            "serp_data_coverage": round(serp_coverage, 2),
+            "analysis_timestamp": datetime.utcnow().isoformat(),
+            "total_competitors_identified": len(competitors)
         }
         
-        logger.info(f"Competitor mapping complete: {len(top_competitors)} top competitors identified")
+        logger.info(f"Competitor mapping analysis complete. Found {len(competitors)} competitors")
         return result
         
     except Exception as e:
         logger.error(f"Error in competitor mapping analysis: {str(e)}", exc_info=True)
         return {
             "competitors": [],
-            "total_keywords_analyzed": 0,
-            "summary": {
-                "error": f"Analysis failed: {str(e)}"
-            }
+            "aggregate_metrics": {
+                "total_competitors_found": 0,
+                "competitive_intensity": "unknown",
+                "error": str(e)
+            },
+            "keywords_analyzed": 0,
+            "serp_data_coverage": 0
         }
-
-
-def get_competitor_keyword_details(
-    competitor_domain: str,
-    competitor_analysis: Dict[str, Any],
-    limit: int = 50
-) -> List[Dict[str, Any]]:
-    """
-    Get detailed keyword overlap for a specific competitor.
-    
-    Args:
-        competitor_domain: Domain of the competitor
-        competitor_analysis: Full competitor analysis result
-        limit: Maximum keywords to return
-    
-    Returns:
-        List of shared keywords with details
-    """
-    for competitor in competitor_analysis.get("competitors", []):
-        if competitor.get("domain") == competitor_domain:
-            shared_keywords = competitor.get("top_shared_keywords", [])
-            
-            # Sort by impressions descending
-            sorted_keywords = sorted(
-                shared_keywords,
-                key=lambda x: x.get("impressions", 0),
-                reverse=True
-            )
-            
-            return sorted_keywords[:limit]
-    
-    return []
-
-
-def get_competitive_gap_analysis(
-    competitor_analysis: Dict[str, Any],
-    user_domain: str
-) -> Dict[str, Any]:
-    """
-    Analyze competitive gaps and opportunities.
-    
-    Args:
-        competitor_analysis: Full competitor analysis result
-        user_domain: User's domain
-    
-    Returns:
-        Gap analysis with opportunities and threats
-    """
-    competitors = competitor_analysis.get("competitors", [])
-    
-    if not competitors:
-        return {"opportunities": [], "threats": []}
-    
-    opportunities = []
-    threats = []
-    
-    for competitor in competitors:
-        domain = competitor.get("domain", "")
-        position_advantage = competitor.get("position_advantage", 0)
-        keywords_shared = competitor.get("keywords_shared", 0)
-        threat_level = competitor.get("threat_level", "low")
-        
-        # Opportunities: where user ranks better
-        if position_advantage < -2:  # User ranks 2+ positions better
-            opportunities.append({
-                "type": "dominance",
-                "competitor": domain,
-                "keywords_count": keywords_shared,
-                "avg_position_advantage": abs(position_advantage),
-                "recommendation": f"Maintain and strengthen position against {domain}"
-            })
-        
-        # Threats: where competitor ranks significantly better
-        if position_advantage > 3:  # Competitor ranks 3+ positions better
-            threats.append({
-                "type": "underperformance",
-                "competitor": domain,
-                "keywords_count": keywords_shared,
-                "avg_position_disadvantage": position_advantage,
-                "threat_level": threat_level,
-                "recommendation": f"Analyze and learn from {domain}'s content strategy"
-            })
-    
-    return {
-        "opportunities": opportunities,
-        "threats": threats
-    }
