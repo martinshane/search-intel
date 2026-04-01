@@ -198,6 +198,13 @@ except Exception as e:
     logger.warning("Could not load report routes: %s", e)
 
 try:
+    from .routers.schedules import router as schedules_router
+    app.include_router(schedules_router, prefix="/schedules", tags=["Schedules"])
+    logger.info("Schedule routes loaded successfully")
+except Exception as e:
+    logger.warning("Could not load schedule routes: %s", e)
+
+try:
     from .routes.modules import router as modules_router
     app.include_router(modules_router, prefix="/api/v1/modules", tags=["Modules"])
     logger.info("Module routes loaded successfully")
