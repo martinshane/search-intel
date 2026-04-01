@@ -10,7 +10,8 @@ invoked as a FastAPI BackgroundTask. It:
 4. Pulls live SERP data via DataForSEO for top non-branded keywords
 5. Crawls the site for internal link graph + page metadata
 6. Runs the AnalysisPipeline across all 12 modules
-7. Stores each module result in the report_modules table
+7. Stores each module result in the report_modules table **in real time**
+   via a progress_callback (so the frontend sees per-module updates)
 8. Writes the assembled report_data JSON to the reports table
 9. Updates report status to "completed" (or "partial" / "failed")
 
@@ -453,6 +454,14 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
     Main entry point — run as a FastAPI BackgroundTask.
 
     Orchestrates: ingestion → pipeline → storage → status update.
+
+    Progress updates are pushed to Supabase **in real time** as each
+    analysis module completes (via a progress_callback passed to the
+    pipeline).  This means the frontend's polling loop sees per-module
+    status changes during the 2-5 minute analysis window — instead of
+    the old behaviour where everything stayed at "running module 1"
+    until the entire pipeline finished and results were bulk-stored.
+
     Catches all exceptions so it never crashes the API process.
     """
     logger.info("=== Starting report pipeline for report_id=%s, domain=%s ===", report_id, domain)
@@ -462,6 +471,58 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
     except Exception as exc:
         logger.critical("Cannot connect to Supabase: %s", exc)
         return
+
+    # Mutable state shared between the main function and the callback.
+    # Using a dict so the nested function can mutate it.
+    progress_state: Dict[str, Any] = {"progress": {}}
+
+    def _on_module_complete(module_name: str, module_result) -> None:
+        """
+        Callback invoked by AnalysisPipeline after each module finishes.
+
+        Stores the module result in report_modules and pushes a progress
+        update to the reports table — all in real time so the frontend
+        can display per-module status as each one completes.
+        """
+        module_num = MODULE_NUMBERS.get(module_name, 0)
+
+        # Prepare result data for storage
+        if module_result.status == "skipped":
+            skip_reason = (
+                module_result.error.user_message
+                if module_result.error and module_result.error.user_message
+                else "This analysis was skipped because a required previous analysis did not complete successfully."
+            )
+            results_to_store = {
+                "skipped": True,
+                "reason": skip_reason,
+                "dependency_error": module_result.error.error_message if module_result.error else None,
+            }
+        else:
+            results_to_store = module_result.data
+
+        # Store in report_modules table
+        _store_module_result(
+            supabase,
+            report_id,
+            module_name,
+            module_num,
+            results_to_store,
+            module_result.status,
+        )
+
+        # Update progress dict and push to reports table
+        progress_state["progress"][f"module_{module_num}"] = module_result.status
+        _update_report_status(
+            supabase, report_id, "analyzing",
+            current_module=module_num,
+            progress=progress_state["progress"],
+        )
+
+        logger.info(
+            "Progress update: module %d (%s) → %s",
+            module_num, module_name, module_result.status,
+        )
 
     try:
         # ----- Phase 1: Ingestion -----
@@ -519,64 +580,29 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
         else:
             logger.info("No crawl data available — modules 4, 9 will run without crawl input")
 
-        # ----- Phase 2: Pipeline execution -----
-        _update_report_status(supabase, report_id, "running", current_module=1)
+        # ----- Phase 2: Pipeline execution with real-time progress -----
+        _update_report_status(supabase, report_id, "analyzing", current_module=1)
 
         from api.worker.pipeline import AnalysisPipeline
         pipeline = AnalysisPipeline()
 
-        # Run all 12 modules
-        pipeline_result = pipeline.execute(data_context)
+        # Run all 12 modules — _on_module_complete fires after EACH one,
+        # storing results and pushing progress to Supabase immediately.
+        pipeline_result = pipeline.execute(
+            data_context,
+            progress_callback=_on_module_complete,
+        )
         report_data = pipeline.get_report_data(pipeline_result)
 
-        # ----- Phase 3: Store results -----
-        _update_report_status(supabase, report_id, "analyzing")
-
-        progress: Dict[str, str] = {}
-        for module_result in pipeline_result.modules:
-            module_name = module_result.module_name
-            module_num = MODULE_NUMBERS.get(module_name, 0)
-
-            # For skipped modules, store a structured result explaining why
-            # so the frontend can display a meaningful message.
-            if module_result.status == "skipped":
-                skip_reason = (
-                    module_result.error.user_message
-                    if module_result.error and module_result.error.user_message
-                    else "This analysis was skipped because a required previous analysis did not complete successfully."
-                )
-                results_to_store = {
-                    "skipped": True,
-                    "reason": skip_reason,
-                    "dependency_error": module_result.error.error_message if module_result.error else None,
-                }
-            else:
-                results_to_store = module_result.data
-
-            _store_module_result(
-                supabase,
-                report_id,
-                module_name,
-                module_num,
-                results_to_store,
-                module_result.status,
-            )
-            progress[f"module_{module_num}"] = module_result.status
-
-            # Update progress in real time so frontend can poll
-            _update_report_status(
-                supabase, report_id, "running",
-                current_module=module_num,
-                progress=progress,
-            )
-
-        # ----- Phase 4: Finalize -----
+        # ----- Phase 3: Finalize -----
+        # All module results are already stored by the callback above.
+        # Just write the assembled report_data and set final status.
         final_status = "completed" if pipeline_result.status == "complete" else pipeline_result.status
         _update_report_status(
             supabase,
             report_id,
             final_status,
-            progress=progress,
+            progress=progress_state["progress"],
             report_data=report_data,
         )
 
