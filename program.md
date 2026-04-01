@@ -244,10 +244,10 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 ## Current State
 
 **Current Phase:** All 4 phases complete in code  
-**Current Day:** Post-Phase 4 (cleanup, security hardening & deployment)  
-**Last Task:** Tombstone 4 stale test files with broken imports to dead api.modules  
-**Last Run:** 2026-04-01 — ✅ Pass  
-**Next Task:** Reconnect Railway auto-deploy (manual action required in Railway dashboard)  
+**Current Day:** Post-Phase 4 (test coverage & deployment)  
+**Last Task:** Add comprehensive test suite for api/analysis/module_1_health_trajectory  
+**Last Run:** 2026-04-01 — ✅ Pass (run 45)  
+**Next Task:** Write tests for api/analysis/module_2_page_triage (continue test coverage)  
 **Completed Tasks:** 28 / 28 (all foundation tasks) + all Phase 2/3/4 modules implemented  
 **Codebase Score:** 100/100 (all syntax clean, all imports valid, all endpoints auth-protected)  
 **Railway API URL:** https://search-intel-api-production.up.railway.app (stale at v0.1.0 — needs redeploy)  
@@ -255,7 +255,7 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 **Progress Dashboard:** (needs reconnection)  
 
 ### What's Built
-- **95 Python files** (35 active, ~28 tombstones, ~32 test files), 0 syntax errors, all parse cleanly
+- **90 Python files** (63 active, 27 tombstones), 0 syntax errors, all parse cleanly
 - **12 analysis modules** (api/analysis/module_1 through module_12) — fully implemented
 - **Phase 1 MVP:** OAuth, GSC/GA4 ingestion, modules 1/2/5, report UI
 - **Phase 2 SERP Intelligence:** DataForSEO integration, modules 3/8/11
@@ -265,18 +265,20 @@ Tasks are ordered. Do not skip. Mark each ✅ when complete.
 - **Infrastructure:** Multi-stage Dockerfile, railway.toml, synced requirements.txt
 - **Dead code cleaned:** 22 legacy api/modules/ files tombstoned, 4 stale test files tombstoned, middleware/error_handler.py tombstoned, config/settings.py tombstoned, routes/module_10.py tombstoned, routes/report.py tombstoned, generate-report.py tombstoned
 - **Pipeline:** api/worker/pipeline.py imports rewired from dead api.worker.modules to canonical api.analysis (run 42)
+- **Test coverage:** api/analysis/tests/ package created with 25 tests for Module 1 (run 45)
 
 ### Remaining Work
 1. **Reconnect Railway auto-deploy** — the Railway service is disconnected from GitHub. Requires manual action in Railway dashboard to reconnect the GitHub repo.
 2. **Verify full deployment** — once Railway redeploys, confirm all /api/v1/modules/* endpoints return proper responses.
 3. **End-to-end testing** — run full report generation flow with real GSC+GA4 data once deployed.
-4. **Write new tests for canonical api/analysis/ modules** — old test files in api/modules/tests/ were tombstoned (broken imports). New tests needed that import from api.analysis.*.
+4. **Write new tests for remaining api/analysis/ modules** — Module 1 test suite complete (25 tests, run 45). Still need tests for modules 2-12 that import from api.analysis.*.
 
 ### Build Log Summary
 *(Updated each night by the cron agent — see Supabase build_log table for full history)*
 
 | Run | Date | Task | Status | Score |
 |-----|------|------|--------|-------|
+| 45 | 2026-04-01 | Add comprehensive test suite for module_1_health_trajectory | ✅ | 100→100 |
 | 44 | 2026-04-01 | Tombstone 4 stale test files with broken imports to dead api.modules | ✅ | 100→100 |
 | 43 | 2026-04-01 | Add JWT auth + ownership checks to all reports router endpoints | ✅ | 99→100 |
 | 42 | 2026-04-01 | Rewire api/worker/pipeline.py imports from dead api.worker.modules | ✅ | 98→99 |
