@@ -111,6 +111,90 @@ function getModuleData(report_data: ReportRow['report_data'], moduleName: string
 }
 
 // ---------------------------------------------------------------------------
+// Helper: get module section info (status, error, skip reason)
+// ---------------------------------------------------------------------------
+function getModuleSectionInfo(report_data: ReportRow['report_data'], moduleName: string): { status: string; error_message?: string; skipped?: boolean; reason?: string } | null {
+  if (!report_data) return null;
+  if (report_data.sections && report_data.sections[moduleName]) {
+    const section = report_data.sections[moduleName];
+    const info: any = { status: section.status || 'unknown' };
+    if (section.error) {
+      info.error_message = section.error.message || 'An error occurred during analysis.';
+    }
+    if (section.data && section.data.skipped) {
+      info.skipped = true;
+      info.reason = section.data.reason || 'This module was skipped.';
+    }
+    return info;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Icon map for module cards
+// ---------------------------------------------------------------------------
+const ICON_MAP: Record<string, any> = {
+  activity: Activity,
+  target: Target,
+  search: Search,
+  'file-text': FileText,
+  zap: Zap,
+  shield: Shield,
+  layers: Layers,
+  'bar-chart': BarChart2,
+  globe: Globe,
+  users: Users,
+  dollar: DollarSign,
+};
+
+// ---------------------------------------------------------------------------
+// Skipped/Failed module card — shows reason with a professional, muted style
+// ---------------------------------------------------------------------------
+function SkippedModuleCard({ moduleName, sectionInfo }: { moduleName: string; sectionInfo: { status: string; error_message?: string; skipped?: boolean; reason?: string } }) {
+  const meta = MODULE_META[moduleName];
+  if (!meta) return null;
+
+  const IconComp = ICON_MAP[meta.icon] || Activity;
+  const isSkipped = sectionInfo.skipped;
+  const message = isSkipped
+    ? sectionInfo.reason || 'This section was skipped because a required dependency was not available.'
+    : sectionInfo.error_message || 'This section encountered an error during analysis.';
+
+  // Provide a user-friendly explanation based on common skip/fail patterns
+  let helpText = '';
+  if (message.toLowerCase().includes('dataforseo') || message.toLowerCase().includes('serp')) {
+    helpText = 'SERP analysis requires DataForSEO API credentials. Contact us to enable competitive intelligence for your report.';
+  } else if (message.toLowerCase().includes('crawl') || message.toLowerCase().includes('sitemap')) {
+    helpText = 'Site architecture analysis requires a site crawl. This will be available in a future update.';
+  } else if (message.toLowerCase().includes('dependency') || message.toLowerCase().includes('depends on')) {
+    helpText = 'This section depends on data from another module that could not complete.';
+  }
+
+  return (
+    <section className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden opacity-75">
+      <div className="px-4 sm:px-6 py-4 flex items-center space-x-3">
+        <div className="flex-shrink-0 w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center">
+          <IconComp className="w-5 h-5 text-gray-400" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center space-x-2">
+            <h2 className="text-lg font-bold text-gray-400">
+              <span className="text-xs font-normal text-gray-300 mr-1">#{meta.number}</span>
+              {meta.title}
+            </h2>
+            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${isSkipped ? 'bg-gray-100 text-gray-500' : 'bg-red-50 text-red-600'}`}>
+              {isSkipped ? 'Skipped' : 'Unavailable'}
+            </span>
+          </div>
+          <p className="text-sm text-gray-400 mt-1">{message}</p>
+          {helpText && <p className="text-xs text-gray-400 mt-1">{helpText}</p>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 export default function ReportPage() {
@@ -320,6 +404,17 @@ export default function ReportPage() {
   const branded = getModuleData(rd, 'branded_split');
   const competitive = getModuleData(rd, 'competitive_threats');
   const revenue = getModuleData(rd, 'revenue_attribution');
+
+  // Section info for skipped/failed modules
+  const serpInfo = getModuleSectionInfo(rd, 'serp_landscape');
+  const intentInfo = getModuleSectionInfo(rd, 'intent_migration');
+  const ctrInfo = getModuleSectionInfo(rd, 'technical_health');
+  const brandedInfo = getModuleSectionInfo(rd, 'branded_split');
+  const competitiveInfo = getModuleSectionInfo(rd, 'competitive_threats');
+  const revenueInfo = getModuleSectionInfo(rd, 'revenue_attribution');
+  const algoInfo = getModuleSectionInfo(rd, 'algorithm_impact');
+  const archInfo = getModuleSectionInfo(rd, 'site_architecture');
+  const contentInfo = getModuleSectionInfo(rd, 'content_intelligence');
 
   // Completion message
   const completionMsg = rd?.metadata?.completion_message || '';
@@ -567,7 +662,7 @@ export default function ReportPage() {
             {/* ================================================================
                 Section 3: SERP Landscape
             ================================================================ */}
-            {serp && (
+            {serp ? (
               <section className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 <button onClick={() => toggleSection('serp_landscape')} className="w-full px-4 sm:px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition">
                   <div className="flex items-center space-x-3 min-w-0 flex-1">
@@ -638,7 +733,9 @@ export default function ReportPage() {
                   </div>
                 )}
               </section>
-            )}
+            ) : serpInfo && (serpInfo.status === 'failed' || serpInfo.skipped) ? (
+              <SkippedModuleCard moduleName="serp_landscape" sectionInfo={serpInfo} />
+            ) : null}
 
             {/* ================================================================
                 Section 4: Content Intelligence
@@ -879,7 +976,7 @@ export default function ReportPage() {
             {/* ================================================================
                 Section 7: Intent Migration
             ================================================================ */}
-            {intent && (
+            {intent ? (
               <section className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 <button onClick={() => toggleSection('intent_migration')} className="w-full px-4 sm:px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition">
                   <div className="flex items-center space-x-3 min-w-0 flex-1">
@@ -965,12 +1062,14 @@ export default function ReportPage() {
                   </div>
                 )}
               </section>
-            )}
+            ) : intentInfo && (intentInfo.status === 'failed' || intentInfo.skipped) ? (
+              <SkippedModuleCard moduleName="intent_migration" sectionInfo={intentInfo} />
+            ) : null}
 
             {/* ================================================================
                 Section 8: CTR Modeling
             ================================================================ */}
-            {ctr && (
+            {ctr ? (
               <section className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 <button onClick={() => toggleSection('technical_health')} className="w-full px-4 sm:px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition">
                   <div className="flex items-center space-x-3 min-w-0 flex-1">
@@ -1062,7 +1161,9 @@ export default function ReportPage() {
                   </div>
                 )}
               </section>
-            )}
+            ) : ctrInfo && (ctrInfo.status === 'failed' || ctrInfo.skipped) ? (
+              <SkippedModuleCard moduleName="technical_health" sectionInfo={ctrInfo} />
+            ) : null}
 
             {/* ================================================================
                 Section 9: Site Architecture
@@ -1219,7 +1320,7 @@ export default function ReportPage() {
             {/* ================================================================
                 Section 10: Branded vs Non-Branded
             ================================================================ */}
-            {branded && (
+            {branded ? (
               <section className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 <button onClick={() => toggleSection('branded_split')} className="w-full px-4 sm:px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition">
                   <div className="flex items-center space-x-3 min-w-0 flex-1">
@@ -1328,12 +1429,14 @@ export default function ReportPage() {
                   </div>
                 )}
               </section>
-            )}
+            ) : brandedInfo && (brandedInfo.status === 'failed' || brandedInfo.skipped) ? (
+              <SkippedModuleCard moduleName="branded_split" sectionInfo={brandedInfo} />
+            ) : null}
 
             {/* ================================================================
                 Section 11: Competitive Radar
             ================================================================ */}
-            {competitive && (
+            {competitive ? (
               <section className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 <button onClick={() => toggleSection('competitive_threats')} className="w-full px-4 sm:px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition">
                   <div className="flex items-center space-x-3 min-w-0 flex-1">
@@ -1440,12 +1543,14 @@ export default function ReportPage() {
                   </div>
                 )}
               </section>
-            )}
+            ) : competitiveInfo && (competitiveInfo.status === 'failed' || competitiveInfo.skipped) ? (
+              <SkippedModuleCard moduleName="competitive_threats" sectionInfo={competitiveInfo} />
+            ) : null}
 
             {/* ================================================================
                 Section 12: Revenue Attribution
             ================================================================ */}
-            {revenue && (
+            {revenue ? (
               <section className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 <button onClick={() => toggleSection('revenue_attribution')} className="w-full px-4 sm:px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition">
                   <div className="flex items-center space-x-3 min-w-0 flex-1">
@@ -1539,17 +1644,18 @@ export default function ReportPage() {
                   </div>
                 )}
               </section>
-            )}
+            ) : revenueInfo && (revenueInfo.status === 'failed' || revenueInfo.skipped) ? (
+              <SkippedModuleCard moduleName="revenue_attribution" sectionInfo={revenueInfo} />
+            ) : null}
 
             {/* ================================================================
                 Revenue CTA (bottom of report)
             ================================================================ */}
-            {revenue && (
+            {(revenue || health) && (
               <div className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-lg p-6 sm:p-8 text-center text-white">
                 <h3 className="text-xl sm:text-2xl font-bold mb-2">Unlock Your Search Revenue Potential</h3>
                 <p className="text-blue-100 mb-6 max-w-2xl mx-auto">
-                  This report identified opportunities worth an estimated {fmtCurrency(revenue.total_potential_revenue || revenue.estimated_monthly_potential || 0)}/month.
-                  Let us help you capture that value.
+                  {revenue ? `This report identified opportunities worth an estimated ${fmtCurrency(revenue.total_potential_revenue || revenue.estimated_monthly_potential || 0)}/month. ` : ''}Let us help you capture that value.
                 </p>
                 <a href="https://clankermarketing.com/contact" target="_blank" rel="noopener noreferrer" className="inline-flex items-center space-x-2 px-8 py-3 bg-white text-blue-700 rounded-lg hover:bg-blue-50 transition font-bold">
                   <span>Get Your Custom Growth Plan</span>
