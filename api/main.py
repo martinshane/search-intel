@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from httpx import HTTPError, TimeoutException
 
 from .config import settings
-from .routers import auth, health, reports
+from .routers import health  # health always loads; others are lazy
 
 # Configure logging
 logging.basicConfig(
@@ -178,17 +178,29 @@ async def log_requests(request: Request, call_next):
         raise
 
 
-# Include routers
+# Include routers — each wrapped in try/except so one failure
+# doesn't prevent the remaining routers from loading.
 app.include_router(health.router, prefix="/health", tags=["Health"])
-app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
-app.include_router(reports.router, prefix="/reports", tags=["Reports"])
 
-# Include module routes
+try:
+    from .routers.auth import router as auth_router
+    app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
+    logger.info("Auth routes loaded successfully")
+except Exception as e:
+    logger.warning(f"Could not load auth routes (will retry on first request): {e}")
+
+try:
+    from .routers.reports import router as reports_router
+    app.include_router(reports_router, prefix="/reports", tags=["Reports"])
+    logger.info("Report routes loaded successfully")
+except Exception as e:
+    logger.warning(f"Could not load report routes: {e}")
+
 try:
     from .routes.modules import router as modules_router
     app.include_router(modules_router, prefix="/api/v1/modules", tags=["Modules"])
     logger.info("Module routes loaded successfully")
-except ImportError as e:
+except Exception as e:
     logger.warning(f"Could not load module routes: {e}")
 
 
