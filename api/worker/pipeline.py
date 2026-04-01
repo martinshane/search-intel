@@ -11,18 +11,18 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 
-from api.worker.modules import health_trajectory
-from api.worker.modules import page_triage
-from api.worker.modules import serp_landscape
-from api.worker.modules import content_intelligence
-from api.worker.modules import gameplan
-from api.worker.modules import algorithm_impact
-from api.worker.modules import intent_migration
-from api.worker.modules import ctr_modeling
-from api.worker.modules import site_architecture
-from api.worker.modules import branded_split
-from api.worker.modules import competitive_threats
-from api.worker.modules import revenue_attribution
+from api.analysis.module_1_health_trajectory import analyze_health_trajectory
+from api.analysis.module_2_page_triage import analyze_page_triage
+from api.analysis.module_3_serp_landscape import analyze_serp_landscape
+from api.analysis.module_4_content_intelligence import analyze_content_intelligence
+from api.analysis.module_5_gameplan import generate_gameplan
+from api.analysis.module_6_algorithm_updates import analyze_algorithm_impacts
+from api.analysis.module_7_intent_migration import analyze_intent_migration
+from api.analysis.module_8_technical_health import analyze_technical_health
+from api.analysis.module_9_site_architecture import analyze_site_architecture
+from api.analysis.module_10_branded_split import analyze_branded_split
+from api.analysis.module_11_competitive_threats import analyze_competitive_threats
+from api.analysis.module_12_revenue_attribution import estimate_revenue_attribution
 
 logger = logging.getLogger(__name__)
 
@@ -71,23 +71,23 @@ class AnalysisPipeline:
     
     def __init__(self):
         self.modules = [
-            ("health_trajectory", health_trajectory.analyze_health_trajectory),
-            ("page_triage", page_triage.analyze_page_triage),
-            ("serp_landscape", serp_landscape.analyze_serp_landscape),
-            ("content_intelligence", content_intelligence.analyze_content_intelligence),
-            ("gameplan", gameplan.generate_gameplan),
-            ("algorithm_impact", algorithm_impact.analyze_algorithm_impacts),
-            ("intent_migration", intent_migration.analyze_intent_migration),
-            ("ctr_modeling", ctr_modeling.model_contextual_ctr),
-            ("site_architecture", site_architecture.analyze_site_architecture),
-            ("branded_split", branded_split.analyze_branded_split),
-            ("competitive_threats", competitive_threats.analyze_competitive_threats),
-            ("revenue_attribution", revenue_attribution.estimate_revenue_attribution),
+            ("health_trajectory", analyze_health_trajectory),
+            ("page_triage", analyze_page_triage),
+            ("serp_landscape", analyze_serp_landscape),
+            ("content_intelligence", analyze_content_intelligence),
+            ("gameplan", generate_gameplan),
+            ("algorithm_impact", analyze_algorithm_impacts),
+            ("intent_migration", analyze_intent_migration),
+            ("technical_health", analyze_technical_health),
+            ("site_architecture", analyze_site_architecture),
+            ("branded_split", analyze_branded_split),
+            ("competitive_threats", analyze_competitive_threats),
+            ("revenue_attribution", estimate_revenue_attribution),
         ]
         
         self.module_dependencies = {
             "gameplan": ["health_trajectory", "page_triage", "serp_landscape", "content_intelligence"],
-            "ctr_modeling": ["serp_landscape"],
+            "technical_health": ["serp_landscape"],
             "competitive_threats": ["serp_landscape"],
         }
         
@@ -139,7 +139,7 @@ class AnalysisPipeline:
         self,
         module_name: str,
         completed_modules: Dict[str, ModuleResult]
-    ) -> tuple[bool, Optional[str]]:
+    ) -> tuple:
         """
         Check if all dependencies for a module are satisfied.
         
@@ -160,7 +160,7 @@ class AnalysisPipeline:
     def _execute_module(
         self,
         module_name: str,
-        module_func: callable,
+        module_func,
         data_context: Dict[str, Any],
         completed_modules: Dict[str, ModuleResult]
     ) -> ModuleResult:
@@ -191,7 +191,7 @@ class AnalysisPipeline:
                         error_type="DependencyNotMet",
                         error_message=skip_reason,
                         traceback="",
-                        user_message=f"This analysis was skipped because a required previous analysis did not complete successfully."
+                        user_message="This analysis was skipped because a required previous analysis did not complete successfully."
                     )
                 )
             
@@ -245,10 +245,8 @@ class AnalysisPipeline:
         Maps from raw data context and completed module outputs to the
         specific parameters each module expects.
         """
-        # Base data available to all modules
         inputs = {}
         
-        # Module-specific input preparation
         if module_name == "health_trajectory":
             inputs = {
                 "daily_data": data_context.get("gsc_daily_data"),
@@ -275,20 +273,19 @@ class AnalysisPipeline:
             }
         
         elif module_name == "gameplan":
-            # Gameplan synthesizes outputs from previous modules
             inputs = {
-                "health": completed_modules.get("health_trajectory", {}).data,
-                "triage": completed_modules.get("page_triage", {}).data,
-                "serp": completed_modules.get("serp_landscape", {}).data,
-                "content": completed_modules.get("content_intelligence", {}).data,
+                "health": (completed_modules.get("health_trajectory") or ModuleResult(module_name="", status="")).data,
+                "triage": (completed_modules.get("page_triage") or ModuleResult(module_name="", status="")).data,
+                "serp": (completed_modules.get("serp_landscape") or ModuleResult(module_name="", status="")).data,
+                "content": (completed_modules.get("content_intelligence") or ModuleResult(module_name="", status="")).data,
             }
         
         elif module_name == "algorithm_impact":
             inputs = {
                 "daily_data": data_context.get("gsc_daily_data"),
-                "change_points": (
-                    completed_modules.get("health_trajectory", {}).data or {}
-                ).get("change_points", []) if completed_modules.get("health_trajectory") else [],
+                "change_points_from_module1": (
+                    (completed_modules.get("health_trajectory") or ModuleResult(module_name="", status="")).data or {}
+                ).get("change_points"),
             }
         
         elif module_name == "intent_migration":
@@ -296,16 +293,15 @@ class AnalysisPipeline:
                 "gsc_query_date_data": data_context.get("gsc_query_date_data"),
             }
         
-        elif module_name == "ctr_modeling":
+        elif module_name == "technical_health":
             inputs = {
-                "serp_data": data_context.get("serp_data"),
-                "gsc_data": data_context.get("gsc_keyword_data"),
+                "gsc_coverage": data_context.get("gsc_keyword_data"),
+                "crawl_technical": data_context.get("crawl_data"),
             }
         
         elif module_name == "site_architecture":
             inputs = {
-                "link_graph": data_context.get("internal_link_graph"),
-                "page_performance": data_context.get("gsc_page_summary"),
+                "link_graph": data_context.get("internal_link_graph") or data_context.get("crawl_data"),
             }
         
         elif module_name == "branded_split":
@@ -385,7 +381,6 @@ class AnalysisPipeline:
         all_errors: List[ModuleError] = []
         module_results: List[ModuleResult] = []
         
-        # Execute each module in sequence
         for module_name, module_func in self.modules:
             result = self._execute_module(
                 module_name,
@@ -400,14 +395,12 @@ class AnalysisPipeline:
             if result.error:
                 all_errors.append(result.error)
         
-        # Calculate summary statistics
         successful = sum(1 for r in module_results if r.status == "success")
         failed = sum(1 for r in module_results if r.status == "failed")
         skipped = sum(1 for r in module_results if r.status == "skipped")
         
         total_time = (datetime.utcnow() - pipeline_start).total_seconds()
         
-        # Determine overall status
         if successful == len(self.modules):
             status = "complete"
         elif successful > 0:
@@ -431,13 +424,6 @@ class AnalysisPipeline:
     def get_report_data(self, pipeline_result: PipelineResult) -> Dict[str, Any]:
         """
         Extract successful module data into report structure.
-        
-        Args:
-            pipeline_result: The pipeline execution result
-            
-        Returns:
-            Dictionary suitable for report rendering, with metadata about
-            which sections are available
         """
         report = {
             "metadata": {
@@ -454,7 +440,6 @@ class AnalysisPipeline:
             "errors": [asdict(e) for e in pipeline_result.errors]
         }
         
-        # Add successful module data
         for module_result in pipeline_result.modules:
             section_data = {
                 "status": module_result.status,
