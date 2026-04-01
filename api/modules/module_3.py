@@ -1,9 +1,3 @@
-"""
-Module 3: Keyword Expansion & Opportunity
-Identifies top queries from GSC, expands with related keywords via DataForSEO,
-scores opportunities, and returns top 50 actionable keyword targets.
-"""
-
 import os
 import hashlib
 from datetime import datetime, timedelta
@@ -18,9 +12,10 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 
-def _get_cache_key(domain: str, query: str) -> str:
-    """Generate cache key for keyword expansion data."""
-    return hashlib.md5(f"keyword_expansion:{domain}:{query}".encode()).hexdigest()
+def _get_cache_key(domain: str, competitors: List[str]) -> str:
+    """Generate cache key for competitor analysis data."""
+    competitors_str = ",".join(sorted(competitors))
+    return hashlib.md5(f"competitor_analysis:{domain}:{competitors_str}".encode()).hexdigest()
 
 
 def _check_cache(supabase_client, cache_key: str) -> Optional[Dict]:
@@ -52,343 +47,486 @@ def _set_cache(supabase_client, cache_key: str, data: Dict) -> None:
         print(f"Cache set error: {e}")
 
 
-async def _get_related_keywords_dataforseo(
-    query: str,
-    location_code: int = 2840,  # US
-    language_code: str = "en",
-    min_volume: int = 500
+async def _identify_competitors_from_serps(
+    user_domain: str,
+    top_keywords: List[Dict],
+    location_code: int = 2840,
+    language_code: str = "en"
 ) -> List[Dict]:
     """
-    Get related keywords from DataForSEO Keywords Data API.
-    Returns keywords with search volume >= min_volume.
+    Identify competing domains by analyzing SERPs for user's top keywords.
+    Returns list of competitor domains with overlap metrics.
     """
-    url = "https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live"
+    url = "https://api.dataforseo.com/v3/serp/google/organic/live/advanced"
     
     auth = httpx.BasicAuth(DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD)
     
-    # First, get related keywords suggestions
-    suggestions_url = "https://api.dataforseo.com/v3/keywords_data/google_ads/keywords_for_keywords/live"
+    # Track domain appearances across keywords
+    domain_appearances = {}
+    domain_positions = {}
+    domain_keywords = {}
     
-    payload = [{
-        "keywords": [query],
-        "location_code": location_code,
-        "language_code": language_code,
-        "search_partners": False,
-        "include_adult_keywords": False,
-        "sort_by": "search_volume",
-        "date_from": (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),
-        "date_to": datetime.now().strftime("%Y-%m-%d")
-    }]
-    
-    related_keywords = []
+    # Process top keywords (limit to 50 to manage API costs)
+    keywords_to_check = top_keywords[:50]
     
     async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            # Get keyword suggestions
-            response = await client.post(
-                suggestions_url,
-                json=payload,
-                auth=auth,
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get("status_code") == 20000 and data.get("tasks"):
-                task = data["tasks"][0]
-                if task.get("result") and len(task["result"]) > 0:
-                    items = task["result"][0].get("items", [])
-                    
-                    # Filter by minimum volume and collect keywords
-                    for item in items:
-                        keyword_data = item.get("keyword_data", {})
-                        keyword_info = keyword_data.get("keyword_info", {})
-                        search_volume = keyword_info.get("search_volume", 0)
-                        
-                        if search_volume >= min_volume:
-                            keyword = item.get("keyword", "")
-                            competition = keyword_info.get("competition", 0)
-                            
-                            # Map competition (0-1) to difficulty (0-100)
-                            difficulty = int(competition * 100) if competition else 50
-                            
-                            related_keywords.append({
-                                "keyword": keyword,
-                                "search_volume": search_volume,
-                                "difficulty": difficulty,
-                                "competition": competition,
-                                "cpc": keyword_info.get("cpc", 0)
-                            })
-            
-            # Sort by search volume and limit to top results
-            related_keywords.sort(key=lambda x: x["search_volume"], reverse=True)
-            return related_keywords[:100]  # Top 100 related keywords per seed
-            
-        except httpx.HTTPError as e:
-            print(f"DataForSEO API error for query '{query}': {e}")
-            return []
-        except Exception as e:
-            print(f"Unexpected error fetching keywords for '{query}': {e}")
-            return []
-
-
-def _classify_intent(keyword: str, serp_features: Optional[List[str]] = None) -> str:
-    """
-    Classify search intent based on keyword patterns.
-    Returns: informational, commercial, transactional, navigational
-    """
-    keyword_lower = keyword.lower()
-    
-    # Transactional signals
-    transactional_terms = [
-        "buy", "purchase", "order", "shop", "price", "cost", "cheap",
-        "discount", "deal", "coupon", "sale", "affordable"
-    ]
-    
-    # Commercial investigation signals
-    commercial_terms = [
-        "best", "top", "review", "comparison", "vs", "versus", "alternative",
-        "compare", "recommendation", "rated", "ranking"
-    ]
-    
-    # Informational signals
-    informational_terms = [
-        "how to", "what is", "why", "guide", "tutorial", "learn",
-        "meaning", "definition", "explained", "tips", "ways to"
-    ]
-    
-    # Navigational signals
-    navigational_terms = [
-        "login", "sign in", "app", "download", "official", "site"
-    ]
-    
-    # Check patterns
-    if any(term in keyword_lower for term in transactional_terms):
-        return "transactional"
-    elif any(term in keyword_lower for term in commercial_terms):
-        return "commercial"
-    elif any(term in keyword_lower for term in informational_terms):
-        return "informational"
-    elif any(term in keyword_lower for term in navigational_terms):
-        return "navigational"
-    
-    # Default based on length and question words
-    if keyword_lower.startswith(("how", "what", "why", "when", "where", "who")):
-        return "informational"
-    elif len(keyword.split()) <= 2:
-        return "navigational"
-    else:
-        return "commercial"
-
-
-def _calculate_opportunity_score(
-    search_volume: int,
-    difficulty: int,
-    current_position: Optional[float] = None
-) -> float:
-    """
-    Calculate opportunity score using the formula:
-    volume * (100 - difficulty) * (1 - current_position/100)
-    
-    If current_position is None (not ranking), use position 100 for calculation.
-    """
-    if current_position is None:
-        current_position = 100.0
-    
-    # Ensure current_position is at least 1
-    current_position = max(1.0, current_position)
-    
-    # Calculate score
-    volume_factor = search_volume
-    difficulty_factor = (100 - difficulty)
-    position_factor = (1 - (current_position / 100))
-    
-    score = volume_factor * difficulty_factor * position_factor
-    
-    return round(score, 2)
-
-
-async def analyze_keyword_opportunities(
-    supabase_client,
-    gsc_data: Dict,
-    domain: str,
-    location_code: int = 2840
-) -> Dict[str, Any]:
-    """
-    Main analysis function for keyword expansion and opportunity identification.
-    
-    Args:
-        supabase_client: Supabase client instance
-        gsc_data: GSC performance data with queries and their metrics
-        domain: The domain being analyzed
-        location_code: Geographic location code for DataForSEO (default: US)
-    
-    Returns:
-        Dictionary with top 50 keyword opportunities and summary metrics
-    """
-    
-    # Extract top 20 queries from GSC data
-    queries = gsc_data.get("queries", [])
-    
-    # Filter out branded queries (fuzzy match on domain)
-    domain_parts = domain.replace("www.", "").replace(".com", "").replace(".org", "").replace(".net", "").split(".")
-    brand_terms = set(part.lower() for part in domain_parts if len(part) > 2)
-    
-    non_branded_queries = []
-    for query in queries:
-        query_text = query.get("query", "").lower()
-        # Skip if query contains brand terms
-        if not any(brand_term in query_text for brand_term in brand_terms):
-            non_branded_queries.append(query)
-    
-    # Sort by impressions and take top 20
-    non_branded_queries.sort(key=lambda x: x.get("impressions", 0), reverse=True)
-    top_queries = non_branded_queries[:20]
-    
-    print(f"Analyzing top {len(top_queries)} non-branded queries for keyword expansion...")
-    
-    # Track all keyword opportunities
-    all_opportunities = []
-    processed_keywords = set()
-    
-    # Process each top query
-    for query_data in top_queries:
-        query_text = query_data.get("query", "")
-        current_position = query_data.get("position", None)
-        current_clicks = query_data.get("clicks", 0)
-        
-        # Check cache first
-        cache_key = _get_cache_key(domain, query_text)
-        cached_data = _check_cache(supabase_client, cache_key)
-        
-        if cached_data:
-            print(f"Using cached data for query: {query_text}")
-            related_keywords = cached_data
-        else:
-            print(f"Fetching related keywords for: {query_text}")
-            related_keywords = await _get_related_keywords_dataforseo(
-                query=query_text,
-                location_code=location_code,
-                min_volume=500
-            )
-            
-            # Cache the results
-            if related_keywords:
-                _set_cache(supabase_client, cache_key, related_keywords)
-        
-        # Process related keywords
-        for kw_data in related_keywords:
-            keyword = kw_data["keyword"]
-            
-            # Skip if already processed
-            if keyword.lower() in processed_keywords:
+        for keyword_data in keywords_to_check:
+            keyword = keyword_data.get("query", "")
+            if not keyword:
                 continue
             
-            processed_keywords.add(keyword.lower())
+            payload = [{
+                "keyword": keyword,
+                "location_code": location_code,
+                "language_code": language_code,
+                "device": "desktop",
+                "os": "windows",
+                "depth": 100  # Check top 100 results
+            }]
             
-            search_volume = kw_data["search_volume"]
-            difficulty = kw_data["difficulty"]
+            try:
+                response = await client.post(url, json=payload, auth=auth)
+                response.raise_for_status()
+                data = response.json()
+                
+                if data.get("status_code") == 20000 and data.get("tasks"):
+                    task = data["tasks"][0]
+                    if task.get("result") and len(task["result"]) > 0:
+                        result = task["result"][0]
+                        items = result.get("items", [])
+                        
+                        for item in items:
+                            if item.get("type") == "organic":
+                                domain = item.get("domain")
+                                position = item.get("rank_absolute", 999)
+                                
+                                if domain and domain != user_domain:
+                                    # Track appearances
+                                    if domain not in domain_appearances:
+                                        domain_appearances[domain] = 0
+                                        domain_positions[domain] = []
+                                        domain_keywords[domain] = []
+                                    
+                                    domain_appearances[domain] += 1
+                                    domain_positions[domain].append(position)
+                                    domain_keywords[domain].append(keyword)
+                
+                # Small delay to respect rate limits
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                print(f"Error fetching SERP for '{keyword}': {e}")
+                continue
+    
+    # Calculate competitor metrics
+    competitors = []
+    total_keywords = len(keywords_to_check)
+    
+    for domain, appearances in domain_appearances.items():
+        if appearances >= 3:  # Only include domains appearing in at least 3 keywords
+            avg_position = sum(domain_positions[domain]) / len(domain_positions[domain])
+            overlap_percentage = (appearances / total_keywords) * 100
             
-            # Check if we already rank for this keyword
-            ranking_position = None
-            if keyword.lower() == query_text.lower():
-                ranking_position = current_position
-            
-            # Calculate opportunity score
-            opportunity_score = _calculate_opportunity_score(
-                search_volume=search_volume,
-                difficulty=difficulty,
-                current_position=ranking_position
-            )
-            
-            # Classify intent
-            intent = _classify_intent(keyword)
-            
-            all_opportunities.append({
-                "query": keyword,
-                "search_volume": search_volume,
-                "difficulty": difficulty,
-                "current_position": ranking_position,
-                "opportunity_score": opportunity_score,
-                "intent_category": intent,
-                "cpc": kw_data.get("cpc", 0),
-                "seed_query": query_text
+            competitors.append({
+                "domain": domain,
+                "keyword_overlap_count": appearances,
+                "overlap_percentage": round(overlap_percentage, 2),
+                "avg_position": round(avg_position, 2),
+                "shared_keywords": domain_keywords[domain][:10]  # Store up to 10 examples
             })
     
-    # Sort by opportunity score and take top 50
-    all_opportunities.sort(key=lambda x: x["opportunity_score"], reverse=True)
-    top_opportunities = all_opportunities[:50]
+    # Sort by overlap percentage
+    competitors.sort(key=lambda x: x["overlap_percentage"], reverse=True)
     
-    # Calculate summary metrics
-    total_opportunity_volume = sum(kw["search_volume"] for kw in top_opportunities)
-    avg_difficulty = sum(kw["difficulty"] for kw in top_opportunities) / len(top_opportunities) if top_opportunities else 0
-    
-    # Count by intent
-    intent_breakdown = {}
-    for kw in top_opportunities:
-        intent = kw["intent_category"]
-        intent_breakdown[intent] = intent_breakdown.get(intent, 0) + 1
-    
-    # Identify quick wins (high volume, low difficulty, not currently ranking)
-    quick_wins = [
-        kw for kw in top_opportunities
-        if kw["difficulty"] < 40
-        and kw["search_volume"] > 1000
-        and kw["current_position"] is None
-    ]
-    
-    # Identify optimization targets (already ranking but room to improve)
-    optimization_targets = [
-        kw for kw in top_opportunities
-        if kw["current_position"] is not None
-        and kw["current_position"] > 10
-        and kw["search_volume"] > 500
-    ]
-    
-    return {
-        "top_opportunities": top_opportunities,
-        "summary": {
-            "total_keywords_analyzed": len(all_opportunities),
-            "top_opportunities_count": len(top_opportunities),
-            "total_search_volume": total_opportunity_volume,
-            "average_difficulty": round(avg_difficulty, 1),
-            "intent_breakdown": intent_breakdown,
-            "quick_wins_count": len(quick_wins),
-            "optimization_targets_count": len(optimization_targets)
-        },
-        "quick_wins": quick_wins[:10],
-        "optimization_targets": optimization_targets[:10],
-        "seed_queries_analyzed": len(top_queries),
-        "cache_hit_rate": sum(
-            1 for q in top_queries
-            if _check_cache(supabase_client, _get_cache_key(domain, q.get("query", ""))) is not None
-        ) / len(top_queries) if top_queries else 0
-    }
+    return competitors[:10]  # Return top 10 competitors
 
 
-# Synchronous wrapper for backwards compatibility
-def analyze_keyword_opportunities_sync(
-    supabase_client,
-    gsc_data: Dict,
-    domain: str,
+async def _get_competitor_metrics(
+    competitor_domain: str,
+    user_keywords: List[str],
     location_code: int = 2840
-) -> Dict[str, Any]:
-    """Synchronous wrapper for the async analysis function."""
+) -> Dict:
+    """
+    Get detailed ranking metrics for a competitor across user's keywords.
+    """
+    url = "https://api.dataforseo.com/v3/serp/google/organic/live/advanced"
+    auth = httpx.BasicAuth(DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD)
+    
+    ranking_data = {
+        "total_rankings": 0,
+        "avg_position": 0,
+        "position_1_3": 0,
+        "position_4_10": 0,
+        "position_11_20": 0,
+        "position_21_plus": 0,
+        "keyword_positions": {}
+    }
+    
+    positions = []
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        # Sample up to 20 keywords to analyze (cost management)
+        sample_keywords = user_keywords[:20]
+        
+        for keyword in sample_keywords:
+            payload = [{
+                "keyword": keyword,
+                "location_code": location_code,
+                "language_code": "en",
+                "device": "desktop",
+                "os": "windows",
+                "depth": 100
+            }]
+            
+            try:
+                response = await client.post(url, json=payload, auth=auth)
+                response.raise_for_status()
+                data = response.json()
+                
+                if data.get("status_code") == 20000 and data.get("tasks"):
+                    task = data["tasks"][0]
+                    if task.get("result") and len(task["result"]) > 0:
+                        result = task["result"][0]
+                        items = result.get("items", [])
+                        
+                        for item in items:
+                            if item.get("type") == "organic" and item.get("domain") == competitor_domain:
+                                position = item.get("rank_absolute", 999)
+                                positions.append(position)
+                                ranking_data["keyword_positions"][keyword] = position
+                                ranking_data["total_rankings"] += 1
+                                
+                                if position <= 3:
+                                    ranking_data["position_1_3"] += 1
+                                elif position <= 10:
+                                    ranking_data["position_4_10"] += 1
+                                elif position <= 20:
+                                    ranking_data["position_11_20"] += 1
+                                else:
+                                    ranking_data["position_21_plus"] += 1
+                                break
+                
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                print(f"Error fetching competitor data for '{keyword}': {e}")
+                continue
+    
+    if positions:
+        ranking_data["avg_position"] = round(sum(positions) / len(positions), 2)
+    
+    return ranking_data
+
+
+def _calculate_competitive_strength(competitor_data: Dict, user_metrics: Dict) -> float:
+    """
+    Calculate competitive strength score (0-100) based on:
+    - Keyword overlap percentage (40% weight)
+    - Average position vs user (30% weight)
+    - Top 3 ranking frequency (30% weight)
+    """
+    overlap_score = min(competitor_data.get("overlap_percentage", 0) * 2, 40)
+    
+    # Position comparison
+    user_avg_position = user_metrics.get("avg_position", 20)
+    comp_avg_position = competitor_data.get("avg_position", 50)
+    
+    if comp_avg_position < user_avg_position:
+        position_score = 30
+    else:
+        # Closer positions = higher threat
+        position_diff = abs(comp_avg_position - user_avg_position)
+        position_score = max(0, 30 - (position_diff * 2))
+    
+    # Top 3 dominance
+    total_rankings = competitor_data.get("total_rankings", 0)
+    top3_count = competitor_data.get("position_1_3", 0)
+    
+    if total_rankings > 0:
+        top3_rate = (top3_count / total_rankings) * 100
+        top3_score = min(top3_rate * 0.3, 30)
+    else:
+        top3_score = 0
+    
+    total_score = overlap_score + position_score + top3_score
+    return round(total_score, 2)
+
+
+def _analyze_ranking_patterns(competitor_metrics: List[Dict]) -> Dict:
+    """
+    Analyze ranking patterns across competitors to identify:
+    - Average competitive density per position tier
+    - Difficulty scores for different keyword groups
+    """
+    patterns = {
+        "avg_competitors_per_keyword": 0,
+        "position_tier_competition": {
+            "top_3": {"avg_competitors": 0, "difficulty": "high"},
+            "4_10": {"avg_competitors": 0, "difficulty": "medium"},
+            "11_20": {"avg_competitors": 0, "difficulty": "low"}
+        },
+        "competitive_density": 0  # Overall competitive landscape density
+    }
+    
+    if not competitor_metrics:
+        return patterns
+    
+    # Calculate average competitors
+    total_competitors = len(competitor_metrics)
+    patterns["avg_competitors_per_keyword"] = total_competitors
+    
+    # Analyze position tier competition
+    top3_competitors = sum(1 for c in competitor_metrics if c.get("avg_position", 999) <= 3)
+    mid_competitors = sum(1 for c in competitor_metrics if 4 <= c.get("avg_position", 999) <= 10)
+    lower_competitors = sum(1 for c in competitor_metrics if 11 <= c.get("avg_position", 999) <= 20)
+    
+    patterns["position_tier_competition"]["top_3"]["avg_competitors"] = top3_competitors
+    patterns["position_tier_competition"]["4_10"]["avg_competitors"] = mid_competitors
+    patterns["position_tier_competition"]["11_20"]["avg_competitors"] = lower_competitors
+    
+    # Calculate competitive density (0-100 scale)
+    # Based on number of strong competitors (overlap > 20%)
+    strong_competitors = sum(1 for c in competitor_metrics if c.get("overlap_percentage", 0) > 20)
+    patterns["competitive_density"] = min(strong_competitors * 10, 100)
+    
+    return patterns
+
+
+def calculate(
+    domain: str,
+    gsc_data: Dict,
+    supabase_client: Any,
+    location_code: int = 2840,
+    language_code: str = "en"
+) -> Dict:
+    """
+    Module 3: Competitor Analysis
+    
+    Identifies top 5-10 competing domains based on keyword overlap,
+    analyzes their ranking patterns, calculates competitive strength scores.
+    
+    Args:
+        domain: User's domain
+        gsc_data: GSC data including query performance
+        supabase_client: Supabase client for caching
+        location_code: DataForSEO location code (default: 2840 = US)
+        language_code: Language code (default: "en")
+    
+    Returns:
+        Dict containing competitor insights, metrics, and visualization data
+    """
     import asyncio
     
-    # Create event loop if none exists
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    # Extract top keywords from GSC data
+    queries = gsc_data.get("queries", [])
     
-    # Run the async function
-    return loop.run_until_complete(
-        analyze_keyword_opportunities(
-            supabase_client=supabase_client,
-            gsc_data=gsc_data,
-            domain=domain,
-            location_code=location_code
+    # Sort by impressions and take top 100 for analysis
+    top_queries = sorted(
+        [q for q in queries if q.get("impressions", 0) > 100],
+        key=lambda x: x.get("impressions", 0),
+        reverse=True
+    )[:100]
+    
+    # Check cache first
+    competitor_domains = [c.get("domain") for c in gsc_data.get("competitors", [])][:10]
+    cache_key = _get_cache_key(domain, competitor_domains)
+    cached_data = _check_cache(supabase_client, cache_key)
+    
+    if cached_data:
+        return cached_data
+    
+    # Run async competitor identification
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        competitors = loop.run_until_complete(
+            _identify_competitors_from_serps(domain, top_queries, location_code, language_code)
         )
-    )
+    finally:
+        loop.close()
+    
+    if not competitors:
+        return {
+            "status": "insufficient_data",
+            "insights": {
+                "summary": "Unable to identify competitors. Ensure domain has sufficient keyword rankings.",
+                "competitor_count": 0
+            },
+            "metrics": {},
+            "visualization_data": {}
+        }
+    
+    # Get detailed metrics for top competitors
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        detailed_competitors = []
+        user_keywords = [q.get("query") for q in top_queries]
+        user_avg_position = sum(q.get("position", 50) for q in top_queries) / len(top_queries)
+        user_metrics = {"avg_position": user_avg_position}
+        
+        for competitor in competitors[:10]:
+            comp_domain = competitor["domain"]
+            comp_keywords = competitor.get("shared_keywords", user_keywords[:20])
+            
+            # Get detailed ranking metrics
+            metrics = loop.run_until_complete(
+                _get_competitor_metrics(comp_domain, comp_keywords, location_code)
+            )
+            
+            # Merge metrics with basic competitor data
+            detailed_competitor = {**competitor, **metrics}
+            
+            # Calculate competitive strength score
+            strength_score = _calculate_competitive_strength(detailed_competitor, user_metrics)
+            detailed_competitor["competitive_strength_score"] = strength_score
+            
+            # Categorize threat level
+            if strength_score >= 70:
+                detailed_competitor["threat_level"] = "high"
+            elif strength_score >= 40:
+                detailed_competitor["threat_level"] = "medium"
+            else:
+                detailed_competitor["threat_level"] = "low"
+            
+            detailed_competitors.append(detailed_competitor)
+        
+        # Sort by competitive strength
+        detailed_competitors.sort(key=lambda x: x["competitive_strength_score"], reverse=True)
+        
+    finally:
+        loop.close()
+    
+    # Analyze ranking patterns
+    ranking_patterns = _analyze_ranking_patterns(detailed_competitors)
+    
+    # Generate insights
+    top_competitor = detailed_competitors[0] if detailed_competitors else None
+    high_threat_count = sum(1 for c in detailed_competitors if c.get("threat_level") == "high")
+    
+    insights = {
+        "summary": f"Identified {len(detailed_competitors)} primary competitors. {high_threat_count} pose high competitive threat.",
+        "top_competitor": {
+            "domain": top_competitor["domain"] if top_competitor else "N/A",
+            "overlap_percentage": top_competitor.get("overlap_percentage", 0) if top_competitor else 0,
+            "avg_position": top_competitor.get("avg_position", 0) if top_competitor else 0,
+            "strength_score": top_competitor.get("competitive_strength_score", 0) if top_competitor else 0
+        },
+        "competitive_landscape": {
+            "density": ranking_patterns["competitive_density"],
+            "description": f"Competitive density score of {ranking_patterns['competitive_density']}/100. " +
+                         ("Highly competitive market." if ranking_patterns['competitive_density'] > 70 else
+                          "Moderately competitive market." if ranking_patterns['competitive_density'] > 40 else
+                          "Less competitive market with opportunities.")
+        },
+        "recommendations": []
+    }
+    
+    # Generate recommendations
+    if high_threat_count > 0:
+        insights["recommendations"].append(
+            f"Focus on differentiating from {high_threat_count} high-threat competitors through unique content angles."
+        )
+    
+    if ranking_patterns["position_tier_competition"]["top_3"]["avg_competitors"] > 5:
+        insights["recommendations"].append(
+            "Top 3 positions are heavily contested. Consider targeting long-tail variations with less competition."
+        )
+    
+    if user_avg_position > 10:
+        insights["recommendations"].append(
+            "Current average position suggests opportunity to improve through on-page optimization and content depth."
+        )
+    
+    # Calculate aggregate metrics
+    metrics = {
+        "total_competitors_identified": len(detailed_competitors),
+        "high_threat_competitors": high_threat_count,
+        "medium_threat_competitors": sum(1 for c in detailed_competitors if c.get("threat_level") == "medium"),
+        "low_threat_competitors": sum(1 for c in detailed_competitors if c.get("threat_level") == "low"),
+        "avg_competitor_position": round(
+            sum(c.get("avg_position", 0) for c in detailed_competitors) / len(detailed_competitors), 2
+        ) if detailed_competitors else 0,
+        "avg_keyword_overlap": round(
+            sum(c.get("overlap_percentage", 0) for c in detailed_competitors) / len(detailed_competitors), 2
+        ) if detailed_competitors else 0,
+        "competitive_density_score": ranking_patterns["competitive_density"]
+    }
+    
+    # Prepare visualization data
+    visualization_data = {
+        "competitor_overview": {
+            "type": "bar_chart",
+            "title": "Competitive Strength Scores",
+            "data": [
+                {
+                    "domain": c["domain"],
+                    "strength_score": c["competitive_strength_score"],
+                    "threat_level": c["threat_level"]
+                }
+                for c in detailed_competitors[:10]
+            ]
+        },
+        "keyword_overlap": {
+            "type": "horizontal_bar",
+            "title": "Keyword Overlap Percentage",
+            "data": [
+                {
+                    "domain": c["domain"],
+                    "overlap_percentage": c["overlap_percentage"]
+                }
+                for c in detailed_competitors[:10]
+            ]
+        },
+        "position_comparison": {
+            "type": "scatter_plot",
+            "title": "Average Position vs Keyword Overlap",
+            "data": [
+                {
+                    "domain": c["domain"],
+                    "x": c.get("overlap_percentage", 0),
+                    "y": c.get("avg_position", 0),
+                    "size": c.get("competitive_strength_score", 0)
+                }
+                for c in detailed_competitors
+            ],
+            "user_position": user_avg_position
+        },
+        "ranking_distribution": {
+            "type": "stacked_bar",
+            "title": "Competitor Position Distribution",
+            "data": [
+                {
+                    "domain": c["domain"],
+                    "top_3": c.get("position_1_3", 0),
+                    "4_10": c.get("position_4_10", 0),
+                    "11_20": c.get("position_11_20", 0),
+                    "21_plus": c.get("position_21_plus", 0)
+                }
+                for c in detailed_competitors[:10]
+            ]
+        },
+        "competitive_density": {
+            "type": "gauge",
+            "title": "Market Competitive Density",
+            "value": ranking_patterns["competitive_density"],
+            "max": 100
+        }
+    }
+    
+    result = {
+        "status": "success",
+        "insights": insights,
+        "metrics": metrics,
+        "competitors": detailed_competitors,
+        "ranking_patterns": ranking_patterns,
+        "visualization_data": visualization_data,
+        "generated_at": datetime.now().isoformat()
+    }
+    
+    # Cache the results
+    _set_cache(supabase_client, cache_key, result)
+    
+    return result
