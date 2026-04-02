@@ -332,6 +332,114 @@ async def list_my_reports(
         raise HTTPException(status_code=500, detail=f"Failed to list reports: {str(e)}")
 
 
+
+# ---------------------------------------------------------------------------
+# Real-time module results (for progressive rendering during generation)
+# ---------------------------------------------------------------------------
+
+@router.get("/{report_id}/modules")
+async def get_report_modules(
+    report_id: str,
+    user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Return individual module results from the report_modules table.
+
+    Unlike GET /{report_id} which returns report_data (only written after
+    the entire pipeline completes), this endpoint reads from report_modules
+    which is populated **in real time** as each module finishes.
+
+    This enables the frontend to progressively render completed module
+    sections during the 2-5 minute generation window instead of showing
+    a blank loading screen until all 12 modules finish.
+
+    Response shape::
+
+        {
+            "report_id": "...",
+            "status": "analyzing",
+            "modules": {
+                "health_trajectory":    { "status": "success", "data": {...} },
+                "page_triage":          { "status": "success", "data": {...} },
+                "serp_landscape":       { "status": "running" },
+                "content_intelligence": { "status": "pending" },
+                ...
+            }
+        }
+    """
+    report = await _get_owned_report(report_id, user)
+
+    supabase = _get_supabase()
+    try:
+        rows = (
+            supabase.table("report_modules")
+            .select("module_number, module_name, results, status")
+            .eq("report_id", report_id)
+            .order("module_number")
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch modules: {str(e)}")
+
+    # Map module numbers to canonical names
+    MODULE_NAMES = {
+        1: "health_trajectory",
+        2: "page_triage",
+        3: "serp_landscape",
+        4: "content_intelligence",
+        5: "gameplan",
+        6: "algorithm_impact",
+        7: "intent_migration",
+        8: "technical_health",
+        9: "site_architecture",
+        10: "branded_split",
+        11: "competitive_threats",
+        12: "revenue_attribution",
+    }
+
+    modules: Dict[str, Any] = {}
+
+    # Initialize all 12 modules as pending
+    for num, name in MODULE_NAMES.items():
+        modules[name] = {"status": "pending", "number": num}
+
+    # Fill in completed/failed modules from DB
+    for row in rows.data or []:
+        num = row.get("module_number")
+        name = MODULE_NAMES.get(num, row.get("module_name", f"module_{num}"))
+        status = row.get("status", "success")
+        results = row.get("results")
+
+        module_entry: Dict[str, Any] = {"status": status, "number": num}
+
+        if status in ("success", "completed") and results and isinstance(results, dict):
+            # Check if this is a "skipped" result stored as success
+            if results.get("skipped"):
+                module_entry["status"] = "skipped"
+                module_entry["reason"] = results.get("reason", "Skipped due to dependency failure")
+            else:
+                module_entry["status"] = "success"
+                module_entry["data"] = results
+        elif status == "failed":
+            module_entry["error"] = results.get("error", "Module execution failed") if isinstance(results, dict) else str(results)
+
+        modules[name] = module_entry
+
+    # Mark the currently running module
+    report_status = report.get("status", "")
+    current_module = report.get("current_module")
+    if report_status in ("analyzing", "running") and current_module:
+        for name, entry in modules.items():
+            if entry.get("number") == current_module and entry.get("status") == "pending":
+                entry["status"] = "running"
+
+    return {
+        "report_id": report_id,
+        "status": report.get("status", "unknown"),
+        "domain": report.get("domain", ""),
+        "modules": modules,
+    }
+
 # ---------------------------------------------------------------------------
 # PDF export
 # ---------------------------------------------------------------------------
