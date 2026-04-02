@@ -2008,6 +2008,22 @@ function BrandedSplitContent({ data }: { data: any }) {
   const topNonBranded = data.top_non_branded_queries || [];
   const opportunities = data.non_branded_opportunities || [];
 
+  // Trend timeline data for dual-axis chart
+  const trendTimeline = data.trends?.timeline || [];
+  const hasTrendChart = trendTimeline.length >= 2;
+
+  // Format week labels for the chart (e.g. "Jan 6" instead of "2025-01-06")
+  const chartData = trendTimeline.map((pt: any) => {
+    const d = new Date(pt.week + 'T00:00:00');
+    const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return {
+      week: label,
+      branded_clicks: pt.branded_clicks || 0,
+      non_branded_clicks: pt.non_branded_clicks || 0,
+      branded_share_pct: pt.branded_click_share_pct ?? 0,
+    };
+  });
+
   return (
     <div className="space-y-6">
       {/* Summary Metrics */}
@@ -2047,8 +2063,100 @@ function BrandedSplitContent({ data }: { data: any }) {
         </div>
       </div>
 
-      {/* Non-Branded Growth */}
-      {nbGrowth != null && (
+      {/* Branded vs Non-Branded Trend Chart (Dual-Axis) */}
+      {hasTrendChart && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+            Branded vs Non-Branded Clicks Over Time
+          </h3>
+          <ResponsiveContainer width="100%" height={320}>
+            <LineChart data={chartData} margin={{ top: 5, right: 50, left: 10, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis
+                dataKey="week"
+                tick={{ fill: '#94a3b8', fontSize: 11 }}
+                tickLine={{ stroke: '#475569' }}
+                interval={Math.max(0, Math.floor(chartData.length / 8))}
+              />
+              <YAxis
+                yAxisId="clicks"
+                tick={{ fill: '#94a3b8', fontSize: 11 }}
+                tickLine={{ stroke: '#475569' }}
+                tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
+                label={{ value: 'Clicks', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11, dx: -5 }}
+              />
+              <YAxis
+                yAxisId="share"
+                orientation="right"
+                domain={[0, 100]}
+                tick={{ fill: '#f59e0b', fontSize: 11 }}
+                tickLine={{ stroke: '#475569' }}
+                tickFormatter={(v: number) => `${v}%`}
+                label={{ value: 'Brand Share', angle: 90, position: 'insideRight', fill: '#f59e0b', fontSize: 11, dx: 10 }}
+              />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
+                formatter={(value: any, name: string) => {
+                  if (name === 'branded_share_pct') return [`${Number(value).toFixed(1)}%`, 'Brand Share'];
+                  if (name === 'branded_clicks') return [Number(value).toLocaleString(), 'Branded Clicks'];
+                  if (name === 'non_branded_clicks') return [Number(value).toLocaleString(), 'Non-Branded Clicks'];
+                  return [value, name];
+                }}
+              />
+              <Legend
+                wrapperStyle={{ paddingTop: '12px' }}
+                formatter={(value: string) => {
+                  if (value === 'branded_clicks') return 'Branded Clicks';
+                  if (value === 'non_branded_clicks') return 'Non-Branded Clicks';
+                  if (value === 'branded_share_pct') return 'Brand Share %';
+                  return value;
+                }}
+              />
+              <Line
+                yAxisId="clicks"
+                type="monotone"
+                dataKey="branded_clicks"
+                stroke="#60a5fa"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4, fill: '#60a5fa' }}
+              />
+              <Line
+                yAxisId="clicks"
+                type="monotone"
+                dataKey="non_branded_clicks"
+                stroke="#34d399"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4, fill: '#34d399' }}
+              />
+              <Line
+                yAxisId="share"
+                type="monotone"
+                dataKey="branded_share_pct"
+                stroke="#f59e0b"
+                strokeWidth={1.5}
+                strokeDasharray="5 3"
+                dot={false}
+                activeDot={{ r: 3, fill: '#f59e0b' }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+          {data.trends?.trend?.trend_direction && (
+            <p className="text-xs text-slate-400 mt-3 text-center">
+              {data.trends.trend.trend_direction === 'increasing_brand_dependency'
+                ? `⚠️ Brand dependency increasing — branded share grew ${data.trends.trend.branded_share_change_pp ?? ''}pp over the period`
+                : data.trends.trend.trend_direction === 'decreasing_brand_dependency'
+                ? `✅ Brand dependency decreasing — non-branded clicks grew ${data.trends.trend.non_branded_click_growth_pct ?? ''}% over the period`
+                : 'Brand/non-branded split is stable over the analysis period'}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Non-Branded Growth (fallback when no chart timeline) */}
+      {nbGrowth != null && !hasTrendChart && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
           <h3 className="text-sm font-semibold text-slate-300 mb-2">
             Non-Branded Growth Trend
