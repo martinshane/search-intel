@@ -5,10 +5,17 @@ Detects algorithm update impacts by correlating traffic change points
 with known Google algorithm updates. Identifies which pages and content
 types were most affected, and assesses site vulnerability to future updates.
 
-Phase 3 — full implementation replacing the stub.
+Phase 3 — full implementation.
+
+Data sources for algorithm updates (in priority order):
+  1. Supabase ``algorithm_updates`` table — live, updatable without code deploy
+  2. Hardcoded ``KNOWN_ALGORITHM_UPDATES`` — comprehensive fallback (2023-2026)
+
+The two sources are merged and deduplicated by (date, name) before analysis.
 """
 
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
@@ -49,36 +56,289 @@ class ImpactAssessment:
 
 
 # ---------------------------------------------------------------------------
-# Known Google algorithm updates (2023-2026)
+# Known Google algorithm updates (2023-2026) — hardcoded fallback
+#
+# This list is comprehensive but not exhaustive.  The Supabase
+# ``algorithm_updates`` table is the preferred source and can be
+# updated without a code deploy.  Entries here act as a safety net
+# when Supabase is unreachable or the table is empty.
+#
+# Sources: Google Search Status Dashboard, Search Engine Roundtable,
+#          Semrush Sensor, Moz Algorithm History
 # ---------------------------------------------------------------------------
 
 KNOWN_ALGORITHM_UPDATES: List[AlgorithmUpdate] = [
-    # 2026
-    AlgorithmUpdate(datetime(2026, 3, 13), "March 2026 Core Update", "core", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2026, 1, 15), "January 2026 Spam Update", "spam", "Google Search Status Dashboard"),
-    # 2025
-    AlgorithmUpdate(datetime(2025, 12, 12), "December 2025 Core Update", "core", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2025, 11, 11), "November 2025 Core Update", "core", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2025, 8, 22), "August 2025 Core Update", "core", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2025, 6, 5), "June 2025 Spam Update", "spam", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2025, 3, 13), "March 2025 Core Update", "core", "Google Search Status Dashboard"),
-    # 2024
-    AlgorithmUpdate(datetime(2024, 12, 16), "December 2024 Spam Update", "spam", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2024, 11, 11), "November 2024 Core Update", "core", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2024, 8, 15), "August 2024 Core Update", "core", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2024, 6, 20), "June 2024 Spam Update", "spam", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2024, 3, 5), "March 2024 Core Update", "core", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2024, 3, 5), "March 2024 Spam Update", "spam", "Google Search Status Dashboard"),
-    # 2023
-    AlgorithmUpdate(datetime(2023, 11, 2), "November 2023 Core Update", "core", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2023, 11, 8), "November 2023 Reviews Update", "product_reviews", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2023, 10, 4), "October 2023 Spam Update", "spam", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2023, 10, 5), "October 2023 Core Update", "core", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2023, 9, 14), "September 2023 Helpful Content Update", "helpful_content", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2023, 8, 22), "August 2023 Core Update", "core", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2023, 4, 12), "April 2023 Reviews Update", "product_reviews", "Google Search Status Dashboard"),
-    AlgorithmUpdate(datetime(2023, 3, 15), "March 2023 Core Update", "core", "Google Search Status Dashboard"),
+    # ── 2026 ───────────────────────────────────────────────────────────
+    AlgorithmUpdate(
+        datetime(2026, 3, 13), "March 2026 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Broad core ranking update improving how Google assesses content quality and relevance.",
+    ),
+    AlgorithmUpdate(
+        datetime(2026, 1, 15), "January 2026 Spam Update", "spam",
+        "Google Search Status Dashboard",
+        "Spam detection improvements targeting link manipulation and cloaking.",
+    ),
+
+    # ── 2025 ───────────────────────────────────────────────────────────
+    AlgorithmUpdate(
+        datetime(2025, 12, 12), "December 2025 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Year-end broad core update refining content quality signals.",
+    ),
+    AlgorithmUpdate(
+        datetime(2025, 11, 11), "November 2025 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Broad core algorithm update with emphasis on expertise signals.",
+    ),
+    AlgorithmUpdate(
+        datetime(2025, 8, 22), "August 2025 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Mid-year core update adjusting ranking systems across all content types.",
+    ),
+    AlgorithmUpdate(
+        datetime(2025, 6, 5), "June 2025 Spam Update", "spam",
+        "Google Search Status Dashboard",
+        "Spam detection update targeting scaled content abuse and parasite SEO.",
+    ),
+    AlgorithmUpdate(
+        datetime(2025, 5, 5), "May 2025 AI Overview Expansion", "ai_overview",
+        "Google Search Status Dashboard",
+        "Major expansion of AI Overviews in SERPs, affecting organic click-through rates.",
+    ),
+    AlgorithmUpdate(
+        datetime(2025, 3, 13), "March 2025 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Broad core update continuing quality refinements from November 2024.",
+    ),
+    AlgorithmUpdate(
+        datetime(2025, 1, 21), "January 2025 Local/Maps Update", "local",
+        "Google Search Status Dashboard",
+        "Local search ranking adjustments affecting map pack and local results.",
+    ),
+
+    # ── 2024 ───────────────────────────────────────────────────────────
+    AlgorithmUpdate(
+        datetime(2024, 12, 16), "December 2024 Spam Update", "spam",
+        "Google Search Status Dashboard",
+        "Spam detection improvements targeting link spam and manipulative redirects.",
+    ),
+    AlgorithmUpdate(
+        datetime(2024, 12, 12), "December 2024 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Year-end broad core update; rolled out over 2 weeks through late December.",
+    ),
+    AlgorithmUpdate(
+        datetime(2024, 11, 11), "November 2024 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Broad core algorithm update with focus on content quality and E-E-A-T signals.",
+    ),
+    AlgorithmUpdate(
+        datetime(2024, 8, 15), "August 2024 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Broad core update; helpful content system folded into core ranking. "
+        "Sites previously hit by September 2023 HCU may see recovery or further impact.",
+    ),
+    AlgorithmUpdate(
+        datetime(2024, 6, 20), "June 2024 Spam Update", "spam",
+        "Google Search Status Dashboard",
+        "Spam detection update targeting low-quality content and link manipulation.",
+    ),
+    AlgorithmUpdate(
+        datetime(2024, 5, 5), "May 2024 Site Reputation Abuse Enforcement", "spam",
+        "Google Search Status Dashboard",
+        "Enforcement of site reputation abuse policy targeting third-party hosted "
+        "content (parasite SEO) on otherwise reputable domains.",
+    ),
+    AlgorithmUpdate(
+        datetime(2024, 4, 26), "April 2024 Reviews Update", "product_reviews",
+        "Google Search Status Dashboard",
+        "Reviews system update improving how Google evaluates product and service reviews.",
+    ),
+    AlgorithmUpdate(
+        datetime(2024, 3, 5), "March 2024 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Major core update rolling out over ~45 days. Enhanced quality ranking systems "
+        "with new spam policies against scaled content abuse, site reputation abuse, "
+        "and expired domain abuse.",
+    ),
+    AlgorithmUpdate(
+        datetime(2024, 3, 5), "March 2024 Spam Update", "spam",
+        "Google Search Status Dashboard",
+        "Simultaneous spam update launched with the March 2024 core update. "
+        "New policies targeting manipulative practices.",
+    ),
+
+    # ── 2023 ───────────────────────────────────────────────────────────
+    AlgorithmUpdate(
+        datetime(2023, 11, 8), "November 2023 Reviews Update", "product_reviews",
+        "Google Search Status Dashboard",
+        "Final standalone reviews update before integration into core ranking.",
+    ),
+    AlgorithmUpdate(
+        datetime(2023, 11, 2), "November 2023 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Broad core update; rolled out over ~25 days through November.",
+    ),
+    AlgorithmUpdate(
+        datetime(2023, 10, 5), "October 2023 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Broad core update that ran concurrently with the October spam update.",
+    ),
+    AlgorithmUpdate(
+        datetime(2023, 10, 4), "October 2023 Spam Update", "spam",
+        "Google Search Status Dashboard",
+        "Spam update improving detection of cloaking, hacked content, and auto-generated spam.",
+    ),
+    AlgorithmUpdate(
+        datetime(2023, 9, 14), "September 2023 Helpful Content Update", "helpful_content",
+        "Google Search Status Dashboard",
+        "Major helpful content system update with improved classifier. Sites with "
+        "significant unhelpful content saw ranking demotions across the entire domain.",
+    ),
+    AlgorithmUpdate(
+        datetime(2023, 8, 22), "August 2023 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Broad core update rolling out over ~16 days.",
+    ),
+    AlgorithmUpdate(
+        datetime(2023, 4, 12), "April 2023 Reviews Update", "product_reviews",
+        "Google Search Status Dashboard",
+        "Expanded reviews system beyond product reviews to include services, "
+        "destinations, media, and other review types.",
+    ),
+    AlgorithmUpdate(
+        datetime(2023, 3, 15), "March 2023 Core Update", "core",
+        "Google Search Status Dashboard",
+        "Broad core update rolling out over ~13 days.",
+    ),
+    AlgorithmUpdate(
+        datetime(2023, 2, 21), "February 2023 Product Reviews Update", "product_reviews",
+        "Google Search Status Dashboard",
+        "Product reviews ranking update targeting review content quality.",
+    ),
+    AlgorithmUpdate(
+        datetime(2023, 2, 22), "February 2023 Link Spam Update", "link",
+        "Google Search Status Dashboard",
+        "Link spam detection update using SpamBrain AI to neutralize unnatural links. "
+        "Affected sites relying on link schemes saw ranking drops.",
+    ),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Supabase integration — fetch live algorithm updates
+# ---------------------------------------------------------------------------
+
+def _fetch_supabase_updates() -> List[AlgorithmUpdate]:
+    """
+    Fetch algorithm updates from the Supabase ``algorithm_updates`` table.
+
+    Returns an empty list on any failure (missing env vars, network error,
+    empty table, etc.) so the caller can fall back to the hardcoded list.
+    """
+    url = os.getenv("SUPABASE_URL", "")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_KEY", "")
+    if not url or not key:
+        logger.debug("Supabase not configured — using hardcoded algorithm updates only")
+        return []
+
+    try:
+        from supabase import create_client
+        client = create_client(url, key)
+        result = (
+            client.table("algorithm_updates")
+            .select("date, name, type, source, description, severity")
+            .order("date", desc=True)
+            .execute()
+        )
+
+        updates: List[AlgorithmUpdate] = []
+        for row in result.data or []:
+            try:
+                date_val = row.get("date", "")
+                if isinstance(date_val, str):
+                    # Handle both "2024-03-05" and "2024-03-05T00:00:00" formats
+                    date_obj = datetime.fromisoformat(date_val.replace("Z", "+00:00"))
+                    # Strip timezone for comparison with hardcoded dates
+                    date_obj = date_obj.replace(tzinfo=None)
+                else:
+                    continue
+
+                name = row.get("name", "")
+                update_type = row.get("type", "unknown")
+                source = row.get("source", "supabase")
+                description = row.get("description")
+
+                if name:
+                    updates.append(AlgorithmUpdate(
+                        date=date_obj,
+                        name=name,
+                        type=update_type,
+                        source=source,
+                        description=description,
+                    ))
+            except (ValueError, TypeError) as parse_err:
+                logger.warning("Skipping malformed algorithm_updates row: %s", parse_err)
+                continue
+
+        logger.info(
+            "Fetched %d algorithm updates from Supabase", len(updates)
+        )
+        return updates
+
+    except ImportError:
+        logger.debug("supabase package not available — using hardcoded updates only")
+        return []
+    except Exception as exc:
+        logger.warning(
+            "Failed to fetch algorithm updates from Supabase: %s — "
+            "falling back to hardcoded list",
+            exc,
+        )
+        return []
+
+
+def _merge_updates(
+    hardcoded: List[AlgorithmUpdate],
+    supabase_updates: List[AlgorithmUpdate],
+) -> List[AlgorithmUpdate]:
+    """
+    Merge hardcoded and Supabase algorithm updates, deduplicating by
+    (date, name).  Supabase entries take precedence when duplicates exist
+    (they may have richer descriptions added by the operator).
+
+    Returns a deduplicated list sorted by date descending.
+    """
+    # Build lookup from hardcoded — key is (date.date(), lowercase name)
+    merged: Dict[Tuple, AlgorithmUpdate] = {}
+
+    for update in hardcoded:
+        key = (update.date.date(), update.name.lower().strip())
+        merged[key] = update
+
+    # Supabase entries overwrite hardcoded on collision
+    for update in supabase_updates:
+        key = (update.date.date(), update.name.lower().strip())
+        merged[key] = update
+
+    result = sorted(merged.values(), key=lambda u: u.date, reverse=True)
+    logger.info(
+        "Merged algorithm updates: %d hardcoded + %d supabase → %d unique",
+        len(hardcoded), len(supabase_updates), len(result),
+    )
+    return result
+
+
+def _get_algorithm_updates() -> List[AlgorithmUpdate]:
+    """
+    Get the best available algorithm update list.
+
+    Tries Supabase first, then merges with the hardcoded fallback.
+    If Supabase is unavailable, returns the hardcoded list alone.
+    """
+    supabase_updates = _fetch_supabase_updates()
+    return _merge_updates(KNOWN_ALGORITHM_UPDATES, supabase_updates)
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +452,7 @@ class AlgorithmImpactAnalyzer:
                 "updates_with_site_impact": len(matched_impacts),
                 "update_timeline": update_timeline,
                 "traffic_series": traffic_series,
+                "updates_database_size": len(self.algorithm_updates),
             }
 
         except Exception as e:
@@ -652,14 +913,15 @@ class AlgorithmImpactAnalyzer:
         timeline = []
         for update in self.algorithm_updates:
             if data_start <= update.date <= data_end:
-                timeline.append(
-                    {
-                        "date": update.date.isoformat(),
-                        "name": update.name,
-                        "type": update.type,
-                        "source": update.source,
-                    }
-                )
+                entry: Dict[str, Any] = {
+                    "date": update.date.isoformat(),
+                    "name": update.name,
+                    "type": update.type,
+                    "source": update.source,
+                }
+                if update.description:
+                    entry["description"] = update.description
+                timeline.append(entry)
         return sorted(timeline, key=lambda x: x["date"], reverse=True)
 
     def _build_summary(
@@ -731,7 +993,7 @@ class AlgorithmImpactAnalyzer:
 
 
 # ---------------------------------------------------------------------------
-# Public function (called by routes/modules.py)
+# Public function (called by pipeline.py and routes/modules.py)
 # ---------------------------------------------------------------------------
 
 def analyze_algorithm_impacts(
@@ -746,6 +1008,12 @@ def analyze_algorithm_impacts(
     Correlates traffic change points with known Google algorithm updates,
     identifies affected pages, assesses vulnerability, and provides
     recovery recommendations.
+
+    Algorithm updates are loaded from two sources:
+      1. Supabase ``algorithm_updates`` table (live, operator-updatable)
+      2. Hardcoded fallback list (comprehensive, covers 2023-2026)
+
+    The two sources are merged and deduplicated before analysis.
 
     Args:
         daily_data: DataFrame or dict with daily aggregate GSC metrics
@@ -776,6 +1044,7 @@ def analyze_algorithm_impacts(
             "updates_with_site_impact": 0,
             "update_timeline": [],
             "traffic_series": [],
+            "updates_database_size": 0,
         }
 
     change_points = change_points_from_module1 or []
@@ -785,7 +1054,10 @@ def analyze_algorithm_impacts(
     if isinstance(page_metadata, dict):
         page_metadata = pd.DataFrame(page_metadata)
 
-    analyzer = AlgorithmImpactAnalyzer(KNOWN_ALGORITHM_UPDATES)
+    # Load algorithm updates from Supabase + hardcoded, merged & deduped
+    all_updates = _get_algorithm_updates()
+
+    analyzer = AlgorithmImpactAnalyzer(all_updates)
     return analyzer.analyze(
         daily_data=daily_data,
         change_points=change_points,
