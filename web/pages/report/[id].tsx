@@ -7,7 +7,7 @@ import dynamic from 'next/dynamic';
 const NetworkGraph = dynamic(() => import('../../components/NetworkGraph'), {
   ssr: false,
   loading: () => (
-    <div className="flex items-center justify-center h-48 bg-gray-50 rounded-lg border border-dashed border-gray-300 text-sm text-gray-500">
+    <div className="flex items-center justify-center h-48 bg-slate-800/30 rounded-lg border border-dashed border-gray-300 text-sm text-slate-400">
       Loading network graph...
     </div>
   ),
@@ -347,7 +347,7 @@ export default function ReportPage() {
 
       <NavHeader />
 
-      <main className="min-h-screen bg-gray-50">
+      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
         {/* Hero Header */}
         <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 text-white">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
@@ -363,13 +363,26 @@ export default function ReportPage() {
                   </p>
                 </div>
               </div>
-              <button
-                onClick={() => window.print()}
-                className="flex items-center space-x-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm"
-              >
-                <Download className="w-4 h-4" />
-                <span className="text-sm font-medium">Export</span>
-              </button>
+              <div className="flex items-center space-x-3">
+                <button
+                  onClick={() => {
+                    const a = document.createElement('a');
+                    a.href = `${process.env.NEXT_PUBLIC_API_URL || 'https://search-intel-api-production.up.railway.app'}/api/v1/reports/${id}/pdf`;
+                    a.download = `search_intelligence_${report.domain}.pdf`;
+                    a.click();
+                  }}
+                  className="flex items-center space-x-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm"
+                >
+                  <Download className="w-4 h-4" />
+                  <span className="text-sm font-medium">Download PDF</span>
+                </button>
+                <button
+                  onClick={() => window.print()}
+                  className="flex items-center space-x-2 px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm text-sm"
+                >
+                  Print
+                </button>
+              </div>
             </div>
 
             {/* Summary Cards */}
@@ -554,7 +567,7 @@ export default function ReportPage() {
             </p>
             <button
               onClick={() => router.push('/contact')}
-              className="px-8 py-4 bg-white text-blue-600 rounded-lg font-semibold hover:bg-blue-50 transition text-lg shadow-lg"
+              className="px-8 py-4 bg-slate-800/60 text-blue-400 rounded-lg font-semibold hover:bg-blue-900/30 transition text-lg shadow-lg"
             >
               Work With Us
             </button>
@@ -617,25 +630,25 @@ function ModuleSection({ moduleKey, expanded, onToggle, children }: ModuleSectio
   const IconComponent = getIconComponent(meta.icon);
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+    <div className="bg-slate-800/60 rounded-lg shadow-sm border border-slate-700/50 overflow-hidden">
       <button
         onClick={onToggle}
-        className="w-full flex items-center justify-between p-6 hover:bg-gray-50 transition text-left"
+        className="w-full flex items-center justify-between p-6 hover:bg-slate-800/30 transition text-left"
       >
         <div className="flex items-center space-x-4">
-          <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600 flex-shrink-0">
+          <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center text-blue-400 flex-shrink-0">
             <IconComponent className="w-5 h-5" />
           </div>
           <div>
             <div className="flex items-center space-x-2">
-              <span className="text-xs font-semibold text-blue-600 uppercase tracking-wide">
+              <span className="text-xs font-semibold text-blue-400 uppercase tracking-wide">
                 Module {meta.number}
               </span>
             </div>
-            <h2 className="text-xl font-bold text-gray-900 mt-1">{meta.title}</h2>
+            <h2 className="text-xl font-bold text-white mt-1">{meta.title}</h2>
           </div>
         </div>
-        <div className="text-gray-400">
+        <div className="text-slate-500">
           {expanded ? (
             <ChevronUp className="w-6 h-6" />
           ) : (
@@ -645,7 +658,7 @@ function ModuleSection({ moduleKey, expanded, onToggle, children }: ModuleSectio
       </button>
 
       {expanded && (
-        <div className="border-t border-gray-200 p-6 bg-gray-50">{children}</div>
+        <div className="border-t border-slate-700/50 p-6 bg-slate-800/30">{children}</div>
       )}
     </div>
   );
@@ -677,7 +690,7 @@ function getIconComponent(iconName: string) {
 
 // Module 1: Health & Trajectory
 function HealthTrajectoryContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   const forecastData = data.forecast_chart_data || [];
   const trendDirection = data.overall_direction || 'unknown';
@@ -693,18 +706,18 @@ function HealthTrajectoryContent({ data }: { data: any }) {
           className="capitalize"
           icon={
             trendDirection === 'growing' || trendDirection === 'growth' ? (
-              <TrendingUp className="w-5 h-5 text-green-600" />
+              <TrendingUp className="w-5 h-5 text-emerald-400" />
             ) : trendDirection === 'declining' || trendDirection === 'decline' ? (
-              <TrendingDown className="w-5 h-5 text-red-600" />
+              <TrendingDown className="w-5 h-5 text-red-400" />
             ) : (
-              <Minus className="w-5 h-5 text-gray-600" />
+              <Minus className="w-5 h-5 text-slate-400" />
             )
           }
         />
         <MetricCard
           label="Monthly Change"
           value={`${trendSlope >= 0 ? '+' : ''}${trendSlope.toFixed(1)}%`}
-          className={trendSlope >= 0 ? 'text-green-600' : 'text-red-600'}
+          className={trendSlope >= 0 ? 'text-emerald-400' : 'text-red-400'}
         />
         <MetricCard
           label="90-Day Forecast"
@@ -718,8 +731,8 @@ function HealthTrajectoryContent({ data }: { data: any }) {
 
       {/* Forecast Chart */}
       {forecastData.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Traffic Forecast (90 Days)
           </h3>
           <ResponsiveContainer width="100%" height={300}>
@@ -769,19 +782,19 @@ function HealthTrajectoryContent({ data }: { data: any }) {
 
       {/* Change Points */}
       {data.change_points && data.change_points.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Detected Change Points
           </h3>
           <div className="space-y-2">
             {data.change_points.map((cp: any, idx: number) => (
               <div
                 key={idx}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded"
+                className="flex items-center justify-between p-3 bg-slate-800/30 rounded"
               >
                 <div>
-                  <div className="font-medium text-gray-900">{cp.date}</div>
-                  <div className="text-sm text-gray-600 capitalize">
+                  <div className="font-medium text-white">{cp.date}</div>
+                  <div className="text-sm text-slate-400 capitalize">
                     {cp.direction} — {Math.abs(cp.magnitude * 100).toFixed(1)}% change
                   </div>
                 </div>
@@ -798,26 +811,26 @@ function HealthTrajectoryContent({ data }: { data: any }) {
 
       {/* Seasonality */}
       {data.seasonality && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Seasonality Patterns
           </h3>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <div className="text-sm text-gray-600">Best Day</div>
-              <div className="text-lg font-semibold text-gray-900">
+              <div className="text-sm text-slate-400">Best Day</div>
+              <div className="text-lg font-semibold text-white">
                 {data.seasonality.best_day || 'N/A'}
               </div>
             </div>
             <div>
-              <div className="text-sm text-gray-600">Worst Day</div>
-              <div className="text-lg font-semibold text-gray-900">
+              <div className="text-sm text-slate-400">Worst Day</div>
+              <div className="text-lg font-semibold text-white">
                 {data.seasonality.worst_day || 'N/A'}
               </div>
             </div>
           </div>
           {data.seasonality.cycle_description && (
-            <p className="text-sm text-gray-600 mt-3">
+            <p className="text-sm text-slate-400 mt-3">
               {data.seasonality.cycle_description}
             </p>
           )}
@@ -829,7 +842,7 @@ function HealthTrajectoryContent({ data }: { data: any }) {
 
 // Module 2: Page-Level Triage
 function PageTriageContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   const pages = data.pages || [];
   const summary = data.summary || {};
@@ -838,47 +851,47 @@ function PageTriageContent({ data }: { data: any }) {
     <div className="space-y-6">
       {/* Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <MetricCard label="Growing" value={summary.growing || 0} className="text-green-600" />
-        <MetricCard label="Stable" value={summary.stable || 0} className="text-gray-600" />
-        <MetricCard label="Decaying" value={summary.decaying || 0} className="text-yellow-600" />
-        <MetricCard label="Critical" value={summary.critical || 0} className="text-red-600" />
+        <MetricCard label="Growing" value={summary.growing || 0} className="text-emerald-400" />
+        <MetricCard label="Stable" value={summary.stable || 0} className="text-slate-400" />
+        <MetricCard label="Decaying" value={summary.decaying || 0} className="text-amber-400" />
+        <MetricCard label="Critical" value={summary.critical || 0} className="text-red-400" />
       </div>
 
       {/* Pages Table */}
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <div className="bg-slate-800/60 rounded-lg border border-slate-700/50 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
+            <thead className="bg-slate-800/30 border-b border-slate-700/50">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
                   Page
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
                   Status
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">
+                <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
                   Monthly Clicks
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">
+                <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
                   Trend
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">
+                <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
                   Priority
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
                   Action
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
+            <tbody className="divide-y divide-slate-700/50">
               {pages.slice(0, 20).map((page: any, idx: number) => (
-                <tr key={idx} className="hover:bg-gray-50">
+                <tr key={idx} className="hover:bg-slate-800/80">
                   <td className="px-4 py-3">
                     <a
                       href={page.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-sm text-blue-600 hover:underline flex items-center"
+                      className="text-sm text-blue-400 hover:underline flex items-center"
                     >
                       <span className="truncate max-w-xs">{page.url}</span>
                       <ExternalLink className="w-3 h-3 ml-1 flex-shrink-0" />
@@ -887,13 +900,13 @@ function PageTriageContent({ data }: { data: any }) {
                   <td className="px-4 py-3">
                     <StatusBadge status={page.bucket} />
                   </td>
-                  <td className="px-4 py-3 text-right text-sm text-gray-900">
+                  <td className="px-4 py-3 text-right text-sm text-white">
                     {page.current_monthly_clicks?.toLocaleString() || 0}
                   </td>
                   <td className="px-4 py-3 text-right text-sm">
                     <span
                       className={
-                        page.trend_slope >= 0 ? 'text-green-600' : 'text-red-600'
+                        page.trend_slope >= 0 ? 'text-emerald-400' : 'text-red-400'
                       }
                     >
                       {page.trend_slope >= 0 ? '+' : ''}
@@ -903,7 +916,7 @@ function PageTriageContent({ data }: { data: any }) {
                   <td className="px-4 py-3 text-right">
                     <PriorityBadge score={page.priority_score} />
                   </td>
-                  <td className="px-4 py-3 text-sm text-gray-700">
+                  <td className="px-4 py-3 text-sm text-slate-300">
                     {page.recommended_action || 'Monitor'}
                   </td>
                 </tr>
@@ -918,7 +931,7 @@ function PageTriageContent({ data }: { data: any }) {
 
 // Module 3: SERP Landscape
 function SerpLandscapeContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   const competitors = data.competitors || [];
   const displacements = data.serp_feature_displacement || [];
@@ -943,30 +956,30 @@ function SerpLandscapeContent({ data }: { data: any }) {
 
       {/* SERP Feature Displacement */}
       {displacements.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             SERP Feature Displacement
           </h3>
           <div className="space-y-3">
             {displacements.slice(0, 10).map((disp: any, idx: number) => (
               <div
                 key={idx}
-                className="flex items-start justify-between p-3 bg-gray-50 rounded"
+                className="flex items-start justify-between p-3 bg-slate-800/30 rounded"
               >
                 <div className="flex-1">
-                  <div className="font-medium text-gray-900">{disp.keyword}</div>
-                  <div className="text-sm text-gray-600 mt-1">
+                  <div className="font-medium text-white">{disp.keyword}</div>
+                  <div className="text-sm text-slate-400 mt-1">
                     Organic #{disp.organic_position} → Visual #{disp.visual_position}
                   </div>
-                  <div className="text-xs text-gray-500 mt-1">
+                  <div className="text-xs text-slate-400 mt-1">
                     {disp.features_above?.join(', ')}
                   </div>
                 </div>
                 <div className="text-right ml-4">
-                  <div className="text-sm font-medium text-red-600">
+                  <div className="text-sm font-medium text-red-400">
                     {((disp.estimated_ctr_impact || 0) * 100).toFixed(1)}%
                   </div>
-                  <div className="text-xs text-gray-500">CTR impact</div>
+                  <div className="text-xs text-slate-400">CTR impact</div>
                 </div>
               </div>
             ))}
@@ -976,24 +989,24 @@ function SerpLandscapeContent({ data }: { data: any }) {
 
       {/* Competitors */}
       {competitors.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Top Competitors
           </h3>
           <div className="space-y-2">
             {competitors.slice(0, 10).map((comp: any, idx: number) => (
               <div
                 key={idx}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded"
+                className="flex items-center justify-between p-3 bg-slate-800/30 rounded"
               >
                 <div>
-                  <div className="font-medium text-gray-900">{comp.domain}</div>
-                  <div className="text-sm text-gray-600">
+                  <div className="font-medium text-white">{comp.domain}</div>
+                  <div className="text-sm text-slate-400">
                     {comp.keywords_shared} shared keywords
                   </div>
                 </div>
                 <div className="text-right">
-                  <div className="text-sm font-medium text-gray-900">
+                  <div className="text-sm font-medium text-white">
                     Avg pos: {comp.avg_position?.toFixed(1)}
                   </div>
                   <ThreatBadge level={comp.threat_level} />
@@ -1009,7 +1022,7 @@ function SerpLandscapeContent({ data }: { data: any }) {
 
 // Module 4: Content Intelligence
 function ContentIntelligenceContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   const cannibalization = data.cannibalization_clusters || [];
   const strikingDistance = data.striking_distance || [];
@@ -1018,17 +1031,17 @@ function ContentIntelligenceContent({ data }: { data: any }) {
     <div className="space-y-6">
       {/* Cannibalization */}
       {cannibalization.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Keyword Cannibalization
           </h3>
           <div className="space-y-3">
             {cannibalization.map((cluster: any, idx: number) => (
-              <div key={idx} className="p-3 bg-yellow-50 border border-yellow-200 rounded">
-                <div className="font-medium text-gray-900 mb-2">
+              <div key={idx} className="p-3 bg-amber-900/30 border border-yellow-200 rounded">
+                <div className="font-medium text-white mb-2">
                   {cluster.query_group}
                 </div>
-                <div className="text-sm text-gray-700 space-y-1">
+                <div className="text-sm text-slate-300 space-y-1">
                   <div>Pages: {cluster.pages?.join(' vs ')}</div>
                   <div>Shared queries: {cluster.shared_queries}</div>
                   <div>Impressions affected: {cluster.total_impressions_affected?.toLocaleString()}</div>
@@ -1044,45 +1057,45 @@ function ContentIntelligenceContent({ data }: { data: any }) {
 
       {/* Striking Distance */}
       {strikingDistance.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Striking Distance Opportunities
           </h3>
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-gray-50 border-b border-gray-200">
+              <thead className="bg-slate-800/30 border-b border-slate-700/50">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
                     Query
                   </th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
                     Position
                   </th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
                     Impressions
                   </th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase">
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
                     Click Gain
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
                     Intent
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-200">
+              <tbody className="divide-y divide-slate-700/50">
                 {strikingDistance.slice(0, 15).map((opp: any, idx: number) => (
-                  <tr key={idx} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm text-gray-900">{opp.query}</td>
-                    <td className="px-4 py-3 text-right text-sm text-gray-900">
+                  <tr key={idx} className="hover:bg-slate-800/80">
+                    <td className="px-4 py-3 text-sm text-white">{opp.query}</td>
+                    <td className="px-4 py-3 text-right text-sm text-white">
                       {opp.current_position?.toFixed(1)}
                     </td>
-                    <td className="px-4 py-3 text-right text-sm text-gray-900">
+                    <td className="px-4 py-3 text-right text-sm text-white">
                       {opp.impressions?.toLocaleString()}
                     </td>
-                    <td className="px-4 py-3 text-right text-sm text-green-600 font-medium">
+                    <td className="px-4 py-3 text-right text-sm text-emerald-400 font-medium">
                       +{opp.estimated_click_gain_if_top5?.toLocaleString()}
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-700 capitalize">
+                    <td className="px-4 py-3 text-sm text-slate-300 capitalize">
                       {opp.intent}
                     </td>
                   </tr>
@@ -1098,7 +1111,7 @@ function ContentIntelligenceContent({ data }: { data: any }) {
 
 // Module 6: The Gameplan
 function GameplanContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   return (
     <div className="space-y-6">
@@ -1107,19 +1120,19 @@ function GameplanContent({ data }: { data: any }) {
         <MetricCard
           label="Recovery Potential"
           value={`${data.total_estimated_monthly_click_recovery?.toLocaleString() || 0} clicks/mo`}
-          className="text-green-600"
+          className="text-emerald-400"
         />
         <MetricCard
           label="Growth Opportunity"
           value={`${data.total_estimated_monthly_click_growth?.toLocaleString() || 0} clicks/mo`}
-          className="text-blue-600"
+          className="text-blue-400"
         />
       </div>
 
       {/* Narrative */}
       {data.narrative && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
+        <div className="bg-blue-900/30 border border-blue-200 rounded-lg p-4">
+          <p className="text-sm text-slate-100 leading-relaxed whitespace-pre-wrap">
             {data.narrative}
           </p>
         </div>
@@ -1168,20 +1181,20 @@ function ActionSection({
   color: string;
 }) {
   const colorClasses = {
-    red: 'bg-red-50 border-red-200',
-    yellow: 'bg-yellow-50 border-yellow-200',
-    blue: 'bg-blue-50 border-blue-200',
-    gray: 'bg-gray-50 border-gray-200',
+    red: 'bg-red-900/30 border-red-200',
+    yellow: 'bg-amber-900/30 border-yellow-200',
+    blue: 'bg-blue-900/30 border-blue-200',
+    gray: 'bg-slate-800/30 border-slate-700/50',
   };
 
   return (
     <div className={`rounded-lg border p-4 ${colorClasses[color as keyof typeof colorClasses]}`}>
-      <h3 className="text-sm font-semibold text-gray-900 mb-3">{title}</h3>
+      <h3 className="text-sm font-semibold text-white mb-3">{title}</h3>
       <div className="space-y-2">
         {actions.map((action: any, idx: number) => (
-          <div key={idx} className="bg-white p-3 rounded border border-gray-200">
-            <div className="font-medium text-gray-900">{action.action}</div>
-            <div className="grid grid-cols-3 gap-2 mt-2 text-xs text-gray-600">
+          <div key={idx} className="bg-slate-800/60 p-3 rounded border border-slate-700/50">
+            <div className="font-medium text-white">{action.action}</div>
+            <div className="grid grid-cols-3 gap-2 mt-2 text-xs text-slate-400">
               <div>Impact: +{action.impact} clicks/mo</div>
               <div>Effort: {action.effort}</div>
               {action.page && (
@@ -1199,7 +1212,7 @@ function ActionSection({
 
 // Module 7: Algorithm Impact
 function AlgorithmImpactContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   const updates = data.updates_impacting_site || [];
 
@@ -1210,16 +1223,16 @@ function AlgorithmImpactContent({ data }: { data: any }) {
         value={`${((data.vulnerability_score || 0) * 100).toFixed(0)}%`}
         className={
           (data.vulnerability_score || 0) > 0.7
-            ? 'text-red-600'
+            ? 'text-red-400'
             : (data.vulnerability_score || 0) > 0.4
-            ? 'text-yellow-600'
-            : 'text-green-600'
+            ? 'text-amber-400'
+            : 'text-emerald-400'
         }
       />
 
       {updates.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Algorithm Updates Impact
           </h3>
           <div className="space-y-3">
@@ -1228,20 +1241,20 @@ function AlgorithmImpactContent({ data }: { data: any }) {
                 key={idx}
                 className={`p-3 rounded border ${
                   update.site_impact === 'negative'
-                    ? 'bg-red-50 border-red-200'
+                    ? 'bg-red-900/30 border-red-200'
                     : update.site_impact === 'positive'
-                    ? 'bg-green-50 border-green-200'
-                    : 'bg-gray-50 border-gray-200'
+                    ? 'bg-emerald-900/30 border-green-200'
+                    : 'bg-slate-800/30 border-slate-700/50'
                 }`}
               >
                 <div className="flex items-start justify-between">
                   <div>
-                    <div className="font-medium text-gray-900">
+                    <div className="font-medium text-white">
                       {update.update_name}
                     </div>
-                    <div className="text-sm text-gray-600 mt-1">{update.date}</div>
+                    <div className="text-sm text-slate-400 mt-1">{update.date}</div>
                     {update.common_characteristics && (
-                      <div className="text-xs text-gray-500 mt-2">
+                      <div className="text-xs text-slate-400 mt-2">
                         Affected: {update.common_characteristics.join(', ')}
                       </div>
                     )}
@@ -1250,14 +1263,14 @@ function AlgorithmImpactContent({ data }: { data: any }) {
                     <div
                       className={`text-sm font-medium ${
                         update.click_change_pct >= 0
-                          ? 'text-green-600'
-                          : 'text-red-600'
+                          ? 'text-emerald-400'
+                          : 'text-red-400'
                       }`}
                     >
                       {update.click_change_pct >= 0 ? '+' : ''}
                       {update.click_change_pct?.toFixed(1)}%
                     </div>
-                    <div className="text-xs text-gray-500 mt-1">
+                    <div className="text-xs text-slate-400 mt-1">
                       {update.recovery_status || 'monitoring'}
                     </div>
                   </div>
@@ -1269,8 +1282,8 @@ function AlgorithmImpactContent({ data }: { data: any }) {
       )}
 
       {data.recommendation && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <p className="text-sm text-gray-800">{data.recommendation}</p>
+        <div className="bg-blue-900/30 border border-blue-200 rounded-lg p-4">
+          <p className="text-sm text-slate-100">{data.recommendation}</p>
         </div>
       )}
     </div>
@@ -1279,28 +1292,28 @@ function AlgorithmImpactContent({ data }: { data: any }) {
 
 // Module 8: Intent Migration
 function IntentMigrationContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   const migrations = data.migrations || [];
 
   return (
     <div className="space-y-6">
       {migrations.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Detected Intent Shifts
           </h3>
           <div className="space-y-3">
             {migrations.map((migration: any, idx: number) => (
               <div
                 key={idx}
-                className="p-3 bg-purple-50 border border-purple-200 rounded"
+                className="p-3 bg-purple-900/30 border border-purple-200 rounded"
               >
-                <div className="font-medium text-gray-900">{migration.query}</div>
-                <div className="text-sm text-gray-700 mt-2">
+                <div className="font-medium text-white">{migration.query}</div>
+                <div className="text-sm text-slate-300 mt-2">
                   {migration.previous_intent} → {migration.current_intent}
                 </div>
-                <div className="text-xs text-gray-600 mt-1">
+                <div className="text-xs text-slate-400 mt-1">
                   Confidence: {((migration.confidence || 0) * 100).toFixed(0)}%
                 </div>
                 {migration.recommendation && (
@@ -1319,7 +1332,7 @@ function IntentMigrationContent({ data }: { data: any }) {
 
 // Module 9: Technical Health (CTR Modeling)
 function TechnicalHealthContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   const keywordAnalysis = data.keyword_ctr_analysis || [];
   const opportunities = data.serp_feature_opportunities || [];
@@ -1353,22 +1366,22 @@ function TechnicalHealthContent({ data }: { data: any }) {
         <MetricCard
           label="Overperformers"
           value={overperformers.length}
-          className="text-green-600"
+          className="text-emerald-400"
         />
         <MetricCard
           label="Underperformers"
           value={underperformers.length}
-          className="text-red-600"
+          className="text-red-400"
         />
       </div>
 
       {/* CTR Scatter Plot: Expected vs Actual */}
       {scatterData.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Expected vs Actual CTR
           </h3>
-          <p className="text-xs text-gray-500 mb-3">
+          <p className="text-xs text-slate-400 mb-3">
             Points above the diagonal are overperforming; below are underperforming relative to SERP context.
           </p>
           <ResponsiveContainer width="100%" height={350}>
@@ -1393,8 +1406,8 @@ function TechnicalHealthContent({ data }: { data: any }) {
                   if (!active || !payload?.length) return null;
                   const d = payload[0].payload;
                   return (
-                    <div className="bg-white p-3 rounded shadow-lg border text-xs">
-                      <div className="font-semibold text-gray-900 mb-1">{d.keyword}</div>
+                    <div className="bg-slate-800/60 p-3 rounded shadow-lg border text-xs">
+                      <div className="font-semibold text-white mb-1">{d.keyword}</div>
                       <div>Position: #{d.position}</div>
                       <div>Expected CTR: {d.expected}%</div>
                       <div>Actual CTR: {d.actual}%</div>
@@ -1424,11 +1437,11 @@ function TechnicalHealthContent({ data }: { data: any }) {
 
       {/* Top Underperformers — Title Rewrite Candidates */}
       {underperformers.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Title/Snippet Rewrite Candidates
           </h3>
-          <p className="text-xs text-gray-500 mb-3">
+          <p className="text-xs text-slate-400 mb-3">
             Keywords where actual CTR is significantly below what the SERP context predicts — likely a title or meta description problem.
           </p>
           <div className="space-y-2">
@@ -1443,18 +1456,18 @@ function TechnicalHealthContent({ data }: { data: any }) {
                 const expected = kw.expected_ctr_contextual || kw.expected_ctr_generic || 0;
                 const gap = expected - (kw.actual_ctr || 0);
                 return (
-                  <div key={idx} className="flex items-center justify-between p-3 bg-red-50 border border-red-100 rounded">
+                  <div key={idx} className="flex items-center justify-between p-3 bg-red-900/30 border border-red-100 rounded">
                     <div className="flex-1 min-w-0">
-                      <div className="font-medium text-gray-900 text-sm truncate">{kw.keyword}</div>
-                      <div className="text-xs text-gray-600 mt-1">
+                      <div className="font-medium text-white text-sm truncate">{kw.keyword}</div>
+                      <div className="text-xs text-slate-400 mt-1">
                         Position #{kw.position} · {(kw.impressions || 0).toLocaleString()} impressions/mo
                       </div>
                     </div>
                     <div className="text-right ml-4 flex-shrink-0">
-                      <div className="text-sm text-red-600 font-medium">
+                      <div className="text-sm text-red-400 font-medium">
                         -{(gap * 100).toFixed(1)}% CTR gap
                       </div>
-                      <div className="text-xs text-gray-500">
+                      <div className="text-xs text-slate-400">
                         {((kw.actual_ctr || 0) * 100).toFixed(1)}% actual vs {(expected * 100).toFixed(1)}% expected
                       </div>
                     </div>
@@ -1467,19 +1480,19 @@ function TechnicalHealthContent({ data }: { data: any }) {
 
       {/* SERP Feature Opportunities */}
       {opportunities.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             SERP Feature Opportunities
           </h3>
           <div className="space-y-2">
             {opportunities.slice(0, 8).map((opp: any, idx: number) => (
-              <div key={idx} className="flex items-center justify-between p-3 bg-green-50 border border-green-100 rounded">
+              <div key={idx} className="flex items-center justify-between p-3 bg-emerald-900/30 border border-green-100 rounded">
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium text-gray-900 text-sm truncate">{opp.keyword}</div>
-                  <div className="text-xs text-gray-600 mt-1">{opp.feature_type || opp.opportunity}</div>
+                  <div className="font-medium text-white text-sm truncate">{opp.keyword}</div>
+                  <div className="text-xs text-slate-400 mt-1">{opp.feature_type || opp.opportunity}</div>
                 </div>
                 <div className="text-right ml-4 flex-shrink-0">
-                  <div className="text-sm text-green-600 font-medium">
+                  <div className="text-sm text-emerald-400 font-medium">
                     +{(opp.estimated_click_gain || 0).toLocaleString()} clicks/mo
                   </div>
                 </div>
@@ -1494,7 +1507,7 @@ function TechnicalHealthContent({ data }: { data: any }) {
 
 // Module 10: Site Architecture
 function SiteArchitectureContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   const hubs = data.hub_pages || [];
   const orphans = data.orphan_pages || [];
@@ -1503,8 +1516,8 @@ function SiteArchitectureContent({ data }: { data: any }) {
     <div className="space-y-6">
       {/* Network Graph */}
       {data.network_graph && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Internal Link Network
           </h3>
           <NetworkGraph data={data.network_graph} />
@@ -1513,30 +1526,30 @@ function SiteArchitectureContent({ data }: { data: any }) {
 
       {/* Hub Pages */}
       {hubs.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Hub Pages (High PageRank)
           </h3>
           <div className="space-y-2">
             {hubs.slice(0, 10).map((hub: any, idx: number) => (
               <div
                 key={idx}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded"
+                className="flex items-center justify-between p-3 bg-slate-800/30 rounded"
               >
                 <a
                   href={hub.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-sm text-blue-600 hover:underline flex items-center truncate flex-1"
+                  className="text-sm text-blue-400 hover:underline flex items-center truncate flex-1"
                 >
                   <span className="truncate">{hub.url}</span>
                   <ExternalLink className="w-3 h-3 ml-1 flex-shrink-0" />
                 </a>
                 <div className="ml-4 text-right">
-                  <div className="text-sm font-medium text-gray-900">
+                  <div className="text-sm font-medium text-white">
                     PR: {hub.pagerank?.toFixed(3)}
                   </div>
-                  <div className="text-xs text-gray-500">
+                  <div className="text-xs text-slate-400">
                     {hub.inbound_links} links
                   </div>
                 </div>
@@ -1548,18 +1561,18 @@ function SiteArchitectureContent({ data }: { data: any }) {
 
       {/* Orphan Pages */}
       {orphans.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Orphan Pages (No Internal Links)
           </h3>
           <div className="space-y-2">
             {orphans.slice(0, 10).map((orphan: any, idx: number) => (
-              <div key={idx} className="p-3 bg-yellow-50 border border-yellow-200 rounded">
+              <div key={idx} className="p-3 bg-amber-900/30 border border-yellow-200 rounded">
                 <a
                   href={orphan}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-sm text-blue-600 hover:underline flex items-center"
+                  className="text-sm text-blue-400 hover:underline flex items-center"
                 >
                   <span className="truncate">{orphan}</span>
                   <ExternalLink className="w-3 h-3 ml-1 flex-shrink-0" />
@@ -1575,40 +1588,40 @@ function SiteArchitectureContent({ data }: { data: any }) {
 
 // Module 11: Branded Split
 function BrandedSplitContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-2">
             Branded Traffic
           </h3>
-          <div className="text-3xl font-bold text-gray-900">
+          <div className="text-3xl font-bold text-white">
             {data.branded_clicks?.toLocaleString() || 0}
           </div>
-          <div className="text-sm text-gray-600 mt-1">clicks/month</div>
+          <div className="text-sm text-slate-400 mt-1">clicks/month</div>
         </div>
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-2">
             Non-Branded Traffic
           </h3>
-          <div className="text-3xl font-bold text-gray-900">
+          <div className="text-3xl font-bold text-white">
             {data.non_branded_clicks?.toLocaleString() || 0}
           </div>
-          <div className="text-sm text-gray-600 mt-1">clicks/month</div>
+          <div className="text-sm text-slate-400 mt-1">clicks/month</div>
         </div>
       </div>
 
       {data.brand_dependency_score !== undefined && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-2">
             Brand Dependency
           </h3>
-          <div className="text-2xl font-bold text-gray-900">
+          <div className="text-2xl font-bold text-white">
             {(data.brand_dependency_score * 100).toFixed(1)}%
           </div>
-          <p className="text-sm text-gray-600 mt-2">
+          <p className="text-sm text-slate-400 mt-2">
             {data.brand_dependency_score > 0.7
               ? 'High dependency on branded traffic — diversify with non-branded content'
               : data.brand_dependency_score > 0.4
@@ -1623,32 +1636,32 @@ function BrandedSplitContent({ data }: { data: any }) {
 
 // Module 12: Competitive Threats
 function CompetitiveThreatsContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   const threats = data.threats || [];
 
   return (
     <div className="space-y-6">
       {threats.length > 0 && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Competitive Threats
           </h3>
           <div className="space-y-3">
             {threats.map((threat: any, idx: number) => (
               <div
                 key={idx}
-                className="p-3 bg-red-50 border border-red-200 rounded"
+                className="p-3 bg-red-900/30 border border-red-200 rounded"
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
-                    <div className="font-medium text-gray-900">
+                    <div className="font-medium text-white">
                       {threat.competitor}
                     </div>
-                    <div className="text-sm text-gray-700 mt-1">
+                    <div className="text-sm text-slate-300 mt-1">
                       {threat.keywords_at_risk} keywords at risk
                     </div>
-                    <div className="text-xs text-gray-600 mt-1">
+                    <div className="text-xs text-slate-400 mt-1">
                       Estimated loss: {threat.estimated_click_loss?.toLocaleString()} clicks/mo
                     </div>
                   </div>
@@ -1665,7 +1678,7 @@ function CompetitiveThreatsContent({ data }: { data: any }) {
 
 // Module 12: Revenue Attribution
 function RevenueAttributionContent({ data }: { data: any }) {
-  if (!data) return <div className="text-gray-500">No data available</div>;
+  if (!data) return <div className="text-slate-400">No data available</div>;
 
   return (
     <div className="space-y-6">
@@ -1673,7 +1686,7 @@ function RevenueAttributionContent({ data }: { data: any }) {
         <MetricCard
           label="Attributed Revenue"
           value={`$${data.total_attributed_revenue?.toLocaleString() || 0}`}
-          className="text-green-600"
+          className="text-emerald-400"
         />
         <MetricCard
           label="Revenue per Session"
@@ -1687,8 +1700,8 @@ function RevenueAttributionContent({ data }: { data: any }) {
       </div>
 
       {data.revenue_by_channel && (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Revenue by Channel
           </h3>
           <ResponsiveContainer width="100%" height={300}>
@@ -1722,9 +1735,9 @@ function MetricCard({
   className?: string;
 }) {
   return (
-    <div className="bg-white p-4 rounded-lg border border-gray-200">
+    <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
       {icon && <div className="mb-2">{icon}</div>}
-      <div className="text-sm text-gray-600 mb-1">{label}</div>
+      <div className="text-sm text-slate-400 mb-1">{label}</div>
       <div className={`text-2xl font-bold ${className}`}>{value}</div>
     </div>
   );
@@ -1733,7 +1746,7 @@ function MetricCard({
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     growing: 'bg-green-100 text-green-800',
-    stable: 'bg-gray-100 text-gray-800',
+    stable: 'bg-slate-700/40 text-slate-100',
     decaying: 'bg-yellow-100 text-yellow-800',
     critical: 'bg-red-100 text-red-800',
   };
@@ -1741,7 +1754,7 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span
       className={`px-2 py-1 text-xs font-medium rounded ${
-        colors[status] || 'bg-gray-100 text-gray-800'
+        colors[status] || 'bg-slate-700/40 text-slate-100'
       }`}
     >
       {status}
@@ -1776,7 +1789,7 @@ function ThreatBadge({ level }: { level: string }) {
   return (
     <span
       className={`px-2 py-1 text-xs font-medium rounded ${
-        colors[level] || 'bg-gray-100 text-gray-800'
+        colors[level] || 'bg-slate-700/40 text-slate-100'
       }`}
     >
       {level}
