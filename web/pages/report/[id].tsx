@@ -1815,9 +1815,404 @@ function ContentIntelligenceContent({ data }: { data: any }) {
 
   const cannibalization = data.cannibalization_clusters || [];
   const strikingDistance = data.striking_distance || [];
+  const thinContent = data.thin_content || [];
+  const updateMatrix = data.update_priority_matrix || {};
+  const summary = data.summary || {};
+
+  // Quadrant colors for the 2×2 matrix
+  const QUADRANT_COLORS: Record<string, string> = {
+    urgent_update: '#ef4444',      // red
+    leave_alone: '#6b7280',        // grey
+    structural_problem: '#f59e0b', // amber
+    double_down: '#10b981',        // emerald
+  };
+
+  const QUADRANT_LABELS: Record<string, string> = {
+    urgent_update: 'Urgent Update',
+    leave_alone: 'Leave Alone',
+    structural_problem: 'Structural Problem',
+    double_down: 'Double Down',
+  };
+
+  // Build scatter data from all 4 quadrants
+  const scatterDataByQuadrant: Record<string, any[]> = {};
+  ['urgent_update', 'leave_alone', 'structural_problem', 'double_down'].forEach(q => {
+    const pages = updateMatrix[q] || [];
+    scatterDataByQuadrant[q] = pages.slice(0, 30).map((p: any) => ({
+      x: p.age_days ?? 0,
+      y: typeof p.trend === 'number' ? p.trend : 0,
+      url: p.url || '',
+      impressions: p.impressions || 0,
+      clicks: p.clicks || 0,
+      position: p.position || 0,
+      quadrant: q,
+    }));
+  });
+
+  const allScatterPoints = Object.values(scatterDataByQuadrant).flat();
+  const hasMatrixChart = allScatterPoints.length > 2;
+
+  // Quadrant counts for the distribution bar chart
+  const quadrantCounts = ['urgent_update', 'structural_problem', 'leave_alone', 'double_down'].map(q => ({
+    name: QUADRANT_LABELS[q] || q,
+    count: (updateMatrix[q] || []).length,
+    fill: QUADRANT_COLORS[q] || '#6b7280',
+  }));
+  const hasQuadrantChart = quadrantCounts.some(q => q.count > 0);
+
+  // Thin content severity distribution
+  const severityDist = { high: 0, medium: 0, low: 0 };
+  thinContent.forEach((p: any) => {
+    if (p.severity >= 3) severityDist.high++;
+    else if (p.severity >= 2) severityDist.medium++;
+    else severityDist.low++;
+  });
+
+  // Flag label mapping
+  const FLAG_LABELS: Record<string, string> = {
+    low_word_count: 'Thin Content',
+    high_bounce_rate: 'High Bounce',
+    low_engagement_time: 'Low Engagement',
+    low_ctr: 'Low CTR',
+  };
 
   return (
     <div className="space-y-6">
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <div className="text-xs text-slate-400 uppercase mb-1">Cannibalization Issues</div>
+          <div className={`text-2xl font-bold ${(summary.cannibalization_clusters_found || 0) > 0 ? 'text-amber-400' : 'text-white'}`}>
+            {summary.cannibalization_clusters_found || cannibalization.length}
+          </div>
+          {summary.total_impressions_cannibalized > 0 && (
+            <div className="text-xs text-slate-400 mt-1">
+              {summary.total_impressions_cannibalized?.toLocaleString()} impressions affected
+            </div>
+          )}
+        </div>
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <div className="text-xs text-slate-400 uppercase mb-1">Striking Distance</div>
+          <div className="text-2xl font-bold text-emerald-400">
+            {summary.striking_distance_keywords || strikingDistance.length}
+          </div>
+          {summary.estimated_strike_distance_clicks > 0 && (
+            <div className="text-xs text-slate-400 mt-1">
+              +{summary.estimated_strike_distance_clicks?.toLocaleString()} potential clicks
+            </div>
+          )}
+        </div>
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <div className="text-xs text-slate-400 uppercase mb-1">Thin Content Pages</div>
+          <div className={`text-2xl font-bold ${(summary.thin_content_pages || thinContent.length) > 5 ? 'text-red-400' : 'text-white'}`}>
+            {summary.thin_content_pages || thinContent.length}
+          </div>
+          {thinContent.length > 0 && (
+            <div className="text-xs text-slate-400 mt-1">
+              {severityDist.high} critical, {severityDist.medium} moderate
+            </div>
+          )}
+        </div>
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <div className="text-xs text-slate-400 uppercase mb-1">Urgent Updates</div>
+          <div className={`text-2xl font-bold ${(summary.urgent_update_pages || 0) > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+            {summary.urgent_update_pages || (updateMatrix.urgent_update || []).length}
+          </div>
+          <div className="text-xs text-slate-400 mt-1">
+            old content losing traffic
+          </div>
+        </div>
+      </div>
+
+      {/* 2×2 Content Age vs Performance Matrix (Scatter Chart) */}
+      {hasMatrixChart && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
+            Content Age vs Performance Matrix
+          </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            Each dot is a page. X = content age (days), Y = trend score. Quadrants show priority actions.
+          </p>
+          <ResponsiveContainer width="100%" height={380}>
+            <ScatterChart margin={{ top: 20, right: 30, bottom: 20, left: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis
+                type="number"
+                dataKey="x"
+                name="Age (days)"
+                stroke="#94a3b8"
+                tick={{ fill: '#94a3b8', fontSize: 11 }}
+                label={{ value: 'Content Age (days)', position: 'insideBottom', offset: -10, fill: '#94a3b8', fontSize: 11 }}
+              />
+              <YAxis
+                type="number"
+                dataKey="y"
+                name="Trend"
+                stroke="#94a3b8"
+                tick={{ fill: '#94a3b8', fontSize: 11 }}
+                label={{ value: 'Trend Score', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }}
+              />
+              <ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 4" label={{ value: 'Stable', fill: '#64748b', fontSize: 10 }} />
+              <ReferenceLine x={180} stroke="#64748b" strokeDasharray="4 4" label={{ value: '6 months', fill: '#64748b', fontSize: 10, position: 'top' }} />
+              <Tooltip
+                cursor={{ strokeDasharray: '3 3' }}
+                contentStyle={{
+                  backgroundColor: '#1e293b',
+                  border: '1px solid #475569',
+                  borderRadius: '8px',
+                  color: '#e2e8f0',
+                  fontSize: '12px',
+                }}
+                formatter={(value: any, name: string) => {
+                  if (name === 'Age (days)') return [`${value} days`, 'Age'];
+                  if (name === 'Trend') return [typeof value === 'number' ? value.toFixed(3) : value, 'Trend'];
+                  return [value, name];
+                }}
+                labelFormatter={() => ''}
+                content={({ active, payload }: any) => {
+                  if (!active || !payload?.[0]) return null;
+                  const d = payload[0].payload;
+                  return (
+                    <div style={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px', padding: '8px 12px', fontSize: '12px', color: '#e2e8f0' }}>
+                      <div style={{ fontWeight: 600, marginBottom: '4px', maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.url}</div>
+                      <div>Age: {d.x} days</div>
+                      <div>Trend: {d.y?.toFixed(3)}</div>
+                      <div>Clicks: {d.clicks?.toLocaleString()}</div>
+                      <div>Impressions: {d.impressions?.toLocaleString()}</div>
+                      <div>Avg Position: {d.position?.toFixed(1)}</div>
+                      <div style={{ marginTop: '4px', color: QUADRANT_COLORS[d.quadrant] || '#fff', fontWeight: 600 }}>
+                        {QUADRANT_LABELS[d.quadrant] || d.quadrant}
+                      </div>
+                    </div>
+                  );
+                }}
+              />
+              {/* Render each quadrant as a separate Scatter for color coding */}
+              {['urgent_update', 'leave_alone', 'structural_problem', 'double_down'].map(q => (
+                scatterDataByQuadrant[q].length > 0 && (
+                  <Scatter
+                    key={q}
+                    name={QUADRANT_LABELS[q]}
+                    data={scatterDataByQuadrant[q]}
+                    fill={QUADRANT_COLORS[q]}
+                    opacity={0.8}
+                  />
+                )
+              ))}
+              <Legend
+                verticalAlign="top"
+                wrapperStyle={{ color: '#94a3b8', fontSize: '11px', paddingBottom: '8px' }}
+              />
+            </ScatterChart>
+          </ResponsiveContainer>
+          {/* Quadrant labels */}
+          <div className="grid grid-cols-2 gap-2 mt-2 text-xs text-center">
+            <div className="p-2 rounded" style={{ backgroundColor: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)' }}>
+              <span className="text-amber-400 font-semibold">↙ New + Declining</span>
+              <div className="text-slate-400">Structural Problem</div>
+            </div>
+            <div className="p-2 rounded" style={{ backgroundColor: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)' }}>
+              <span className="text-red-400 font-semibold">↘ Old + Declining</span>
+              <div className="text-slate-400">Urgent Update</div>
+            </div>
+            <div className="p-2 rounded" style={{ backgroundColor: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.3)' }}>
+              <span className="text-emerald-400 font-semibold">↗ New + Growing</span>
+              <div className="text-slate-400">Double Down</div>
+            </div>
+            <div className="p-2 rounded" style={{ backgroundColor: 'rgba(107,114,128,0.15)', border: '1px solid rgba(107,114,128,0.3)' }}>
+              <span className="text-slate-300 font-semibold">↘ Old + Stable</span>
+              <div className="text-slate-400">Leave Alone</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quadrant Distribution Bar Chart */}
+      {hasQuadrantChart && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+            <h3 className="text-sm font-semibold text-slate-300 mb-3">
+              Content Priority Distribution
+            </h3>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={quadrantCounts} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 10 }} angle={-15} textAnchor="end" height={50} />
+                <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} allowDecimals={false} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px', color: '#e2e8f0', fontSize: '12px' }}
+                />
+                <Bar dataKey="count" name="Pages" radius={[4, 4, 0, 0]}>
+                  {quadrantCounts.map((entry, idx) => (
+                    <Cell key={idx} fill={entry.fill} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Thin Content Severity Breakdown */}
+          {thinContent.length > 0 && (
+            <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+              <h3 className="text-sm font-semibold text-slate-300 mb-3">
+                Thin Content Severity
+              </h3>
+              <div className="space-y-3 mt-4">
+                {[
+                  { label: 'Critical (3+ flags)', count: severityDist.high, color: '#ef4444', pct: thinContent.length > 0 ? Math.round(severityDist.high / thinContent.length * 100) : 0 },
+                  { label: 'Moderate (2 flags)', count: severityDist.medium, color: '#f59e0b', pct: thinContent.length > 0 ? Math.round(severityDist.medium / thinContent.length * 100) : 0 },
+                  { label: 'Low (1 flag)', count: severityDist.low, color: '#6b7280', pct: thinContent.length > 0 ? Math.round(severityDist.low / thinContent.length * 100) : 0 },
+                ].map((sev, idx) => (
+                  <div key={idx}>
+                    <div className="flex justify-between text-xs text-slate-300 mb-1">
+                      <span>{sev.label}</span>
+                      <span>{sev.count} pages ({sev.pct}%)</span>
+                    </div>
+                    <div className="w-full h-3 bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{ width: `${sev.pct}%`, backgroundColor: sev.color, minWidth: sev.count > 0 ? '8px' : '0' }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 text-xs text-slate-500">
+                {thinContent.length} pages flagged with quality issues
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Thin Content Table */}
+      {thinContent.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
+            Thin Content Pages
+          </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            Pages with search visibility that have quality issues — thin content, high bounce, or poor engagement.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-slate-800/30 border-b border-slate-700/50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">Page</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">Impressions</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">Position</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">Words</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">Issues</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700/50">
+                {thinContent.slice(0, 20).map((page: any, idx: number) => (
+                  <tr key={idx} className="hover:bg-slate-800/80">
+                    <td className="px-4 py-3 text-sm text-white max-w-[200px] truncate" title={page.url}>
+                      {page.url}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm text-white">
+                      {page.impressions?.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm text-white">
+                      {page.position?.toFixed(1)}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm text-white">
+                      {page.word_count != null ? (
+                        <span className={page.word_count < 500 ? 'text-red-400 font-medium' : ''}>
+                          {page.word_count?.toLocaleString()}
+                        </span>
+                      ) : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      <div className="flex flex-wrap gap-1">
+                        {(page.flags || []).map((flag: string, fi: number) => (
+                          <span
+                            key={fi}
+                            className="px-1.5 py-0.5 text-xs rounded"
+                            style={{
+                              backgroundColor: flag === 'low_word_count' ? 'rgba(239,68,68,0.2)' :
+                                flag === 'high_bounce_rate' ? 'rgba(245,158,11,0.2)' :
+                                flag === 'low_engagement_time' ? 'rgba(168,85,247,0.2)' :
+                                'rgba(107,114,128,0.2)',
+                              color: flag === 'low_word_count' ? '#fca5a5' :
+                                flag === 'high_bounce_rate' ? '#fcd34d' :
+                                flag === 'low_engagement_time' ? '#c4b5fd' :
+                                '#d1d5db',
+                            }}
+                          >
+                            {FLAG_LABELS[flag] || flag}
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-300 capitalize">
+                      {(page.recommended_action || '').replace(/_/g, ' ')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Update Priority Matrix — Quadrant Detail Cards */}
+      {hasQuadrantChart && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+            Content Update Priority Matrix
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {['urgent_update', 'structural_problem', 'double_down', 'leave_alone'].map(q => {
+              const pages = updateMatrix[q] || [];
+              if (pages.length === 0) return null;
+              return (
+                <div
+                  key={q}
+                  className="p-3 rounded-lg border"
+                  style={{
+                    backgroundColor: `${QUADRANT_COLORS[q]}10`,
+                    borderColor: `${QUADRANT_COLORS[q]}40`,
+                  }}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: QUADRANT_COLORS[q] }} />
+                    <span className="text-sm font-semibold" style={{ color: QUADRANT_COLORS[q] }}>
+                      {QUADRANT_LABELS[q]}
+                    </span>
+                    <span className="text-xs text-slate-400 ml-auto">{pages.length} pages</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {pages.slice(0, 5).map((p: any, idx: number) => (
+                      <div key={idx} className="flex items-center justify-between text-xs">
+                        <span className="text-slate-300 truncate max-w-[180px]" title={p.url}>
+                          {p.url}
+                        </span>
+                        <span className="text-slate-400 ml-2 flex-shrink-0">
+                          {p.impressions?.toLocaleString()} imp · {p.age_days}d old
+                        </span>
+                      </div>
+                    ))}
+                    {pages.length > 5 && (
+                      <div className="text-xs text-slate-500">
+                        +{pages.length - 5} more pages
+                      </div>
+                    )}
+                  </div>
+                  {pages.length > 0 && pages[0].action && (
+                    <div className="text-xs text-slate-400 mt-2 italic">
+                      → {pages[0].action}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Cannibalization */}
       {cannibalization.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
@@ -1826,7 +2221,7 @@ function ContentIntelligenceContent({ data }: { data: any }) {
           </h3>
           <div className="space-y-3">
             {cannibalization.map((cluster: any, idx: number) => (
-              <div key={idx} className="p-3 bg-amber-900/30 border border-yellow-200 rounded">
+              <div key={idx} className="p-3 rounded border" style={{ backgroundColor: 'rgba(245,158,11,0.1)', borderColor: 'rgba(245,158,11,0.3)' }}>
                 <div className="font-medium text-white mb-2">
                   {cluster.query_group}
                 </div>
@@ -1834,8 +2229,14 @@ function ContentIntelligenceContent({ data }: { data: any }) {
                   <div>Pages: {cluster.pages?.join(' vs ')}</div>
                   <div>Shared queries: {cluster.shared_queries}</div>
                   <div>Impressions affected: {cluster.total_impressions_affected?.toLocaleString()}</div>
-                  <div className="font-medium text-yellow-800 mt-2">
-                    → {cluster.recommendation}: {cluster.keep_page}
+                  <div className="mt-2">
+                    <span className="px-2 py-0.5 text-xs rounded font-medium" style={{
+                      backgroundColor: cluster.recommendation === 'consolidate' ? 'rgba(239,68,68,0.2)' : 'rgba(59,130,246,0.2)',
+                      color: cluster.recommendation === 'consolidate' ? '#fca5a5' : '#93c5fd',
+                    }}>
+                      {cluster.recommendation}
+                    </span>
+                    <span className="text-xs text-slate-400 ml-2">Keep: {cluster.keep_page}</span>
                   </div>
                 </div>
               </div>
@@ -1847,9 +2248,12 @@ function ContentIntelligenceContent({ data }: { data: any }) {
       {/* Striking Distance */}
       {strikingDistance.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
             Striking Distance Opportunities
           </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            Keywords ranking 8-20 with high impression volume — small improvements can move these to page 1.
+          </p>
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead className="bg-slate-800/30 border-b border-slate-700/50">
@@ -1869,10 +2273,13 @@ function ContentIntelligenceContent({ data }: { data: any }) {
                   <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
                     Intent
                   </th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
+                    Landing Page
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/50">
-                {strikingDistance.slice(0, 15).map((opp: any, idx: number) => (
+                {strikingDistance.slice(0, 20).map((opp: any, idx: number) => (
                   <tr key={idx} className="hover:bg-slate-800/80">
                     <td className="px-4 py-3 text-sm text-white">{opp.query}</td>
                     <td className="px-4 py-3 text-right text-sm text-white">
@@ -1884,8 +2291,22 @@ function ContentIntelligenceContent({ data }: { data: any }) {
                     <td className="px-4 py-3 text-right text-sm text-emerald-400 font-medium">
                       +{opp.estimated_click_gain_if_top5?.toLocaleString()}
                     </td>
-                    <td className="px-4 py-3 text-sm text-slate-300 capitalize">
-                      {opp.intent}
+                    <td className="px-4 py-3 text-sm">
+                      <span className="px-1.5 py-0.5 text-xs rounded capitalize" style={{
+                        backgroundColor: opp.intent === 'commercial' ? 'rgba(245,158,11,0.2)' :
+                          opp.intent === 'transactional' ? 'rgba(16,185,129,0.2)' :
+                          opp.intent === 'informational' ? 'rgba(59,130,246,0.2)' :
+                          'rgba(107,114,128,0.2)',
+                        color: opp.intent === 'commercial' ? '#fcd34d' :
+                          opp.intent === 'transactional' ? '#6ee7b7' :
+                          opp.intent === 'informational' ? '#93c5fd' :
+                          '#d1d5db',
+                      }}>
+                        {opp.intent}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-400 max-w-[150px] truncate" title={opp.landing_page}>
+                      {opp.landing_page}
                     </td>
                   </tr>
                 ))}
