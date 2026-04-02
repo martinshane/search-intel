@@ -1848,11 +1848,195 @@ function IntentMigrationContent({ data }: { data: any }) {
   const shifts = data.intent_shifts || [];
   const emerging = data.emerging_intents || [];
   const portfolio = data.portfolio_distribution || {};
+  const contentAlignment = data.content_alignment || [];
+
+  // --- Intent distribution chart data ---
+  // Backend returns: { recent_distribution: {info: 0.45, ...}, previous_distribution: {...}, changes_by_intent: {...} }
+  const recentDist = portfolio.recent_distribution || {};
+  const prevDist = portfolio.previous_distribution || {};
+  const changesByIntent = portfolio.changes_by_intent || {};
+
+  const INTENT_COLORS: Record<string, string> = {
+    informational: '#60a5fa',  // blue
+    commercial: '#f59e0b',     // amber
+    transactional: '#34d399',  // emerald
+    navigational: '#a78bfa',   // purple
+  };
+
+  // Build grouped bar data: one entry per intent type, with previous and recent values
+  const allIntents = Array.from(new Set([...Object.keys(recentDist), ...Object.keys(prevDist)]));
+  const distributionChartData = allIntents
+    .filter(intent => (recentDist[intent] || 0) > 0 || (prevDist[intent] || 0) > 0)
+    .sort((a, b) => (recentDist[b] || 0) - (recentDist[a] || 0))
+    .map(intent => ({
+      intent: intent.charAt(0).toUpperCase() + intent.slice(1),
+      intentKey: intent,
+      Previous: Math.round((prevDist[intent] || 0) * 100),
+      Recent: Math.round((recentDist[intent] || 0) * 100),
+    }));
+
+  const hasDistributionChart = distributionChartData.length >= 2;
+
+  // Build stacked area data from the two windows for a simple 2-point timeline
+  // This gives a visual "flow" from previous to recent
+  const areaChartData = allIntents.length >= 2
+    ? [
+        { period: 'Previous', ...Object.fromEntries(allIntents.map(i => [i, Math.round((prevDist[i] || 0) * 100)])) },
+        { period: 'Recent', ...Object.fromEntries(allIntents.map(i => [i, Math.round((recentDist[i] || 0) * 100)])) },
+      ]
+    : [];
+
+  const hasAreaChart = areaChartData.length === 2 && allIntents.length >= 2;
+
+  // Summary metric cards from portfolio
+  const dominantIntent = portfolio.dominant_intent || '';
+  const totalRecent = portfolio.total_queries_recent || 0;
+  const totalComparison = portfolio.total_queries_comparison || 0;
+
+  // Fallback: if portfolio_distribution is a simple {intent: pct} dict (old format)
+  const isSimplePortfolio = !portfolio.recent_distribution && typeof Object.values(portfolio)[0] === 'number';
 
   return (
     <div className="space-y-6">
-      {/* Portfolio Distribution */}
-      {portfolio && Object.keys(portfolio).length > 0 && (
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {dominantIntent && (
+          <MetricCard
+            label="Dominant Intent"
+            value={dominantIntent.charAt(0).toUpperCase() + dominantIntent.slice(1)}
+          />
+        )}
+        {totalRecent > 0 && (
+          <MetricCard
+            label="Queries Analyzed"
+            value={totalRecent.toLocaleString()}
+          />
+        )}
+        <MetricCard
+          label="Intent Shifts"
+          value={shifts.length}
+          className={shifts.length > 5 ? 'text-amber-400' : 'text-emerald-400'}
+        />
+        <MetricCard
+          label="Emerging Queries"
+          value={emerging.length}
+          className="text-blue-400"
+        />
+      </div>
+
+      {/* Stacked Area Chart — Intent Migration Flow */}
+      {hasAreaChart && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
+            Intent Distribution Migration
+          </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            How your query portfolio's intent mix has shifted between periods
+          </p>
+          <div style={{ width: '100%', height: 280 }}>
+            <ResponsiveContainer>
+              <AreaChart data={areaChartData} margin={{ top: 10, right: 30, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="period" stroke="#94a3b8" tick={{ fontSize: 12, fill: '#94a3b8' }} />
+                <YAxis stroke="#94a3b8" tick={{ fontSize: 11, fill: '#94a3b8' }} unit="%" domain={[0, 100]} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                  labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
+                  formatter={(value: any, name: string) => [`${value}%`, name.charAt(0).toUpperCase() + name.slice(1)]}
+                />
+                <Legend
+                  formatter={(value: string) => value.charAt(0).toUpperCase() + value.slice(1)}
+                  wrapperStyle={{ color: '#94a3b8', fontSize: 12 }}
+                />
+                {allIntents.map((intent) => (
+                  <Area
+                    key={intent}
+                    type="monotone"
+                    dataKey={intent}
+                    stackId="1"
+                    stroke={INTENT_COLORS[intent] || '#6b7280'}
+                    fill={INTENT_COLORS[intent] || '#6b7280'}
+                    fillOpacity={0.6}
+                  />
+                ))}
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Grouped Bar Chart — Previous vs Recent */}
+      {hasDistributionChart && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
+            Intent Distribution: Previous vs Recent
+          </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            Side-by-side comparison of intent share by type
+          </p>
+          <div style={{ width: '100%', height: 260 }}>
+            <ResponsiveContainer>
+              <BarChart data={distributionChartData} margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="intent" stroke="#94a3b8" tick={{ fontSize: 11, fill: '#94a3b8' }} />
+                <YAxis stroke="#94a3b8" tick={{ fontSize: 11, fill: '#94a3b8' }} unit="%" />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                  labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
+                  formatter={(value: any, name: string) => [`${value}%`, name]}
+                />
+                <Legend wrapperStyle={{ color: '#94a3b8', fontSize: 12 }} />
+                <Bar dataKey="Previous" fill="#64748b" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="Recent" radius={[4, 4, 0, 0]}>
+                  {distributionChartData.map((entry, index) => (
+                    <Cell key={index} fill={INTENT_COLORS[entry.intentKey] || '#60a5fa'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Intent Change Summary (from changes_by_intent) */}
+      {Object.keys(changesByIntent).length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+            Intent Share Changes
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {Object.entries(changesByIntent)
+              .sort(([, a]: [string, any], [, b]: [string, any]) => Math.abs(b.change || 0) - Math.abs(a.change || 0))
+              .map(([intent, info]: [string, any]) => {
+                const change = info.change || 0;
+                const direction = info.direction || 'stable';
+                const isGrowing = direction === 'growing';
+                const isDeclining = direction === 'declining';
+                return (
+                  <div
+                    key={intent}
+                    className="p-3 rounded-lg border text-center"
+                    style={{
+                      backgroundColor: isGrowing ? 'rgba(52, 211, 153, 0.1)' : isDeclining ? 'rgba(248, 113, 113, 0.1)' : 'rgba(100, 116, 139, 0.1)',
+                      borderColor: isGrowing ? 'rgba(52, 211, 153, 0.3)' : isDeclining ? 'rgba(248, 113, 113, 0.3)' : 'rgba(100, 116, 139, 0.3)',
+                    }}
+                  >
+                    <div className="text-xs text-slate-400 capitalize mb-1">{intent}</div>
+                    <div className="text-lg font-bold text-white">
+                      {((info.recent || 0) * 100).toFixed(0)}%
+                    </div>
+                    <div className={`text-xs font-medium mt-1 ${isGrowing ? 'text-emerald-400' : isDeclining ? 'text-red-400' : 'text-slate-400'}`}>
+                      {change >= 0 ? '+' : ''}{(change * 100).toFixed(1)}pp
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
+      {/* Fallback: Simple portfolio display for old-format data */}
+      {isSimplePortfolio && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {Object.entries(portfolio).map(([intent, pct]: [string, any]) => (
             <div key={intent} className="bg-slate-800/60 p-3 rounded-lg border border-slate-700/50 text-center">
@@ -1862,6 +2046,51 @@ function IntentMigrationContent({ data }: { data: any }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Content Alignment Mismatches */}
+      {contentAlignment.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
+            Intent-Content Misalignments ({contentAlignment.length})
+          </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            Queries where page type doesn't match dominant search intent
+          </p>
+          <div className="space-y-2">
+            {contentAlignment.slice(0, 10).map((item: any, idx: number) => (
+              <div key={idx} className="p-3 bg-amber-900/20 border border-amber-700/30 rounded">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="font-medium text-white text-sm">{item.query}</div>
+                    <div className="text-xs text-slate-400 mt-1">
+                      {item.landing_page && <span className="truncate block max-w-xs">{item.landing_page}</span>}
+                    </div>
+                  </div>
+                  <div className="text-right ml-3 flex-shrink-0">
+                    <div className="text-xs">
+                      <span className="text-amber-400 font-medium capitalize">{item.dominant_intent || item.query_intent}</span>
+                      <span className="text-slate-500 mx-1">vs</span>
+                      <span className="text-blue-400 font-medium capitalize">{item.page_type || item.content_type}</span>
+                    </div>
+                    {item.impressions != null && (
+                      <div className="text-xs text-slate-500 mt-0.5">{item.impressions.toLocaleString()} imp</div>
+                    )}
+                  </div>
+                </div>
+                {item.severity && (
+                  <span className={`inline-block mt-2 text-xs px-2 py-0.5 rounded ${
+                    item.severity === 'critical' ? 'bg-red-900/50 text-red-300' :
+                    item.severity === 'high' ? 'bg-amber-900/50 text-amber-300' :
+                    'bg-slate-700/50 text-slate-300'
+                  }`}>
+                    {item.severity}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1918,19 +2147,38 @@ function IntentMigrationContent({ data }: { data: any }) {
       {data.recommendations?.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
           <h3 className="text-sm font-semibold text-slate-300 mb-3">Recommendations</h3>
-          <ul className="space-y-2">
+          <div className="space-y-3">
             {data.recommendations.slice(0, 5).map((rec: any, idx: number) => (
-              <li key={idx} className="text-sm text-slate-300 flex items-start gap-2">
-                <span className="text-blue-400 mt-0.5">•</span>
-                <span>{typeof rec === 'string' ? rec : rec.text || rec.recommendation || JSON.stringify(rec)}</span>
-              </li>
+              <div key={idx} className="p-3 bg-blue-900/20 border border-blue-700/30 rounded">
+                <div className="flex items-start gap-2">
+                  <span className="text-blue-400 font-bold text-sm mt-0.5">{rec.priority || idx + 1}.</span>
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-white">
+                      {rec.title || (typeof rec === 'string' ? rec : rec.text || rec.recommendation || '')}
+                    </div>
+                    {rec.description && (
+                      <div className="text-xs text-slate-400 mt-1">{rec.description}</div>
+                    )}
+                    {rec.estimated_impact && (
+                      <span className={`inline-block mt-1 text-xs px-2 py-0.5 rounded ${
+                        rec.estimated_impact === 'high' ? 'bg-emerald-900/50 text-emerald-300' :
+                        rec.estimated_impact === 'medium' ? 'bg-amber-900/50 text-amber-300' :
+                        'bg-slate-700/50 text-slate-300'
+                      }`}>
+                        {rec.estimated_impact} impact
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
             ))}
-          </ul>
+          </div>
         </div>
       )}
     </div>
   );
 }
+
 
 // Module 9: Technical Health (CTR Modeling)
 function TechnicalHealthContent({ data }: { data: any }) {
