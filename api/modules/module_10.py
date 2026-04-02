@@ -1,626 +1,811 @@
 """
-Module 10: Revenue Impact Analysis
+Module 10: Conversion Opportunity Scanner
 
-Calculates organic traffic value using industry CPC benchmarks, estimates conversions
-based on GA4 conversion data, projects revenue impact of ranking improvements,
-identifies high-value pages by traffic × conversion rate.
+Analyzes GA4 conversion data to identify high-traffic, low-conversion pages.
+Calculates conversion rates, compares against benchmarks, scores opportunities
+based on traffic volume and conversion gap, provides actionable CRO recommendations.
 
 Integrates with:
 - Module 1 (GA4 data)
-- GSC query analytics data
-- Industry CPC benchmarks
+- GSC page analytics data
+- Internal benchmark database
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timedelta
 import logging
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
 
-# Industry average CPC benchmarks by search intent category (USD)
-CPC_BENCHMARKS = {
-    "transactional": 3.50,
-    "commercial": 2.80,
-    "informational": 0.75,
-    "navigational": 1.20,
-    "local": 2.40,
-    "brand": 0.45
+# Industry conversion rate benchmarks by page type
+CONVERSION_BENCHMARKS = {
+    "product": {
+        "excellent": 0.05,
+        "good": 0.03,
+        "average": 0.02,
+        "poor": 0.01
+    },
+    "category": {
+        "excellent": 0.03,
+        "good": 0.02,
+        "average": 0.015,
+        "poor": 0.008
+    },
+    "landing": {
+        "excellent": 0.08,
+        "good": 0.05,
+        "average": 0.03,
+        "poor": 0.015
+    },
+    "blog": {
+        "excellent": 0.015,
+        "good": 0.01,
+        "average": 0.005,
+        "poor": 0.002
+    },
+    "home": {
+        "excellent": 0.04,
+        "good": 0.025,
+        "average": 0.015,
+        "poor": 0.008
+    },
+    "default": {
+        "excellent": 0.04,
+        "good": 0.025,
+        "average": 0.015,
+        "poor": 0.008
+    }
 }
 
-# Conservative conversion rate benchmarks by industry
-CONVERSION_RATE_BENCHMARKS = {
-    "ecommerce": 0.02,
-    "saas": 0.03,
-    "lead_gen": 0.05,
-    "content": 0.01,
-    "local": 0.04,
-    "default": 0.025
-}
 
-
-def classify_query_intent(query: str, position: float, page_url: str) -> str:
+def classify_page_type(url: str, page_data: Optional[Dict] = None) -> str:
     """
-    Classify search query intent based on patterns.
+    Classify page type based on URL patterns and metadata.
     
     Args:
-        query: Search query text
-        position: Average ranking position
-        page_url: Landing page URL
+        url: Page URL
+        page_data: Optional page metadata from crawl
         
     Returns:
-        Intent category: transactional, commercial, informational, navigational, local, brand
+        Page type: product, category, landing, blog, home, default
     """
-    query_lower = query.lower()
-    url_lower = page_url.lower()
+    url_lower = url.lower()
     
-    # Brand/navigational signals
-    if position <= 3 and any(term in query_lower for term in ['login', 'sign in', 'account', 'portal']):
-        return "navigational"
+    # Home page
+    if url_lower.rstrip('/').endswith(('.com', '.net', '.org', '.io')) or url_lower.endswith('/'):
+        return "home"
     
-    # Transactional intent
-    transactional_terms = [
-        'buy', 'purchase', 'order', 'shop', 'price', 'cost', 'discount',
-        'deal', 'coupon', 'cheap', 'affordable', 'online', 'store'
-    ]
-    if any(term in query_lower for term in transactional_terms):
-        return "transactional"
+    # Product pages
+    product_patterns = ['/product/', '/p/', '/item/', '/buy/', '/shop/', '-p-', '/products/']
+    if any(pattern in url_lower for pattern in product_patterns):
+        return "product"
     
-    if '/product' in url_lower or '/shop' in url_lower or '/buy' in url_lower:
-        return "transactional"
+    # Category/collection pages
+    category_patterns = ['/category/', '/collection/', '/c/', '/categories/', '/shop/']
+    if any(pattern in url_lower for pattern in category_patterns):
+        return "category"
     
-    # Commercial investigation
-    commercial_terms = [
-        'best', 'top', 'vs', 'versus', 'review', 'comparison', 'compare',
-        'alternative', 'recommend', 'which', 'should i'
-    ]
-    if any(term in query_lower for term in commercial_terms):
-        return "commercial"
+    # Blog/content pages
+    blog_patterns = ['/blog/', '/article/', '/post/', '/news/', '/guide/', '/tutorial/']
+    if any(pattern in url_lower for pattern in blog_patterns):
+        return "blog"
     
-    # Local intent
-    local_terms = ['near me', 'nearby', 'local', 'in [city]', 'directions', 'hours', 'open']
-    if any(term in query_lower for term in local_terms):
-        return "local"
+    # Landing pages (often have shorter URLs or specific patterns)
+    landing_patterns = ['/lp/', '/landing/', '/promo/', '/offer/', '/campaign/']
+    if any(pattern in url_lower for pattern in landing_patterns):
+        return "landing"
     
-    # Informational intent
-    informational_terms = [
-        'how to', 'what is', 'why', 'when', 'where', 'guide', 'tutorial',
-        'learn', 'meaning', 'definition', 'tips', 'ideas', 'examples'
-    ]
-    if any(term in query_lower for term in informational_terms):
-        return "informational"
+    # Check metadata if available
+    if page_data:
+        title = page_data.get('title', '').lower()
+        if 'buy' in title or 'shop' in title:
+            return "product"
+        if 'blog' in title or 'article' in title:
+            return "blog"
     
-    if '/blog' in url_lower or '/article' in url_lower or '/guide' in url_lower:
-        return "informational"
-    
-    # Default to informational if position > 10 (typically informational SERPs)
-    if position > 10:
-        return "informational"
-    
-    return "commercial"
+    return "default"
 
 
-def estimate_query_cpc(query: str, intent: str, impressions: int) -> float:
-    """
-    Estimate CPC for a query based on intent and search volume.
-    
-    High-volume queries typically have higher competition and CPC.
-    """
-    base_cpc = CPC_BENCHMARKS[intent]
-    
-    # Volume multiplier (higher volume = higher competition)
-    if impressions > 10000:
-        volume_multiplier = 1.5
-    elif impressions > 5000:
-        volume_multiplier = 1.3
-    elif impressions > 1000:
-        volume_multiplier = 1.1
-    else:
-        volume_multiplier = 1.0
-    
-    # Query length multiplier (longer tail = lower CPC)
-    word_count = len(query.split())
-    if word_count >= 5:
-        length_multiplier = 0.7
-    elif word_count >= 3:
-        length_multiplier = 0.85
-    else:
-        length_multiplier = 1.0
-    
-    return base_cpc * volume_multiplier * length_multiplier
+def calculate_conversion_rate(conversions: int, sessions: int) -> float:
+    """Calculate conversion rate with zero-division handling."""
+    if sessions == 0:
+        return 0.0
+    return conversions / sessions
 
 
-def calculate_traffic_value(
-    gsc_query_data: pd.DataFrame,
-    time_period_days: int = 30
-) -> Dict[str, Any]:
+def get_benchmark_for_page(page_type: str, metric: str = "average") -> float:
     """
-    Calculate total organic traffic value using CPC benchmarks.
+    Get conversion rate benchmark for a page type.
     
     Args:
-        gsc_query_data: DataFrame with columns: query, clicks, impressions, position, page
-        time_period_days: Number of days in analysis period
+        page_type: Type of page
+        metric: Benchmark level (excellent, good, average, poor)
         
     Returns:
-        Dictionary with traffic value metrics
+        Benchmark conversion rate
     """
-    if gsc_query_data.empty:
-        return {
-            "total_traffic_value": 0,
-            "traffic_value_monthly": 0,
-            "avg_click_value": 0,
-            "queries_analyzed": 0
-        }
-    
-    # Classify intent and estimate CPC for each query
-    gsc_query_data['intent'] = gsc_query_data.apply(
-        lambda row: classify_query_intent(row['query'], row['position'], row.get('page', '')),
-        axis=1
-    )
-    
-    gsc_query_data['estimated_cpc'] = gsc_query_data.apply(
-        lambda row: estimate_query_cpc(row['query'], row['intent'], row['impressions']),
-        axis=1
-    )
-    
-    # Calculate traffic value
-    gsc_query_data['traffic_value'] = gsc_query_data['clicks'] * gsc_query_data['estimated_cpc']
-    
-    total_value = gsc_query_data['traffic_value'].sum()
-    monthly_value = total_value * (30 / time_period_days)
-    total_clicks = gsc_query_data['clicks'].sum()
-    avg_click_value = total_value / total_clicks if total_clicks > 0 else 0
-    
-    # Value by intent
-    value_by_intent = gsc_query_data.groupby('intent').agg({
-        'traffic_value': 'sum',
-        'clicks': 'sum',
-        'query': 'count'
-    }).to_dict('index')
-    
-    # Top value queries
-    top_queries = gsc_query_data.nlargest(20, 'traffic_value')[
-        ['query', 'clicks', 'position', 'intent', 'estimated_cpc', 'traffic_value']
-    ].to_dict('records')
-    
-    return {
-        "total_traffic_value": round(total_value, 2),
-        "traffic_value_monthly": round(monthly_value, 2),
-        "avg_click_value": round(avg_click_value, 2),
-        "queries_analyzed": len(gsc_query_data),
-        "value_by_intent": {
-            intent: {
-                "total_value": round(data['traffic_value'], 2),
-                "clicks": int(data['clicks']),
-                "query_count": int(data['query']),
-                "avg_click_value": round(data['traffic_value'] / data['clicks'], 2) if data['clicks'] > 0 else 0
-            }
-            for intent, data in value_by_intent.items()
-        },
-        "top_value_queries": [
-            {
-                "query": q['query'],
-                "clicks": int(q['clicks']),
-                "position": round(q['position'], 1),
-                "intent": q['intent'],
-                "estimated_cpc": round(q['estimated_cpc'], 2),
-                "traffic_value": round(q['traffic_value'], 2)
-            }
-            for q in top_queries
-        ]
-    }
+    benchmarks = CONVERSION_BENCHMARKS.get(page_type, CONVERSION_BENCHMARKS["default"])
+    return benchmarks.get(metric, benchmarks["average"])
 
 
-def estimate_conversions(
-    page_data: pd.DataFrame,
-    ga4_conversion_data: Optional[Dict[str, Any]] = None,
-    industry: str = "default"
-) -> Dict[str, Any]:
-    """
-    Estimate conversions and revenue based on GA4 data or industry benchmarks.
-    
-    Args:
-        page_data: DataFrame with columns: page, clicks, sessions, bounce_rate, avg_session_duration
-        ga4_conversion_data: GA4 conversion metrics if available
-        industry: Industry type for benchmark conversion rates
-        
-    Returns:
-        Dictionary with conversion estimates
-    """
-    if page_data.empty:
-        return {
-            "estimated_conversions": 0,
-            "conversion_rate": 0,
-            "pages_analyzed": 0
-        }
-    
-    # Use GA4 conversion data if available, otherwise use benchmarks
-    if ga4_conversion_data and 'conversion_rate' in ga4_conversion_data:
-        base_conversion_rate = ga4_conversion_data['conversion_rate']
-        actual_conversions = ga4_conversion_data.get('total_conversions', 0)
-    else:
-        base_conversion_rate = CONVERSION_RATE_BENCHMARKS.get(industry, CONVERSION_RATE_BENCHMARKS['default'])
-        actual_conversions = None
-    
-    # Adjust conversion rate per page based on engagement signals
-    def calculate_page_conversion_rate(row):
-        cr = base_conversion_rate
-        
-        # Bounce rate adjustment
-        bounce = row.get('bounce_rate', 0.5)
-        if bounce < 0.3:
-            cr *= 1.3  # Low bounce = higher quality traffic
-        elif bounce > 0.7:
-            cr *= 0.6  # High bounce = lower quality traffic
-        
-        # Session duration adjustment
-        duration = row.get('avg_session_duration', 60)
-        if duration > 180:  # > 3 minutes
-            cr *= 1.2
-        elif duration < 30:  # < 30 seconds
-            cr *= 0.5
-        
-        return cr
-    
-    page_data['estimated_conversion_rate'] = page_data.apply(calculate_page_conversion_rate, axis=1)
-    page_data['estimated_conversions'] = page_data['clicks'] * page_data['estimated_conversion_rate']
-    
-    total_conversions = page_data['estimated_conversions'].sum()
-    total_clicks = page_data['clicks'].sum()
-    overall_conversion_rate = total_conversions / total_clicks if total_clicks > 0 else 0
-    
-    # High-value pages (traffic × conversion rate)
-    page_data['page_value_score'] = page_data['clicks'] * page_data['estimated_conversion_rate']
-    high_value_pages = page_data.nlargest(20, 'page_value_score')[
-        ['page', 'clicks', 'estimated_conversion_rate', 'estimated_conversions', 'page_value_score']
-    ].to_dict('records')
-    
-    return {
-        "estimated_conversions": round(total_conversions, 1),
-        "estimated_conversion_rate": round(overall_conversion_rate, 4),
-        "actual_conversions": actual_conversions,
-        "pages_analyzed": len(page_data),
-        "high_value_pages": [
-            {
-                "page": p['page'],
-                "clicks": int(p['clicks']),
-                "estimated_conversion_rate": round(p['estimated_conversion_rate'], 4),
-                "estimated_conversions": round(p['estimated_conversions'], 1),
-                "value_score": round(p['page_value_score'], 2)
-            }
-            for p in high_value_pages
-        ]
-    }
-
-
-def project_revenue_impact(
-    gsc_query_data: pd.DataFrame,
-    position_improvements: List[Dict[str, Any]],
+def calculate_opportunity_score(
+    traffic: int,
+    current_cr: float,
+    benchmark_cr: float,
     avg_order_value: Optional[float] = None,
-    conversion_rate: float = 0.025
-) -> Dict[str, Any]:
+    position: Optional[float] = None
+) -> float:
     """
-    Project revenue impact of ranking improvements.
+    Calculate opportunity score for a page based on traffic volume and conversion gap.
+    
+    Score formula:
+    - Base score = traffic × (benchmark_cr - current_cr) × 1000
+    - Multiplied by AOV factor if available
+    - Adjusted by position factor (easier wins at higher positions)
     
     Args:
-        gsc_query_data: DataFrame with query performance data
-        position_improvements: List of potential position improvements from other modules
-        avg_order_value: Average order value (if applicable)
-        conversion_rate: Site conversion rate
+        traffic: Monthly sessions/visits
+        current_cr: Current conversion rate
+        benchmark_cr: Benchmark conversion rate
+        avg_order_value: Average order/conversion value (optional)
+        position: Average search position (optional)
         
     Returns:
-        Dictionary with revenue projections
+        Opportunity score (0-100+)
     """
-    if gsc_query_data.empty or not position_improvements:
-        return {
-            "total_revenue_opportunity": 0,
-            "opportunities_analyzed": 0
-        }
+    if benchmark_cr <= current_cr:
+        return 0.0
     
-    # CTR by position (industry averages)
-    position_ctr = {
-        1: 0.316, 2: 0.158, 3: 0.107, 4: 0.074, 5: 0.057,
-        6: 0.046, 7: 0.039, 8: 0.033, 9: 0.029, 10: 0.025,
-        11: 0.020, 12: 0.017, 13: 0.015, 14: 0.013, 15: 0.012
+    # Base score: traffic × conversion gap
+    conversion_gap = benchmark_cr - current_cr
+    base_score = traffic * conversion_gap * 1000
+    
+    # Apply AOV multiplier (higher value conversions = higher priority)
+    if avg_order_value:
+        aov_factor = min(avg_order_value / 100, 5.0)  # Cap at 5x multiplier
+        base_score *= aov_factor
+    
+    # Position factor (easier to improve high-ranking pages)
+    if position:
+        if position <= 5:
+            position_factor = 1.5
+        elif position <= 10:
+            position_factor = 1.2
+        elif position <= 20:
+            position_factor = 1.0
+        else:
+            position_factor = 0.8
+        base_score *= position_factor
+    
+    # Normalize to 0-100 scale (with potential for >100 for exceptional opportunities)
+    return min(base_score / 100, 150)
+
+
+def calculate_potential_lift(
+    traffic: int,
+    current_cr: float,
+    benchmark_cr: float,
+    avg_order_value: Optional[float] = None
+) -> Dict[str, Any]:
+    """
+    Calculate potential conversion and revenue lift if benchmark is achieved.
+    
+    Args:
+        traffic: Monthly sessions
+        current_cr: Current conversion rate
+        benchmark_cr: Target benchmark conversion rate
+        avg_order_value: Average order value (optional)
+        
+    Returns:
+        Dict with lift calculations
+    """
+    current_conversions = traffic * current_cr
+    potential_conversions = traffic * benchmark_cr
+    conversion_lift = potential_conversions - current_conversions
+    
+    result = {
+        "current_conversions": round(current_conversions, 1),
+        "potential_conversions": round(potential_conversions, 1),
+        "conversion_lift": round(conversion_lift, 1),
+        "conversion_lift_pct": round((conversion_lift / max(current_conversions, 1)) * 100, 1)
     }
     
-    def get_ctr_for_position(pos: float) -> float:
-        if pos < 1:
-            return position_ctr[1]
-        pos_int = min(int(round(pos)), 15)
-        return position_ctr.get(pos_int, 0.01)
-    
-    opportunities = []
-    
-    for improvement in position_improvements:
-        query = improvement.get('query', '')
-        current_position = improvement.get('current_position', 0)
-        target_position = improvement.get('target_position', 0)
+    if avg_order_value:
+        current_revenue = current_conversions * avg_order_value
+        potential_revenue = potential_conversions * avg_order_value
+        revenue_lift = potential_revenue - current_revenue
         
-        # Find query in data
-        query_data = gsc_query_data[gsc_query_data['query'] == query]
-        if query_data.empty:
-            continue
-        
-        row = query_data.iloc[0]
-        impressions = row['impressions']
-        current_clicks = row['clicks']
-        
-        # Calculate projected clicks at new position
-        current_ctr = get_ctr_for_position(current_position)
-        target_ctr = get_ctr_for_position(target_position)
-        
-        projected_clicks = impressions * target_ctr
-        click_gain = projected_clicks - current_clicks
-        
-        if click_gain <= 0:
-            continue
-        
-        # Calculate traffic value
-        intent = classify_query_intent(query, target_position, row.get('page', ''))
-        estimated_cpc = estimate_query_cpc(query, intent, impressions)
-        traffic_value_gain = click_gain * estimated_cpc
-        
-        # Calculate revenue impact
-        projected_conversions = click_gain * conversion_rate
-        revenue_impact = 0
-        if avg_order_value:
-            revenue_impact = projected_conversions * avg_order_value
-        
-        opportunities.append({
-            "query": query,
-            "current_position": round(current_position, 1),
-            "target_position": target_position,
-            "current_clicks": int(current_clicks),
-            "projected_clicks": round(projected_clicks, 1),
-            "click_gain": round(click_gain, 1),
-            "traffic_value_gain_monthly": round(traffic_value_gain, 2),
-            "projected_conversions_monthly": round(projected_conversions, 2),
-            "revenue_impact_monthly": round(revenue_impact, 2) if revenue_impact else None,
-            "effort_estimate": improvement.get('effort', 'medium'),
-            "roi_score": round(traffic_value_gain / max(improvement.get('effort_score', 5), 1), 2)
+        result.update({
+            "current_revenue": round(current_revenue, 2),
+            "potential_revenue": round(potential_revenue, 2),
+            "revenue_lift": round(revenue_lift, 2),
+            "revenue_lift_pct": round((revenue_lift / max(current_revenue, 1)) * 100, 1)
         })
     
-    # Sort by ROI score
-    opportunities.sort(key=lambda x: x['roi_score'], reverse=True)
+    return result
+
+
+def generate_cro_recommendations(
+    page_type: str,
+    current_cr: float,
+    benchmark_cr: float,
+    engagement_metrics: Dict[str, Any],
+    traffic_source: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Generate actionable CRO recommendations based on page analysis.
     
-    total_click_gain = sum(o['click_gain'] for o in opportunities)
-    total_traffic_value = sum(o['traffic_value_gain_monthly'] for o in opportunities)
-    total_conversions = sum(o['projected_conversions_monthly'] for o in opportunities)
-    total_revenue = sum(o['revenue_impact_monthly'] for o in opportunities if o['revenue_impact_monthly'])
+    Args:
+        page_type: Type of page
+        current_cr: Current conversion rate
+        benchmark_cr: Benchmark conversion rate
+        engagement_metrics: Engagement data (bounce rate, time on page, etc.)
+        traffic_source: Primary traffic source (optional)
+        
+    Returns:
+        List of prioritized recommendations
+    """
+    recommendations = []
+    
+    # Calculate conversion gap severity
+    if benchmark_cr > 0:
+        gap_pct = ((benchmark_cr - current_cr) / benchmark_cr) * 100
+    else:
+        gap_pct = 0
+    
+    bounce_rate = engagement_metrics.get('bounce_rate', 0)
+    avg_session_duration = engagement_metrics.get('avg_session_duration', 0)
+    pages_per_session = engagement_metrics.get('pages_per_session', 0)
+    
+    # High bounce rate recommendations
+    if bounce_rate > 70:
+        recommendations.append({
+            "category": "User Experience",
+            "issue": "High Bounce Rate",
+            "recommendation": "Improve above-the-fold content and value proposition clarity. Visitors are leaving too quickly.",
+            "priority": "high",
+            "estimated_impact": "20-30% conversion lift",
+            "actions": [
+                "Add clear, compelling headline that matches search intent",
+                "Place primary CTA above the fold",
+                "Reduce page load time (target < 2.5s)",
+                "Ensure mobile responsiveness",
+                "Add trust signals (testimonials, ratings, security badges)"
+            ]
+        })
+    
+    # Low engagement recommendations
+    if avg_session_duration < 30 and page_type in ['product', 'landing']:
+        recommendations.append({
+            "category": "Content Quality",
+            "issue": "Low Time on Page",
+            "recommendation": "Content is not engaging visitors. Enhance information architecture and persuasive elements.",
+            "priority": "high",
+            "estimated_impact": "15-25% conversion lift",
+            "actions": [
+                "Add compelling product/service descriptions",
+                "Include high-quality images or videos",
+                "Add social proof (reviews, testimonials, case studies)",
+                "Use bullet points and scannable formatting",
+                "Address common objections proactively"
+            ]
+        })
+    
+    # Low pages per session (for non-landing pages)
+    if pages_per_session < 1.5 and page_type not in ['product', 'landing']:
+        recommendations.append({
+            "category": "Navigation",
+            "issue": "Low Pages Per Session",
+            "recommendation": "Visitors aren't exploring further. Improve internal linking and navigation paths.",
+            "priority": "medium",
+            "estimated_impact": "10-15% conversion lift",
+            "actions": [
+                "Add relevant internal links to related content/products",
+                "Implement 'You might also like' recommendations",
+                "Add clear next-step CTAs",
+                "Improve main navigation visibility",
+                "Use breadcrumbs for better site structure understanding"
+            ]
+        })
+    
+    # Page-type specific recommendations
+    if page_type == "product":
+        if current_cr < get_benchmark_for_page("product", "poor"):
+            recommendations.append({
+                "category": "Product Page Optimization",
+                "issue": "Below-Average Product Conversion",
+                "recommendation": "Product page is underperforming. Optimize for conversion best practices.",
+                "priority": "high",
+                "estimated_impact": "30-50% conversion lift",
+                "actions": [
+                    "Add multiple high-quality product images with zoom",
+                    "Include detailed specifications and dimensions",
+                    "Add customer reviews and ratings",
+                    "Show stock status and urgency indicators",
+                    "Offer multiple payment options",
+                    "Add clear return/shipping policies",
+                    "Implement size guides or product finders",
+                    "Show related products and upsells"
+                ]
+            })
+    
+    elif page_type == "landing":
+        if current_cr < get_benchmark_for_page("landing", "average"):
+            recommendations.append({
+                "category": "Landing Page Optimization",
+                "issue": "Low Landing Page Conversion",
+                "recommendation": "Landing page not effectively converting traffic. Optimize conversion funnel.",
+                "priority": "critical",
+                "estimated_impact": "40-60% conversion lift",
+                "actions": [
+                    "Simplify form fields (reduce friction)",
+                    "Add compelling headline matching ad/link copy",
+                    "Use directional cues pointing to CTA",
+                    "Remove navigation to reduce exits",
+                    "Add urgency elements (limited time offers)",
+                    "A/B test different CTA button colors/text",
+                    "Add live chat for immediate support",
+                    "Show guarantees and risk-reversal"
+                ]
+            })
+    
+    elif page_type == "blog":
+        if current_cr < get_benchmark_for_page("blog", "average"):
+            recommendations.append({
+                "category": "Content Monetization",
+                "issue": "Low Content Conversion",
+                "recommendation": "Blog content not effectively leading to conversions. Improve conversion paths.",
+                "priority": "medium",
+                "estimated_impact": "15-25% conversion lift",
+                "actions": [
+                    "Add contextual CTAs within content",
+                    "Create content upgrades (downloadable resources)",
+                    "Use exit-intent popups for email capture",
+                    "Add 'Start here' guides for new visitors",
+                    "Link to product/service pages naturally",
+                    "Add end-of-post CTAs with clear value proposition",
+                    "Implement sticky sidebar CTAs",
+                    "Create content-to-conversion funnels"
+                ]
+            })
+    
+    # Traffic source specific recommendations
+    if traffic_source == "organic":
+        recommendations.append({
+            "category": "Search Intent Alignment",
+            "issue": "Organic Traffic Optimization",
+            "recommendation": "Ensure page content matches search intent for converting organic visitors.",
+            "priority": "high",
+            "estimated_impact": "20-30% conversion lift",
+            "actions": [
+                "Review top keywords and ensure content alignment",
+                "Match headline to primary search query",
+                "Answer visitor questions immediately",
+                "Add FAQ section for common queries",
+                "Optimize meta description as 'ad copy'",
+                "Add schema markup for rich snippets",
+                "Ensure page load speed is optimized"
+            ]
+        })
+    
+    # General large gap recommendation
+    if gap_pct > 50:
+        recommendations.append({
+            "category": "Comprehensive Audit",
+            "issue": "Significant Conversion Gap",
+            "recommendation": "Large gap between performance and benchmark suggests multiple optimization opportunities.",
+            "priority": "critical",
+            "estimated_impact": "50-100% conversion lift potential",
+            "actions": [
+                "Conduct comprehensive CRO audit",
+                "Implement user testing or session recordings",
+                "Analyze heatmaps and click patterns",
+                "Survey visitors to understand barriers",
+                "Review complete conversion funnel",
+                "Consider professional CRO consultant",
+                "Implement systematic A/B testing program"
+            ]
+        })
+    
+    # Sort by priority
+    priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    recommendations.sort(key=lambda x: priority_order.get(x["priority"], 3))
+    
+    return recommendations
+
+
+def analyze_conversion_funnel(
+    page_data: pd.DataFrame,
+    conversion_events: List[Dict[str, Any]],
+    funnel_steps: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """
+    Analyze conversion funnel to identify drop-off points.
+    
+    Args:
+        page_data: Page-level data with session counts
+        conversion_events: List of conversion event data
+        funnel_steps: Optional list of funnel step page patterns
+        
+    Returns:
+        Funnel analysis with drop-off rates
+    """
+    if not funnel_steps:
+        funnel_steps = ["landing", "product", "cart", "checkout", "confirmation"]
+    
+    funnel_data = []
+    
+    for i, step in enumerate(funnel_steps):
+        step_pages = page_data[page_data['url'].str.contains(step, case=False, na=False)]
+        
+        if not step_pages.empty:
+            total_sessions = step_pages['sessions'].sum()
+            
+            # For final step, count conversions
+            if i == len(funnel_steps) - 1:
+                conversions = sum(e['count'] for e in conversion_events if step in e.get('page', ''))
+            else:
+                conversions = 0
+            
+            funnel_data.append({
+                "step": step,
+                "step_number": i + 1,
+                "sessions": int(total_sessions),
+                "conversions": int(conversions)
+            })
+    
+    # Calculate drop-off rates
+    for i in range(len(funnel_data) - 1):
+        current_sessions = funnel_data[i]['sessions']
+        next_sessions = funnel_data[i + 1]['sessions']
+        
+        if current_sessions > 0:
+            drop_off_rate = ((current_sessions - next_sessions) / current_sessions) * 100
+            funnel_data[i]['drop_off_rate'] = round(drop_off_rate, 1)
+            funnel_data[i]['continuation_rate'] = round(100 - drop_off_rate, 1)
+    
+    # Overall funnel conversion rate
+    if funnel_data and funnel_data[0]['sessions'] > 0:
+        overall_cr = (funnel_data[-1]['conversions'] / funnel_data[0]['sessions']) * 100
+    else:
+        overall_cr = 0
     
     return {
-        "total_click_gain_monthly": round(total_click_gain, 1),
-        "total_traffic_value_gain_monthly": round(total_traffic_value, 2),
-        "total_projected_conversions_monthly": round(total_conversions, 2),
-        "total_revenue_opportunity_monthly": round(total_revenue, 2) if total_revenue else None,
-        "opportunities_analyzed": len(opportunities),
-        "top_opportunities": opportunities[:20]
+        "funnel_steps": funnel_data,
+        "overall_conversion_rate": round(overall_cr, 2),
+        "biggest_drop_off_step": max(funnel_data[:-1], key=lambda x: x.get('drop_off_rate', 0)) if len(funnel_data) > 1 else None
     }
 
 
-def analyze_revenue_impact(
-    gsc_query_data: pd.DataFrame,
-    page_performance_data: pd.DataFrame,
-    ga4_data: Optional[Dict[str, Any]] = None,
-    position_improvements: Optional[List[Dict[str, Any]]] = None,
+def segment_opportunities(
+    opportunities: List[Dict[str, Any]],
+    segment_by: str = "page_type"
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Segment conversion opportunities by specified dimension.
+    
+    Args:
+        opportunities: List of opportunity dicts
+        segment_by: Dimension to segment by (page_type, traffic_tier, etc.)
+        
+    Returns:
+        Dict of segmented opportunities
+    """
+    segments = defaultdict(list)
+    
+    for opp in opportunities:
+        key = opp.get(segment_by, "unknown")
+        segments[key].append(opp)
+    
+    # Sort each segment by opportunity score
+    for key in segments:
+        segments[key].sort(key=lambda x: x.get('opportunity_score', 0), reverse=True)
+    
+    return dict(segments)
+
+
+def process(
+    ga4_data: Dict[str, Any],
+    gsc_data: Dict[str, Any],
+    page_data: Optional[Dict[str, Any]] = None,
     config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Main analysis function for Module 10: Revenue Impact.
+    Main processing function for Module 10: Conversion Opportunity Scanner.
+    
+    Analyzes GA4 conversion data to identify high-traffic, low-conversion pages,
+    calculates opportunity scores, and generates actionable CRO recommendations.
     
     Args:
-        gsc_query_data: GSC query-level performance data
-        page_performance_data: Page-level performance with engagement metrics
-        ga4_data: GA4 conversion and revenue data
-        position_improvements: Potential ranking improvements from other modules
-        config: Configuration with industry type, AOV, etc.
+        ga4_data: GA4 analytics data including landing pages and conversions
+        gsc_data: Google Search Console data for position context
+        page_data: Optional crawl data for page metadata
+        config: Optional configuration parameters
         
     Returns:
-        Complete revenue impact analysis results
+        Dict containing conversion opportunity analysis
     """
+    logger.info("Starting Module 10: Conversion Opportunity Scanner")
+    
     try:
-        logger.info("Starting revenue impact analysis")
-        
+        # Extract configuration
         config = config or {}
-        industry = config.get('industry', 'default')
-        avg_order_value = config.get('avg_order_value')
-        time_period_days = config.get('time_period_days', 30)
+        min_sessions = config.get('min_sessions', 100)  # Minimum sessions to analyze
+        avg_order_value = config.get('avg_order_value', None)  # Optional AOV
+        target_benchmark = config.get('target_benchmark', 'good')  # Target benchmark level
         
-        # 1. Calculate traffic value
-        logger.info("Calculating traffic value")
-        traffic_value = calculate_traffic_value(gsc_query_data, time_period_days)
-        
-        # 2. Extract conversion data from GA4
-        ga4_conversion_data = None
-        if ga4_data:
-            ga4_conversion_data = {
-                'conversion_rate': ga4_data.get('conversion_rate', 0),
-                'total_conversions': ga4_data.get('total_conversions', 0),
-                'total_revenue': ga4_data.get('total_revenue', 0)
+        # Extract GA4 landing page data
+        landing_pages = ga4_data.get('landing_pages', [])
+        if not landing_pages:
+            logger.warning("No GA4 landing page data available")
+            return {
+                "error": "No landing page data available",
+                "opportunities": [],
+                "summary": {}
             }
         
-        # 3. Estimate conversions
-        logger.info("Estimating conversions")
-        conversion_estimates = estimate_conversions(
-            page_performance_data,
-            ga4_conversion_data,
-            industry
+        # Convert to DataFrame
+        df = pd.DataFrame(landing_pages)
+        
+        # Filter to pages with minimum traffic
+        df = df[df['sessions'] >= min_sessions].copy()
+        
+        if df.empty:
+            logger.warning(f"No pages with >= {min_sessions} sessions")
+            return {
+                "error": f"No pages with sufficient traffic (>= {min_sessions} sessions)",
+                "opportunities": [],
+                "summary": {}
+            }
+        
+        # Classify page types
+        df['page_type'] = df['page'].apply(classify_page_type)
+        
+        # Calculate conversion rates
+        df['conversion_rate'] = df.apply(
+            lambda row: calculate_conversion_rate(
+                row.get('conversions', 0),
+                row.get('sessions', 0)
+            ),
+            axis=1
         )
         
-        # 4. Project revenue impact of improvements
-        revenue_projections = {}
-        if position_improvements:
-            logger.info("Projecting revenue impact of ranking improvements")
-            conversion_rate = conversion_estimates.get('estimated_conversion_rate', 0.025)
-            revenue_projections = project_revenue_impact(
-                gsc_query_data,
-                position_improvements,
-                avg_order_value,
-                conversion_rate
-            )
+        # Get benchmark conversion rates
+        df['benchmark_cr'] = df.apply(
+            lambda row: get_benchmark_for_page(row['page_type'], target_benchmark),
+            axis=1
+        )
         
-        # 5. Calculate current revenue attribution (if AOV available)
-        current_revenue_attribution = None
-        if avg_order_value and conversion_estimates['estimated_conversions'] > 0:
-            current_revenue_attribution = {
-                "estimated_monthly_conversions": conversion_estimates['estimated_conversions'],
-                "estimated_monthly_revenue": round(
-                    conversion_estimates['estimated_conversions'] * avg_order_value, 2
-                ),
-                "avg_order_value": avg_order_value
+        # Calculate conversion gap
+        df['conversion_gap'] = df['benchmark_cr'] - df['conversion_rate']
+        
+        # Filter to pages below benchmark
+        opportunities_df = df[df['conversion_gap'] > 0].copy()
+        
+        # Merge with GSC position data if available
+        gsc_pages = gsc_data.get('pages', [])
+        if gsc_pages:
+            gsc_df = pd.DataFrame(gsc_pages)
+            if 'page' in gsc_df.columns and 'position' in gsc_df.columns:
+                opportunities_df = opportunities_df.merge(
+                    gsc_df[['page', 'position']],
+                    on='page',
+                    how='left'
+                )
+        
+        # Calculate opportunity scores
+        opportunities_df['opportunity_score'] = opportunities_df.apply(
+            lambda row: calculate_opportunity_score(
+                row['sessions'],
+                row['conversion_rate'],
+                row['benchmark_cr'],
+                avg_order_value,
+                row.get('position', None)
+            ),
+            axis=1
+        )
+        
+        # Calculate potential lift
+        lift_data = opportunities_df.apply(
+            lambda row: pd.Series(calculate_potential_lift(
+                row['sessions'],
+                row['conversion_rate'],
+                row['benchmark_cr'],
+                avg_order_value
+            )),
+            axis=1
+        )
+        opportunities_df = pd.concat([opportunities_df, lift_data], axis=1)
+        
+        # Sort by opportunity score
+        opportunities_df = opportunities_df.sort_values('opportunity_score', ascending=False)
+        
+        # Generate recommendations for top opportunities
+        top_opportunities = []
+        
+        for idx, row in opportunities_df.head(20).iterrows():
+            engagement_metrics = {
+                'bounce_rate': row.get('bounce_rate', 0) * 100 if row.get('bounce_rate', 0) <= 1 else row.get('bounce_rate', 0),
+                'avg_session_duration': row.get('avg_session_duration', 0),
+                'pages_per_session': row.get('pages_per_session', 1)
+            }
+            
+            recommendations = generate_cro_recommendations(
+                row['page_type'],
+                row['conversion_rate'],
+                row['benchmark_cr'],
+                engagement_metrics,
+                row.get('traffic_source', None)
+            )
+            
+            opportunity = {
+                "page": row['page'],
+                "page_type": row['page_type'],
+                "monthly_sessions": int(row['sessions']),
+                "current_conversion_rate": round(row['conversion_rate'] * 100, 2),
+                "benchmark_conversion_rate": round(row['benchmark_cr'] * 100, 2),
+                "conversion_gap_pct": round((row['conversion_gap'] / row['benchmark_cr']) * 100, 1),
+                "opportunity_score": round(row['opportunity_score'], 1),
+                "current_conversions": row['current_conversions'],
+                "potential_conversions": row['potential_conversions'],
+                "conversion_lift": row['conversion_lift'],
+                "conversion_lift_pct": row['conversion_lift_pct'],
+                "engagement_metrics": {
+                    "bounce_rate": round(engagement_metrics['bounce_rate'], 1),
+                    "avg_session_duration": round(engagement_metrics['avg_session_duration'], 1),
+                    "pages_per_session": round(engagement_metrics['pages_per_session'], 2)
+                },
+                "recommendations": recommendations[:3]  # Top 3 recommendations
+            }
+            
+            # Add revenue data if AOV provided
+            if avg_order_value and 'revenue_lift' in row:
+                opportunity['current_revenue'] = row['current_revenue']
+                opportunity['potential_revenue'] = row['potential_revenue']
+                opportunity['revenue_lift'] = row['revenue_lift']
+                opportunity['revenue_lift_pct'] = row['revenue_lift_pct']
+            
+            # Add position if available
+            if 'position' in row and pd.notna(row['position']):
+                opportunity['avg_position'] = round(row['position'], 1)
+            
+            top_opportunities.append(opportunity)
+        
+        # Calculate summary statistics
+        total_sessions = int(opportunities_df['sessions'].sum())
+        total_current_conversions = opportunities_df['current_conversions'].sum()
+        total_potential_conversions = opportunities_df['potential_conversions'].sum()
+        total_conversion_lift = total_potential_conversions - total_current_conversions
+        
+        summary = {
+            "total_pages_analyzed": len(df),
+            "pages_below_benchmark": len(opportunities_df),
+            "total_monthly_sessions": total_sessions,
+            "total_current_conversions": round(total_current_conversions, 1),
+            "total_potential_conversions": round(total_potential_conversions, 1),
+            "total_conversion_lift": round(total_conversion_lift, 1),
+            "total_conversion_lift_pct": round((total_conversion_lift / max(total_current_conversions, 1)) * 100, 1),
+            "avg_current_conversion_rate": round(df['conversion_rate'].mean() * 100, 2),
+            "avg_benchmark_conversion_rate": round(df['benchmark_cr'].mean() * 100, 2)
+        }
+        
+        # Add revenue summary if AOV provided
+        if avg_order_value:
+            total_current_revenue = total_current_conversions * avg_order_value
+            total_potential_revenue = total_potential_conversions * avg_order_value
+            total_revenue_lift = total_potential_revenue - total_current_revenue
+            
+            summary.update({
+                "total_current_revenue": round(total_current_revenue, 2),
+                "total_potential_revenue": round(total_potential_revenue, 2),
+                "total_revenue_lift": round(total_revenue_lift, 2),
+                "total_revenue_lift_pct": round((total_revenue_lift / max(total_current_revenue, 1)) * 100, 1)
+            })
+        
+        # Segment opportunities by page type
+        page_type_breakdown = opportunities_df.groupby('page_type').agg({
+            'sessions': 'sum',
+            'conversion_lift': 'sum',
+            'opportunity_score': 'mean'
+        }).to_dict('index')
+        
+        for page_type, stats in page_type_breakdown.items():
+            page_type_breakdown[page_type] = {
+                'total_sessions': int(stats['sessions']),
+                'total_conversion_lift': round(stats['conversion_lift'], 1),
+                'avg_opportunity_score': round(stats['opportunity_score'], 1),
+                'page_count': len(opportunities_df[opportunities_df['page_type'] == page_type])
             }
         
-        # 6. Calculate ROI metrics
-        total_opportunity = revenue_projections.get('total_revenue_opportunity_monthly', 0)
-        current_value = traffic_value['traffic_value_monthly']
+        # Identify quick wins (high score, low complexity)
+        quick_wins = []
+        for opp in top_opportunities[:10]:
+            # Quick win criteria: high opportunity score and simpler fixes
+            if opp['opportunity_score'] > 50:
+                primary_issue = opp['recommendations'][0]['issue'] if opp['recommendations'] else ""
+                if any(term in primary_issue.lower() for term in ['bounce', 'time', 'cta', 'headline']):
+                    quick_wins.append({
+                        "page": opp['page'],
+                        "opportunity_score": opp['opportunity_score'],
+                        "conversion_lift": opp['conversion_lift'],
+                        "primary_fix": opp['recommendations'][0]['recommendation'] if opp['recommendations'] else "Optimize conversion elements"
+                    })
         
-        roi_summary = {
-            "current_organic_traffic_value_monthly": current_value,
-            "potential_traffic_value_gain_monthly": revenue_projections.get(
-                'total_traffic_value_gain_monthly', 0
-            ),
-            "potential_revenue_gain_monthly": total_opportunity,
-            "roi_multiplier": round(
-                (current_value + revenue_projections.get('total_traffic_value_gain_monthly', 0)) / current_value, 2
-            ) if current_value > 0 else 0
-        }
+        # Overall insights
+        insights = []
+        
+        # Insight: Overall conversion performance
+        avg_gap = opportunities_df['conversion_gap'].mean()
+        if avg_gap > 0.01:
+            insights.append({
+                "type": "overall_performance",
+                "severity": "high" if avg_gap > 0.02 else "medium",
+                "insight": f"Site-wide conversion rates are {round(avg_gap * 100, 1)}% below industry benchmarks on average",
+                "recommendation": "Systematic CRO program needed across multiple page types"
+            })
+        
+        # Insight: Page type with biggest opportunity
+        if page_type_breakdown:
+            biggest_opportunity_type = max(
+                page_type_breakdown.items(),
+                key=lambda x: x[1]['total_conversion_lift']
+            )
+            insights.append({
+                "type": "page_type_priority",
+                "severity": "high",
+                "insight": f"{biggest_opportunity_type[0].title()} pages have the largest conversion opportunity",
+                "recommendation": f"Focus initial CRO efforts on {biggest_opportunity_type[0]} pages for maximum impact"
+            })
+        
+        # Insight: High bounce rates
+        high_bounce_pages = opportunities_df[
+            opportunities_df['bounce_rate'] > 0.7
+        ] if 'bounce_rate' in opportunities_df.columns else pd.DataFrame()
+        
+        if not high_bounce_pages.empty:
+            insights.append({
+                "type": "engagement_issue",
+                "severity": "high",
+                "insight": f"{len(high_bounce_pages)} high-traffic pages have bounce rates above 70%",
+                "recommendation": "Improve above-the-fold content and value proposition clarity"
+            })
+        
+        # Insight: Quick wins available
+        if quick_wins:
+            total_quick_win_lift = sum(qw['conversion_lift'] for qw in quick_wins)
+            insights.append({
+                "type": "quick_wins",
+                "severity": "medium",
+                "insight": f"{len(quick_wins)} pages have simple optimization opportunities",
+                "recommendation": f"Address these quick wins first for {round(total_quick_win_lift, 0)} potential additional conversions/month"
+            })
         
         result = {
-            "traffic_value": traffic_value,
-            "conversion_estimates": conversion_estimates,
-            "revenue_projections": revenue_projections,
-            "current_revenue_attribution": current_revenue_attribution,
-            "roi_summary": roi_summary,
-            "metadata": {
-                "analysis_date": datetime.utcnow().isoformat(),
-                "time_period_days": time_period_days,
-                "industry": industry,
+            "summary": summary,
+            "opportunities": top_opportunities,
+            "page_type_breakdown": page_type_breakdown,
+            "quick_wins": quick_wins[:5],  # Top 5 quick wins
+            "insights": insights,
+            "analysis_params": {
+                "min_sessions_threshold": min_sessions,
+                "target_benchmark": target_benchmark,
                 "avg_order_value": avg_order_value,
-                "queries_analyzed": len(gsc_query_data),
-                "pages_analyzed": len(page_performance_data)
+                "pages_analyzed": len(df),
+                "date_range": ga4_data.get('date_range', 'unknown')
             }
         }
         
-        logger.info("Revenue impact analysis complete")
+        logger.info(f"Module 10 complete: {len(top_opportunities)} opportunities identified")
         return result
         
     except Exception as e:
-        logger.error(f"Error in revenue impact analysis: {str(e)}", exc_info=True)
-        raise
-
-
-def format_revenue_report(analysis_results: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Format revenue analysis results for report generation.
-    
-    Args:
-        analysis_results: Raw analysis results from analyze_revenue_impact
-        
-    Returns:
-        Formatted report data ready for JSON serialization
-    """
-    traffic_value = analysis_results['traffic_value']
-    conversions = analysis_results['conversion_estimates']
-    projections = analysis_results['revenue_projections']
-    roi = analysis_results['roi_summary']
-    
-    # Executive summary
-    summary = {
-        "current_monthly_traffic_value": traffic_value['traffic_value_monthly'],
-        "estimated_monthly_conversions": conversions['estimated_conversions'],
-        "potential_monthly_revenue_gain": projections.get('total_revenue_opportunity_monthly', 0),
-        "top_opportunity_count": len(projections.get('top_opportunities', [])),
-        "roi_multiplier": roi['roi_multiplier']
-    }
-    
-    # Key insights
-    insights = []
-    
-    # Traffic value insights
-    if traffic_value['traffic_value_monthly'] > 10000:
-        insights.append({
-            "type": "high_value",
-            "message": f"Your organic traffic generates ${traffic_value['traffic_value_monthly']:,.0f}/month in equivalent ad value",
-            "severity": "positive"
-        })
-    
-    # Conversion insights
-    if conversions['estimated_conversion_rate'] < 0.02:
-        insights.append({
-            "type": "low_conversion",
-            "message": "Conversion rate is below industry average - consider CRO initiatives",
-            "severity": "warning"
-        })
-    
-    # Revenue opportunity insights
-    if projections.get('total_revenue_opportunity_monthly', 0) > 5000:
-        insights.append({
-            "type": "high_opportunity",
-            "message": f"${projections['total_revenue_opportunity_monthly']:,.0f}/month revenue opportunity identified",
-            "severity": "positive"
-        })
-    
-    # High-value page insights
-    high_value_pages = conversions.get('high_value_pages', [])
-    if high_value_pages:
-        top_page = high_value_pages[0]
-        insights.append({
-            "type": "top_page",
-            "message": f"Top revenue page: {top_page['page']} ({top_page['estimated_conversions']:.1f} conversions/month)",
-            "severity": "info"
-        })
-    
-    return {
-        "summary": summary,
-        "insights": insights,
-        "traffic_value_breakdown": traffic_value['value_by_intent'],
-        "top_value_queries": traffic_value['top_value_queries'][:10],
-        "high_value_pages": high_value_pages[:10],
-        "top_revenue_opportunities": projections.get('top_opportunities', [])[:10],
-        "roi_summary": roi,
-        "metadata": analysis_results['metadata']
-    }
-
-
-# Convenience wrapper for module execution
-def run_module(
-    gsc_data: Dict[str, Any],
-    ga4_data: Optional[Dict[str, Any]] = None,
-    position_improvements: Optional[List[Dict[str, Any]]] = None,
-    config: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """
-    Execute Module 10 analysis with provided data.
-    
-    Args:
-        gsc_data: GSC data dictionary with 'queries' and 'pages' DataFrames
-        ga4_data: GA4 data dictionary with conversion metrics
-        position_improvements: List of ranking improvement opportunities
-        config: Analysis configuration
-        
-    Returns:
-        Formatted analysis results
-    """
-    gsc_query_data = gsc_data.get('queries', pd.DataFrame())
-    page_performance_data = gsc_data.get('pages', pd.DataFrame())
-    
-    # Ensure required columns exist
-    if not gsc_query_data.empty:
-        required_cols = ['query', 'clicks', 'impressions', 'position']
-        if not all(col in gsc_query_data.columns for col in required_cols):
-            raise ValueError(f"GSC query data missing required columns: {required_cols}")
-    
-    # Run analysis
-    results = analyze_revenue_impact(
-        gsc_query_data,
-        page_performance_data,
-        ga4_data,
-        position_improvements,
-        config
-    )
-    
-    # Format for report
-    return format_revenue_report(results)
+        logger.error(f"Error in Module 10: {str(e)}", exc_info=True)
+        return {
+            "error": str(e),
+            "opportunities": [],
+            "summary": {}
+        }
