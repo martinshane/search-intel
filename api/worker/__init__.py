@@ -3,8 +3,8 @@
 This package handles the async report generation pipeline.
 """
 
-from api.worker.pipeline import AnalysisPipeline, PipelineResult
-from api.worker.report_runner import run_report_pipeline
+from .pipeline import AnalysisPipeline, PipelineResult
+from .report_runner import run_report_pipeline
 
 # Backwards-compatible aliases
 ReportPipeline = AnalysisPipeline
