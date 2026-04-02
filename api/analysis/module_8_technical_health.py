@@ -114,6 +114,37 @@ def _extract_serp_features(serp_entry: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(items, dict):
         items = items.get("items", [])
     if not isinstance(items, list):
+        items = []
+
+    # Fallback: if no raw DataForSEO items available, check for pre-parsed
+    # "serp_features" dict.  The DataForSEOClient._parse_serp_features()
+    # consumes the raw items and stores boolean/count features in a flat
+    # dict.  When the pipeline passes pre-processed data (via
+    # fetch_serps_for_top_keywords → report_runner → pipeline), the raw
+    # items are no longer available — only the parsed dict survives.
+    #
+    # The entry may be:
+    #   1. A batch result:     {"keyword":..., "data":{"serp_features":{...}}}
+    #   2. A normalized SERP:  {"keyword":..., "serp_features":{...}}
+    if not items:
+        sf = (
+            serp_entry.get("serp_features")
+            or (serp_entry.get("data") or {}).get("serp_features")
+        )
+        if sf and isinstance(sf, dict):
+            features["has_featured_snippet"] = bool(sf.get("featured_snippet"))
+            features["has_ai_overview"] = bool(sf.get("ai_overview"))
+            features["paa_count"] = int(sf.get("people_also_ask", 0))
+            features["has_video_carousel"] = bool(sf.get("video_carousel"))
+            features["has_local_pack"] = bool(sf.get("local_pack"))
+            features["has_shopping"] = bool(sf.get("shopping_results"))
+            features["has_knowledge_panel"] = bool(sf.get("knowledge_panel"))
+            features["has_top_stories"] = bool(sf.get("top_stories"))
+            features["has_image_pack"] = bool(sf.get("image_pack"))
+            features["ads_above_count"] = int(sf.get("ads_count", 0))
+            features["organic_results_above_fold"] = min(
+                int(sf.get("organic_count", 0)), 5
+            )
         return features
 
     for item in items:
