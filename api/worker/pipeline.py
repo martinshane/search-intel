@@ -664,9 +664,21 @@ class AnalysisPipeline:
             }
         
         elif module_name == "intent_migration":
+            # Module 7 accepts optional serp_data (for SERP-feature-based
+            # intent classification — shopping_results → transactional, etc.)
+            # and optional page_data (for content alignment analysis —
+            # does the page type match the dominant intent?).
+            # Without serp_data, intent classification relies solely on
+            # keyword patterns, missing SERP-feature signals that improve
+            # accuracy (see _SERP_INTENT_SIGNALS in module_7).
+            # Without page_data, the content_alignment section returns empty.
             inputs = {
                 "query_timeseries": _ensure_dataframe(
                     data_context.get("gsc_query_date_data"), "gsc_query_date_data"
+                ),
+                "serp_data": _normalize_serp_data(data_context.get("serp_data")),
+                "page_data": _crawl_dict_to_page_dataframe(
+                    data_context.get("crawl_data")
                 ),
             }
         
