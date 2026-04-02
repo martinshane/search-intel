@@ -68,6 +68,7 @@ interface ReportData {
   generated_at?: string;
   current_module?: number;
   progress?: Record<string, string>;
+  error_message?: string;
   summary?: {
     monthly_clicks?: number;
     trend?: string;
@@ -99,6 +100,33 @@ export default function ReportPage() {
   // Progressive rendering: show completed modules during generation
   const [progressiveModules, setProgressiveModules] = useState<Record<string, any>>({});
   const progressivePollRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Retry state for failed reports
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  const retryReport = async () => {
+    if (!id) return;
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/reports/${id}/retry`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Failed to retry report');
+      }
+      // Report re-queued — switch back to loading state and start polling
+      setLoading(true);
+      setReport((prev) => prev ? { ...prev, status: 'queued' } : prev);
+      fetchReport();
+    } catch (err: any) {
+      setRetryError(err.message || 'Retry failed');
+      setRetrying(false);
+    }
+  };
 
   const sendReportEmail = async () => {
     if (!emailAddress || !id) return;
@@ -210,6 +238,7 @@ export default function ReportPage() {
         generated_at: raw.completed_at || raw.created_at,
         current_module: raw.current_module,
         progress: raw.progress,
+        error_message: raw.error_message || undefined,
         summary: reportData.metadata || undefined,
         modules,
       };
@@ -448,16 +477,45 @@ export default function ReportPage() {
               <h1 className="text-2xl font-bold text-white mb-3">
                 Report Generation Failed
               </h1>
-              <p className="text-slate-300 mb-6">
+              <p className="text-slate-300 mb-4">
                 We encountered an error while generating your report for{' '}
                 <span className="font-mono text-slate-200">{report.domain}</span>
               </p>
+              {report.error_message && (
+                <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-4 mb-6 text-left">
+                  <p className="text-red-300 text-sm font-mono break-words">
+                    {report.error_message}
+                  </p>
+                </div>
+              )}
+              {retryError && (
+                <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-3 mb-4 text-sm text-red-300">
+                  {retryError}
+                </div>
+              )}
               <div className="flex flex-col sm:flex-row gap-3 justify-center">
                 <button
-                  onClick={() => router.push('/')}
-                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+                  onClick={retryReport}
+                  disabled={retrying}
+                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  Try Again
+                  {retrying ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Retrying...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="w-4 h-4" />
+                      Retry This Report
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={() => router.push('/')}
+                  className="px-6 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition"
+                >
+                  Start New Report
                 </button>
                 <button
                   onClick={() => router.push('/reports')}
@@ -526,6 +584,13 @@ export default function ReportPage() {
                 >
                   <Mail className="w-4 h-4" />
                   <span className="text-sm font-medium">Email Report</span>
+                </button>
+                <button
+                  onClick={() => router.push(`/compare?id=${id}`)}
+                  className="flex items-center space-x-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm"
+                >
+                  <GitCompare className="w-4 h-4" />
+                  <span className="text-sm font-medium">Compare</span>
                 </button>
                 <button
                   onClick={() => window.print()}
