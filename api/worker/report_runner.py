@@ -22,7 +22,7 @@ import asyncio
 import logging
 import os
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from supabase import create_client, Client
@@ -193,45 +193,58 @@ def _decrypt_token(raw_token: Any) -> Dict[str, Any]:
 def _ingest_gsc_data(credentials: Dict[str, Any], gsc_property: str) -> Dict[str, Any]:
     """
     Pull GSC data using the ingestion module.
-    Returns a dict of DataFrames/lists keyed by data type.
-    Falls back to empty data on failure.
+
+    Returns a dict of DataFrames keyed by data type, ready for the
+    pipeline's data_context.
+
+    The GSCClient exposes ``fetch_*`` methods that accept
+    ``(site_url, start_date, end_date)`` where dates are
+    ``datetime.datetime`` objects.  We compute a 16-month window here.
+
+    Falls back to empty data on failure so the pipeline can still run
+    with whatever data is available.
     """
     gsc_data: Dict[str, Any] = {}
     try:
         from api.ingestion.gsc import GSCClient
+
         client = GSCClient(credentials)
 
-        # Daily time series (clicks, impressions)
-        gsc_data["gsc_daily_data"] = client.get_performance_by_date(
-            site_url=gsc_property, months=16
+        # 16 months of history, matching the spec requirement
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=16 * 30)
+
+        # Daily time series (clicks, impressions) — Module 1, 6
+        gsc_data["gsc_daily_data"] = client.fetch_daily_data(
+            gsc_property, start_date, end_date
         )
 
-        # Per-page aggregates
-        gsc_data["gsc_page_summary"] = client.get_performance_by_page(
-            site_url=gsc_property, months=16
+        # Per-page aggregates — Module 2, 9, 12
+        gsc_data["gsc_page_summary"] = client.fetch_page_data(
+            gsc_property, start_date, end_date
         )
 
-        # Per-page daily time series
-        gsc_data["gsc_page_daily_data"] = client.get_performance_by_page_and_date(
-            site_url=gsc_property, months=16
+        # Per-page daily time series — Module 2
+        gsc_data["gsc_page_daily_data"] = client.fetch_page_date_data(
+            gsc_property, start_date, end_date
         )
 
-        # Keyword data
-        gsc_data["gsc_keyword_data"] = client.get_performance_by_query(
-            site_url=gsc_property, months=16
+        # Keyword data — Module 3, 8, 10, 11
+        gsc_data["gsc_keyword_data"] = client.fetch_query_data(
+            gsc_property, start_date, end_date
         )
 
-        # Query-page mapping
-        gsc_data["gsc_query_page_data"] = client.get_performance_by_query_and_page(
-            site_url=gsc_property, months=16
+        # Query-page mapping — Module 4
+        gsc_data["gsc_query_page_data"] = client.fetch_query_page_data(
+            gsc_property, start_date, end_date
         )
 
-        # Query time series
-        gsc_data["gsc_query_date_data"] = client.get_performance_by_query_and_date(
-            site_url=gsc_property, months=16
+        # Query time series — Module 7
+        gsc_data["gsc_query_date_data"] = client.fetch_query_date_data(
+            gsc_property, start_date, end_date
         )
 
-        # Query-level summary (alias)
+        # Query-level summary (alias used by Module 10 branded_split)
         gsc_data["gsc_query_data"] = gsc_data["gsc_keyword_data"]
 
         logger.info("GSC ingestion complete for %s", gsc_property)
@@ -242,22 +255,53 @@ def _ingest_gsc_data(credentials: Dict[str, Any], gsc_property: str) -> Dict[str
 
 def _ingest_ga4_data(credentials: Dict[str, Any], ga4_property: str) -> Dict[str, Any]:
     """
-    Pull GA4 data using the ingestion module.
+    Pull GA4 data using the comprehensive ingestion function.
+
+    Uses ``api.ingestion.ga4.ingest_ga4_data`` which handles:
+      - Credentials construction
+      - Date range calculation (16 months)
+      - All 8 GA4 report sections with individual error handling
+      - Graceful fallbacks for missing data
+
+    The returned dict maps ingestion keys to the pipeline's
+    data_context keys:
+      - ``landing_pages``  →  ``ga4_landing_pages``
+      - ``conversions``    →  ``ga4_conversions``
+      - ``traffic_overview`` → ``ga4_engagement_data``
+
     Falls back to empty data on failure.
     """
     ga4_data: Dict[str, Any] = {}
     try:
-        from api.ingestion.ga4 import GA4Client
-        client = GA4Client(credentials)
+        from google.oauth2.credentials import Credentials as GoogleCredentials
+        from api.ingestion.ga4 import ingest_ga4_data
 
-        ga4_data["ga4_landing_pages"] = client.get_landing_pages(
-            property_id=ga4_property, months=16
+        # Convert the decrypted token dict into a Google Credentials object.
+        # The GA4 client needs a real Credentials instance (not a plain dict)
+        # because the BetaAnalyticsDataClient calls .token and .refresh() on it.
+        creds = GoogleCredentials(
+            token=credentials.get("token"),
+            refresh_token=credentials.get("refresh_token"),
+            token_uri=credentials.get(
+                "token_uri", "https://oauth2.googleapis.com/token"
+            ),
+            client_id=credentials.get("client_id"),
+            client_secret=credentials.get("client_secret"),
         )
-        ga4_data["ga4_conversions"] = client.get_conversions(
-            property_id=ga4_property, months=16
+
+        # ingest_ga4_data handles property_id formatting, date range
+        # calculation, client construction, and all 8 report sections.
+        result = ingest_ga4_data(creds, ga4_property, months_back=16)
+
+        # Map ingestion output keys → pipeline data_context keys
+        ga4_data["ga4_landing_pages"] = result.get(
+            "landing_pages", {"rows": [], "metadata": {}}
         )
-        ga4_data["ga4_engagement_data"] = client.get_engagement_metrics(
-            property_id=ga4_property, months=16
+        ga4_data["ga4_conversions"] = result.get(
+            "conversions", {"rows": [], "metadata": {}}
+        )
+        ga4_data["ga4_engagement_data"] = result.get(
+            "traffic_overview", {"rows": [], "metadata": {}}
         )
 
         logger.info("GA4 ingestion complete for %s", ga4_property)
