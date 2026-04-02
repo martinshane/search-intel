@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass, asdict
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,9 @@ def analyze_competitor_intelligence(
     """
     logger.info(f"Starting competitor intelligence analysis for {user_domain}")
     
+    # Normalize user domain
+    user_domain = _normalize_domain(user_domain)
+    
     # Step 1: Extract and normalize competitor domains from SERP data
     competitor_mapping = _build_competitor_mapping(serp_data, user_domain)
     
@@ -89,52 +93,92 @@ def analyze_competitor_intelligence(
     positioning_analysis = _analyze_competitive_positioning(
         serp_data,
         gsc_keyword_data,
-        user_domain,
-        top_competitors
+        user_domain
     )
     
     # Step 4: Identify content gaps
     content_gaps = _identify_content_gaps(
         serp_data,
         gsc_keyword_data,
-        user_domain,
-        competitor_mapping
-    )
-    
-    # Step 5: Calculate market concentration and user's market share
-    market_metrics = _calculate_market_metrics(
         competitor_mapping,
-        gsc_keyword_data,
         user_domain
     )
     
-    # Step 6: Identify competitive advantages and weaknesses
-    competitive_profile = _analyze_competitive_profile(
+    # Step 5: Calculate market metrics
+    market_metrics = _calculate_market_metrics(
+        serp_data,
+        competitor_mapping,
+        user_domain,
+        gsc_keyword_data
+    )
+    
+    # Step 6: Determine competitive advantages and weaknesses
+    strengths_weaknesses = _analyze_strengths_weaknesses(
         positioning_analysis,
-        top_competitors,
+        competitor_mapping,
         user_domain
     )
     
-    # Step 7: Build detailed competitor profiles
+    # Step 7: Build competitor profiles
     competitor_profiles = _build_competitor_profiles(
         top_competitors,
-        competitor_mapping,
+        serp_data,
         gsc_keyword_data,
-        serp_data
+        user_domain
     )
     
-    # Step 8: Synthesize into landscape
-    landscape = CompetitiveLandscape(
-        primary_competitors=competitor_profiles,
-        market_concentration=market_metrics['concentration'],
-        user_market_share=market_metrics['user_share'],
-        content_gaps=content_gaps,
-        competitive_advantages=competitive_profile['advantages'],
-        competitive_weaknesses=competitive_profile['weaknesses'],
-        total_addressable_opportunity=market_metrics['total_opportunity']
-    )
+    logger.info(f"Identified {len(competitor_profiles)} primary competitors")
+    logger.info(f"Found {len(content_gaps)} content gap opportunities")
     
-    return _format_output(landscape, positioning_analysis)
+    return {
+        "competitors": [asdict(cp) for cp in competitor_profiles],
+        "market_concentration": market_metrics['concentration'],
+        "user_market_share": market_metrics['user_share'],
+        "content_gaps": [asdict(cg) for cg in content_gaps],
+        "competitive_advantages": strengths_weaknesses['advantages'],
+        "competitive_weaknesses": strengths_weaknesses['weaknesses'],
+        "total_addressable_opportunity": market_metrics['total_opportunity'],
+        "positioning_summary": {
+            "keywords_analyzed": len(serp_data),
+            "avg_user_position": positioning_analysis['avg_user_position'],
+            "keywords_dominated": positioning_analysis['dominated_count'],
+            "keywords_competitive": positioning_analysis['competitive_count'],
+            "keywords_losing": positioning_analysis['losing_count'],
+            "keywords_absent": positioning_analysis['absent_count']
+        },
+        "metadata": {
+            "user_domain": user_domain,
+            "analysis_date": datetime.now().isoformat(),
+            "total_competitors_identified": len(competitor_mapping),
+            "keywords_with_serp_data": len(serp_data)
+        }
+    }
+
+
+def _normalize_domain(domain: str) -> str:
+    """Normalize domain to consistent format."""
+    domain = domain.lower().strip()
+    # Remove protocol if present
+    domain = domain.replace('https://', '').replace('http://', '')
+    # Remove www. if present
+    domain = domain.replace('www.', '')
+    # Remove trailing slash
+    domain = domain.rstrip('/')
+    # Extract just domain from full URL if needed
+    if '/' in domain:
+        domain = domain.split('/')[0]
+    return domain
+
+
+def _extract_domain_from_url(url: str) -> str:
+    """Extract and normalize domain from URL."""
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc or parsed.path.split('/')[0]
+        domain = domain.replace('www.', '').lower()
+        return domain
+    except:
+        return url.lower()
 
 
 def _build_competitor_mapping(
@@ -142,276 +186,231 @@ def _build_competitor_mapping(
     user_domain: str
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Build a mapping of competitors from SERP data.
+    Build mapping of competitors to keywords they rank for.
     
     Returns:
-        Dict mapping domain to {keywords: [], positions: [], urls: []}
+        Dict with structure:
+        {
+            'competitor.com': {
+                'keywords': ['keyword1', 'keyword2'],
+                'positions': [3, 5],
+                'urls': ['url1', 'url2'],
+                'avg_position': 4.0
+            }
+        }
     """
-    competitor_map = defaultdict(lambda: {
+    competitor_data = defaultdict(lambda: {
         'keywords': [],
         'positions': [],
         'urls': [],
-        'serp_features': []
+        'search_volumes': []
     })
     
     for serp_result in serp_data:
         keyword = serp_result.get('keyword', '')
-        items = serp_result.get('items', [])
+        search_volume = serp_result.get('search_volume', 0)
+        organic_results = serp_result.get('organic_results', [])
         
-        for item in items:
-            if item.get('type') != 'organic':
-                continue
-                
-            url = item.get('url', '')
-            domain = _extract_domain(url)
+        for result in organic_results:
+            url = result.get('url', '')
+            position = result.get('position', 999)
+            domain = _extract_domain_from_url(url)
             
-            # Skip the user's own domain
-            if domain == user_domain or not domain:
+            # Skip if it's the user's domain or invalid
+            if not domain or domain == user_domain:
                 continue
             
-            position = item.get('rank_absolute', 0)
-            
-            competitor_map[domain]['keywords'].append(keyword)
-            competitor_map[domain]['positions'].append(position)
-            competitor_map[domain]['urls'].append(url)
-            
-            # Track any special SERP features this competitor has
-            features = []
-            if item.get('is_featured_snippet'):
-                features.append('featured_snippet')
-            if item.get('faq'):
-                features.append('faq')
-            if item.get('rating'):
-                features.append('rating')
-            
-            competitor_map[domain]['serp_features'].extend(features)
+            competitor_data[domain]['keywords'].append(keyword)
+            competitor_data[domain]['positions'].append(position)
+            competitor_data[domain]['urls'].append(url)
+            competitor_data[domain]['search_volumes'].append(search_volume)
     
-    return dict(competitor_map)
-
-
-def _extract_domain(url: str) -> str:
-    """Extract domain from URL."""
-    if not url:
-        return ''
+    # Calculate aggregated metrics
+    for domain, data in competitor_data.items():
+        if data['positions']:
+            data['avg_position'] = np.mean(data['positions'])
+            data['keywords_count'] = len(set(data['keywords']))
+            # Weighted visibility score
+            data['visibility_score'] = sum(
+                vol / (pos ** 2) for vol, pos in zip(data['search_volumes'], data['positions'])
+            )
+        else:
+            data['avg_position'] = 999
+            data['keywords_count'] = 0
+            data['visibility_score'] = 0
     
-    try:
-        # Remove protocol
-        url = url.replace('https://', '').replace('http://', '')
-        # Remove www
-        url = url.replace('www.', '')
-        # Extract domain (before first /)
-        domain = url.split('/')[0]
-        # Remove port if present
-        domain = domain.split(':')[0]
-        return domain.lower()
-    except Exception as e:
-        logger.warning(f"Error extracting domain from {url}: {e}")
-        return ''
+    return dict(competitor_data)
 
 
 def _identify_top_competitors(
     competitor_mapping: Dict[str, Dict[str, Any]],
-    gsc_data: pd.DataFrame,
+    gsc_keyword_data: pd.DataFrame,
     top_n: int
-) -> List[Dict[str, Any]]:
+) -> List[Tuple[str, Dict[str, Any]]]:
     """
-    Identify top N competitors by visibility score.
-    
-    Visibility score = weighted sum of (impressions / (position^2)) for shared keywords
+    Identify top N competitors based on keyword overlap and visibility.
     """
-    competitors = []
+    # Calculate overlap score for each competitor
+    scored_competitors = []
     
     for domain, data in competitor_mapping.items():
-        keywords = data['keywords']
-        positions = data['positions']
+        # Factors: keyword count, avg position, visibility score
+        overlap_score = data['keywords_count']
+        position_score = 1 / (data['avg_position'] + 1)  # Lower position = higher score
+        visibility = data['visibility_score']
         
-        # Calculate visibility score
-        visibility_score = 0.0
-        total_impressions = 0
+        # Combined score (weighted)
+        total_score = (
+            overlap_score * 0.4 +
+            position_score * 100 * 0.3 +
+            visibility * 0.3
+        )
         
-        for keyword, position in zip(keywords, positions):
-            # Find keyword in GSC data
-            keyword_data = gsc_data[gsc_data['query'] == keyword]
-            if keyword_data.empty:
-                continue
-            
-            impressions = keyword_data['impressions'].iloc[0]
-            total_impressions += impressions
-            
-            # Position-weighted visibility score
-            # Higher positions (lower numbers) contribute more
-            if position > 0:
-                visibility_score += impressions / (position ** 1.5)
-        
-        avg_position = np.mean(positions) if positions else 0
-        
-        competitors.append({
-            'domain': domain,
-            'keywords_shared': len(set(keywords)),
-            'avg_position': avg_position,
-            'visibility_score': visibility_score,
-            'total_impressions_overlap': total_impressions
-        })
+        scored_competitors.append((domain, data, total_score))
     
-    # Sort by visibility score and return top N
-    competitors.sort(key=lambda x: x['visibility_score'], reverse=True)
-    return competitors[:top_n]
+    # Sort by total score and take top N
+    scored_competitors.sort(key=lambda x: x[2], reverse=True)
+    return [(domain, data) for domain, data, score in scored_competitors[:top_n]]
 
 
 def _analyze_competitive_positioning(
     serp_data: List[Dict[str, Any]],
-    gsc_data: pd.DataFrame,
-    user_domain: str,
-    top_competitors: List[Dict[str, Any]]
-) -> List[Dict[str, Any]]:
+    gsc_keyword_data: pd.DataFrame,
+    user_domain: str
+) -> Dict[str, Any]:
     """
-    Analyze competitive positioning for each keyword.
+    Analyze how user positions against competitors for each keyword.
     """
-    positioning = []
-    top_competitor_domains = {c['domain'] for c in top_competitors}
+    user_positions = []
+    dominated_count = 0  # User in top 3
+    competitive_count = 0  # User in 4-7
+    losing_count = 0  # User in 8-20
+    absent_count = 0  # User not in top 20
     
     for serp_result in serp_data:
         keyword = serp_result.get('keyword', '')
-        items = serp_result.get('items', [])
+        organic_results = serp_result.get('organic_results', [])
         
-        # Find user's position
         user_position = None
-        user_url = None
-        for item in items:
-            if item.get('type') != 'organic':
-                continue
-            url = item.get('url', '')
-            domain = _extract_domain(url)
+        for result in organic_results:
+            url = result.get('url', '')
+            position = result.get('position', 999)
+            domain = _extract_domain_from_url(url)
+            
             if domain == user_domain:
-                user_position = item.get('rank_absolute')
-                user_url = url
+                user_position = position
                 break
         
-        # Find competitor positions
-        competitor_positions = {}
-        for item in items:
-            if item.get('type') != 'organic':
-                continue
-            url = item.get('url', '')
-            domain = _extract_domain(url)
-            if domain in top_competitor_domains:
-                if domain not in competitor_positions:
-                    competitor_positions[domain] = {
-                        'position': item.get('rank_absolute'),
-                        'url': url
-                    }
-        
-        # Get GSC data for this keyword
-        keyword_gsc = gsc_data[gsc_data['query'] == keyword]
-        impressions = keyword_gsc['impressions'].iloc[0] if not keyword_gsc.empty else 0
-        clicks = keyword_gsc['clicks'].iloc[0] if not keyword_gsc.empty else 0
-        
-        positioning.append({
-            'keyword': keyword,
-            'user_position': user_position,
-            'user_url': user_url,
-            'competitor_positions': competitor_positions,
-            'impressions': impressions,
-            'clicks': clicks,
-            'user_outranked_by': len([c for c in competitor_positions.values() 
-                                     if user_position and c['position'] < user_position])
-        })
+        if user_position is not None:
+            user_positions.append(user_position)
+            if user_position <= 3:
+                dominated_count += 1
+            elif user_position <= 7:
+                competitive_count += 1
+            elif user_position <= 20:
+                losing_count += 1
+        else:
+            absent_count += 1
     
-    return positioning
+    avg_position = np.mean(user_positions) if user_positions else None
+    
+    return {
+        'avg_user_position': avg_position,
+        'dominated_count': dominated_count,
+        'competitive_count': competitive_count,
+        'losing_count': losing_count,
+        'absent_count': absent_count,
+        'user_positions': user_positions
+    }
 
 
 def _identify_content_gaps(
     serp_data: List[Dict[str, Any]],
-    gsc_data: pd.DataFrame,
-    user_domain: str,
-    competitor_mapping: Dict[str, Dict[str, Any]]
+    gsc_keyword_data: pd.DataFrame,
+    competitor_mapping: Dict[str, Dict[str, Any]],
+    user_domain: str
 ) -> List[ContentGap]:
     """
     Identify content gaps where competitors are ranking but user is not,
-    or where user is significantly underperforming.
+    or where user is underperforming.
     """
-    gaps = []
+    content_gaps = []
     
-    # Find keywords where competitors appear but user doesn't or ranks poorly
-    competitor_keywords = set()
-    for domain_data in competitor_mapping.values():
-        competitor_keywords.update(domain_data['keywords'])
-    
-    # Get user's ranking keywords
-    user_keywords = set(gsc_data['query'].tolist())
+    # Create quick lookup for user's GSC data
+    gsc_lookup = {}
+    if not gsc_keyword_data.empty:
+        for _, row in gsc_keyword_data.iterrows():
+            gsc_lookup[row.get('query', '')] = {
+                'position': row.get('position', None),
+                'clicks': row.get('clicks', 0),
+                'impressions': row.get('impressions', 0)
+            }
     
     for serp_result in serp_data:
         keyword = serp_result.get('keyword', '')
-        items = serp_result.get('items', [])
+        search_volume = serp_result.get('search_volume', 0)
+        organic_results = serp_result.get('organic_results', [])
         
-        # Determine user's position
+        # Find user's position
         user_position = None
-        for item in items:
-            if item.get('type') != 'organic':
-                continue
-            url = item.get('url', '')
-            if _extract_domain(url) == user_domain:
-                user_position = item.get('rank_absolute')
-                break
-        
-        # Get competitor rankings
         competitors_ranking = []
-        for item in items:
-            if item.get('type') != 'organic':
-                continue
-            url = item.get('url', '')
-            domain = _extract_domain(url)
-            if domain != user_domain and domain:
+        
+        for result in organic_results[:10]:  # Top 10 only
+            url = result.get('url', '')
+            position = result.get('position', 999)
+            domain = _extract_domain_from_url(url)
+            
+            if domain == user_domain:
+                user_position = position
+            else:
                 competitors_ranking.append({
                     'domain': domain,
-                    'position': item.get('rank_absolute'),
+                    'position': position,
                     'url': url,
-                    'title': item.get('title', '')
+                    'title': result.get('title', '')
                 })
         
-        # Get keyword metrics from GSC
-        keyword_gsc = gsc_data[gsc_data['query'] == keyword]
-        impressions = keyword_gsc['impressions'].iloc[0] if not keyword_gsc.empty else 0
-        
-        # Classify the gap
+        # Determine gap type and opportunity
         gap_type = None
-        opportunity_score = 0.0
-        recommended_action = ''
+        opportunity_score = 0
+        recommended_action = ""
         
         if user_position is None:
-            # User not ranking at all
-            if impressions > 100:  # But has search demand
-                gap_type = 'missing'
-                opportunity_score = impressions * 0.15  # Assume 15% CTR if ranking #5
-                recommended_action = 'Create new content targeting this keyword'
+            # User is completely missing from top 20
+            gap_type = 'missing'
+            # Higher opportunity if search volume is good and top competitors aren't too strong
+            avg_competitor_position = np.mean([c['position'] for c in competitors_ranking]) if competitors_ranking else 10
+            opportunity_score = (search_volume / 100) * (1 / avg_competitor_position)
+            recommended_action = "Create comprehensive content targeting this keyword"
         elif user_position > 10:
-            # User ranking but on page 2+
+            # User is present but not on page 1
             gap_type = 'underperforming'
-            # Count how many competitors are in top 10
-            top10_competitors = len([c for c in competitors_ranking if c['position'] <= 10])
-            opportunity_score = impressions * (0.15 - (0.01 if user_position else 0))
-            recommended_action = f'Improve existing content to break into top 10 (currently #{user_position})'
-        elif user_position and user_position <= 10:
-            # User in top 10 but could improve
-            better_competitors = len([c for c in competitors_ranking if c['position'] < user_position])
-            if better_competitors >= 3:
-                gap_type = 'format_mismatch'
-                current_ctr = _estimate_ctr_by_position(user_position)
-                target_ctr = _estimate_ctr_by_position(max(3, user_position - 3))
-                opportunity_score = impressions * (target_ctr - current_ctr)
-                recommended_action = f'Optimize content format/structure (currently #{user_position})'
+            # Calculate based on potential click gain
+            gsc_data = gsc_lookup.get(keyword, {})
+            current_clicks = gsc_data.get('clicks', 0)
+            potential_clicks = _estimate_clicks_at_position(search_volume, 5)
+            opportunity_score = potential_clicks - current_clicks
+            recommended_action = "Optimize existing content to improve rankings"
+        elif user_position > 3:
+            # User is on page 1 but could be in top 3
+            gap_type = 'underperforming'
+            gsc_data = gsc_lookup.get(keyword, {})
+            current_clicks = gsc_data.get('clicks', 0)
+            potential_clicks = _estimate_clicks_at_position(search_volume, 2)
+            opportunity_score = potential_clicks - current_clicks
+            recommended_action = "Push into top 3 with targeted optimization"
         
-        if gap_type:
-            # Classify intent
-            intent_type = _classify_query_intent(keyword)
+        # Only add significant gaps
+        if gap_type and opportunity_score > 5:  # Threshold: 5+ monthly clicks
+            # Determine intent type
+            intent_type = _classify_keyword_intent(keyword, organic_results)
             
-            # Calculate difficulty score based on competitor strength
-            avg_competitor_pos = np.mean([c['position'] for c in competitors_ranking[:5]]) if competitors_ranking else 10
-            difficulty_score = min(1.0, len(competitors_ranking) / 10 * (1 - (avg_competitor_pos / 10)))
+            # Calculate difficulty
+            difficulty_score = _calculate_keyword_difficulty(competitors_ranking)
             
-            gaps.append(ContentGap(
+            content_gaps.append(ContentGap(
                 keyword=keyword,
-                search_volume=int(impressions),  # Using impressions as proxy
+                search_volume=search_volume,
                 difficulty_score=difficulty_score,
                 user_current_position=user_position,
                 competitors_ranking=competitors_ranking[:5],  # Top 5 only
@@ -422,191 +421,188 @@ def _identify_content_gaps(
             ))
     
     # Sort by opportunity score
-    gaps.sort(key=lambda x: x.opportunity_score, reverse=True)
+    content_gaps.sort(key=lambda x: x.opportunity_score, reverse=True)
     
-    return gaps[:50]  # Return top 50 gaps
+    return content_gaps[:50]  # Return top 50 opportunities
 
 
-def _estimate_ctr_by_position(position: int) -> float:
-    """Estimate CTR based on organic position."""
-    ctr_curve = {
-        1: 0.28, 2: 0.15, 3: 0.11, 4: 0.08, 5: 0.06,
-        6: 0.05, 7: 0.04, 8: 0.03, 9: 0.025, 10: 0.02
-    }
-    if position <= 10:
-        return ctr_curve.get(position, 0.02)
-    elif position <= 20:
-        return 0.01
-    else:
-        return 0.005
-
-
-def _classify_query_intent(query: str) -> str:
-    """Classify query intent based on keywords and patterns."""
-    query_lower = query.lower()
+def _classify_keyword_intent(keyword: str, organic_results: List[Dict[str, Any]]) -> str:
+    """
+    Classify keyword intent based on keyword patterns and SERP composition.
+    """
+    keyword_lower = keyword.lower()
     
     # Transactional signals
-    transactional_terms = ['buy', 'purchase', 'order', 'shop', 'price', 'cheap', 'discount', 'deal', 'coupon']
-    if any(term in query_lower for term in transactional_terms):
+    transactional_words = ['buy', 'price', 'cost', 'cheap', 'deal', 'discount', 'order', 'purchase', 'shop']
+    if any(word in keyword_lower for word in transactional_words):
         return 'transactional'
     
     # Commercial investigation signals
-    commercial_terms = ['best', 'top', 'review', 'vs', 'versus', 'compare', 'alternative', 'recommend']
-    if any(term in query_lower for term in commercial_terms):
+    commercial_words = ['best', 'top', 'review', 'comparison', 'vs', 'alternative', 'versus']
+    if any(word in keyword_lower for word in commercial_words):
         return 'commercial'
     
-    # Informational signals
-    informational_terms = ['how', 'what', 'why', 'when', 'where', 'who', 'guide', 'tutorial', 'learn', 'meaning']
-    if any(term in query_lower for term in informational_terms):
-        return 'informational'
-    
-    # Navigational (brand/domain names)
-    if len(query_lower.split()) <= 2 and '.' not in query_lower:
+    # Navigational signals
+    if len(keyword.split()) <= 2 and not any(word in keyword_lower for word in ['how', 'what', 'why', 'when']):
         return 'navigational'
     
-    return 'informational'  # Default
+    # Informational (default)
+    return 'informational'
+
+
+def _calculate_keyword_difficulty(competitors_ranking: List[Dict[str, Any]]) -> float:
+    """
+    Calculate keyword difficulty based on competitor strength in top 10.
+    Returns score from 0-100.
+    """
+    if not competitors_ranking:
+        return 0.0
+    
+    # Simple heuristic: more competitors in top positions = higher difficulty
+    # Weight by position (higher positions = harder to beat)
+    difficulty = 0
+    for comp in competitors_ranking[:10]:
+        position = comp['position']
+        # Position 1 contributes most to difficulty
+        position_weight = 1 / position
+        difficulty += position_weight * 10
+    
+    # Normalize to 0-100 scale
+    return min(difficulty, 100.0)
+
+
+def _estimate_clicks_at_position(search_volume: int, position: int) -> float:
+    """
+    Estimate monthly clicks based on search volume and position.
+    Uses standard CTR curve.
+    """
+    # Standard CTR curve (approximate)
+    ctr_curve = {
+        1: 0.28,
+        2: 0.15,
+        3: 0.11,
+        4: 0.08,
+        5: 0.06,
+        6: 0.05,
+        7: 0.04,
+        8: 0.03,
+        9: 0.025,
+        10: 0.02
+    }
+    
+    ctr = ctr_curve.get(position, 0.01)  # Default to 1% for positions > 10
+    return search_volume * ctr
 
 
 def _calculate_market_metrics(
+    serp_data: List[Dict[str, Any]],
     competitor_mapping: Dict[str, Dict[str, Any]],
-    gsc_data: pd.DataFrame,
-    user_domain: str
+    user_domain: str,
+    gsc_keyword_data: pd.DataFrame
 ) -> Dict[str, Any]:
     """
-    Calculate market concentration and user's market share.
+    Calculate market-level metrics like concentration and user share.
     """
-    # Calculate total impressions across all keywords
-    total_market_impressions = gsc_data['impressions'].sum()
-    user_clicks = gsc_data['clicks'].sum()
+    # Calculate Herfindahl-Hirschman Index for market concentration
+    competitor_shares = []
+    total_visibility = sum(data['visibility_score'] for data in competitor_mapping.values())
     
-    # Calculate market concentration (HHI - Herfindahl Index)
-    domain_impressions = {}
-    domain_impressions[user_domain] = user_clicks  # Use clicks as proxy for user's share
-    
-    for domain, data in competitor_mapping.items():
-        keywords = data['keywords']
-        positions = data['positions']
+    if total_visibility > 0:
+        for data in competitor_mapping.values():
+            share = data['visibility_score'] / total_visibility
+            competitor_shares.append(share ** 2)
         
-        domain_estimated_clicks = 0
-        for keyword, position in zip(keywords, positions):
-            keyword_data = gsc_data[gsc_data['query'] == keyword]
-            if keyword_data.empty:
-                continue
-            impressions = keyword_data['impressions'].iloc[0]
-            estimated_ctr = _estimate_ctr_by_position(position)
-            domain_estimated_clicks += impressions * estimated_ctr
-        
-        domain_impressions[domain] = domain_estimated_clicks
-    
-    total_estimated_clicks = sum(domain_impressions.values())
-    
-    if total_estimated_clicks > 0:
-        market_shares = {d: clicks / total_estimated_clicks 
-                        for d, clicks in domain_impressions.items()}
-        hhi = sum(share ** 2 for share in market_shares.values())
-        user_share = market_shares.get(user_domain, 0)
+        market_concentration = sum(competitor_shares)
     else:
-        hhi = 0
-        user_share = 0
+        market_concentration = 0.0
     
-    # Calculate total addressable opportunity
-    # Sum of estimated clicks for all competitors ranking above user
-    total_opportunity = 0
-    for keyword_row in gsc_data.itertuples():
-        keyword = keyword_row.query
-        user_position = keyword_row.position
-        impressions = keyword_row.impressions
+    # Calculate user's market share
+    user_clicks = 0
+    total_available_clicks = 0
+    
+    for serp_result in serp_data:
+        keyword = serp_result.get('keyword', '')
+        search_volume = serp_result.get('search_volume', 0)
+        organic_results = serp_result.get('organic_results', [])
         
-        # Find positions of top competitors
-        for domain, data in competitor_mapping.items():
-            if keyword in data['keywords']:
-                idx = data['keywords'].index(keyword)
-                comp_position = data['positions'][idx]
-                if comp_position < user_position:
-                    # This competitor is ranking better
-                    comp_ctr = _estimate_ctr_by_position(comp_position)
-                    total_opportunity += impressions * comp_ctr
+        # Find user position
+        user_position = None
+        for result in organic_results:
+            domain = _extract_domain_from_url(result.get('url', ''))
+            if domain == user_domain:
+                user_position = result.get('position', 999)
+                break
+        
+        if user_position:
+            user_clicks += _estimate_clicks_at_position(search_volume, user_position)
+        
+        # Total available (position 1-10)
+        total_available_clicks += sum(
+            _estimate_clicks_at_position(search_volume, i) for i in range(1, 11)
+        )
+    
+    user_market_share = user_clicks / total_available_clicks if total_available_clicks > 0 else 0
+    total_opportunity = int(total_available_clicks - user_clicks)
     
     return {
-        'concentration': hhi,
-        'user_share': user_share,
-        'total_opportunity': int(total_opportunity)
+        'concentration': market_concentration,
+        'user_share': user_market_share,
+        'total_opportunity': total_opportunity,
+        'user_estimated_clicks': int(user_clicks),
+        'market_total_clicks': int(total_available_clicks)
     }
 
 
-def _analyze_competitive_profile(
-    positioning_analysis: List[Dict[str, Any]],
-    top_competitors: List[Dict[str, Any]],
+def _analyze_strengths_weaknesses(
+    positioning_analysis: Dict[str, Any],
+    competitor_mapping: Dict[str, Dict[str, Any]],
     user_domain: str
 ) -> Dict[str, List[str]]:
     """
-    Identify competitive advantages and weaknesses.
+    Determine competitive advantages and weaknesses.
     """
     advantages = []
     weaknesses = []
     
-    # Analyze keywords where user outranks major competitors
-    outranking_count = 0
-    outranked_count = 0
+    # Analyze positioning
+    dominated = positioning_analysis['dominated_count']
+    competitive = positioning_analysis['competitive_count']
+    losing = positioning_analysis['losing_count']
+    absent = positioning_analysis['absent_count']
+    total = dominated + competitive + losing + absent
     
-    for pos in positioning_analysis:
-        if pos['user_position'] is None:
-            continue
-            
-        for domain, comp_data in pos['competitor_positions'].items():
-            if comp_data['position'] > pos['user_position']:
-                outranking_count += 1
-            else:
-                outranked_count += 1
-    
-    total_comparisons = outranking_count + outranked_count
-    if total_comparisons > 0:
-        win_rate = outranking_count / total_comparisons
-        if win_rate > 0.6:
-            advantages.append(f"Strong competitive positioning: outranking competitors {win_rate:.1%} of the time")
-        elif win_rate < 0.4:
-            weaknesses.append(f"Weak competitive positioning: outranked by competitors {(1-win_rate):.1%} of the time")
-    
-    # Analyze position distribution
-    user_positions = [p['user_position'] for p in positioning_analysis if p['user_position']]
-    if user_positions:
-        avg_position = np.mean(user_positions)
-        if avg_position <= 5:
-            advantages.append(f"Strong average ranking position: {avg_position:.1f}")
-        elif avg_position > 10:
-            weaknesses.append(f"Poor average ranking position: {avg_position:.1f}")
+    if total > 0:
+        # Advantages
+        if dominated / total > 0.3:
+            advantages.append(f"Strong top-3 presence ({dominated} keywords dominated)")
         
-        # Position volatility
-        position_std = np.std(user_positions)
-        if position_std < 3:
-            advantages.append("Consistent ranking positions across keywords")
-        elif position_std > 5:
-            weaknesses.append("High ranking volatility - inconsistent performance")
+        if positioning_analysis['avg_user_position'] and positioning_analysis['avg_user_position'] < 5:
+            advantages.append(f"Above-average rankings (avg position {positioning_analysis['avg_user_position']:.1f})")
+        
+        # Weaknesses
+        if absent / total > 0.3:
+            weaknesses.append(f"Missing from SERPs for {absent} target keywords")
+        
+        if losing / total > 0.4:
+            weaknesses.append(f"Page 2+ rankings for {losing} keywords indicate weak competitiveness")
+        
+        if positioning_analysis['avg_user_position'] and positioning_analysis['avg_user_position'] > 10:
+            weaknesses.append(f"Poor average ranking ({positioning_analysis['avg_user_position']:.1f}) suggests content quality issues")
     
-    # Analyze coverage
-    total_keywords = len(positioning_analysis)
-    keywords_ranking = len([p for p in positioning_analysis if p['user_position']])
-    coverage_rate = keywords_ranking / total_keywords if total_keywords > 0 else 0
+    # Analyze vs top competitor
+    if competitor_mapping:
+        top_competitor = max(competitor_mapping.items(), key=lambda x: x[1]['visibility_score'])
+        top_domain, top_data = top_competitor
+        
+        if top_data['avg_position'] < (positioning_analysis.get('avg_user_position') or 999):
+            weaknesses.append(f"{top_domain} outranks you on average ({top_data['avg_position']:.1f} vs {positioning_analysis.get('avg_user_position', 'N/A')})")
     
-    if coverage_rate < 0.5:
-        weaknesses.append(f"Low keyword coverage: ranking for only {coverage_rate:.1%} of target keywords")
-    elif coverage_rate > 0.8:
-        advantages.append(f"High keyword coverage: ranking for {coverage_rate:.1%} of target keywords")
-    
-    # Analyze top 3 performance
-    top3_count = len([p for p in positioning_analysis if p['user_position'] and p['user_position'] <= 3])
-    if keywords_ranking > 0:
-        top3_rate = top3_count / keywords_ranking
-        if top3_rate > 0.3:
-            advantages.append(f"Strong top-3 presence: {top3_rate:.1%} of rankings in top 3")
-        elif top3_rate < 0.1:
-            weaknesses.append(f"Weak top-3 presence: only {top3_rate:.1%} of rankings in top 3")
-    
-    # Default messages if nothing found
+    # Default messages if nothing specific found
     if not advantages:
-        advantages.append("Opportunity to establish stronger market position")
+        advantages.append("Analysis requires more data to identify competitive advantages")
+    
     if not weaknesses:
-        weaknesses.append("Maintain current competitive standing")
+        weaknesses.append("No major competitive weaknesses identified")
     
     return {
         'advantages': advantages,
@@ -615,118 +611,136 @@ def _analyze_competitive_profile(
 
 
 def _build_competitor_profiles(
-    top_competitors: List[Dict[str, Any]],
-    competitor_mapping: Dict[str, Dict[str, Any]],
-    gsc_data: pd.DataFrame,
-    serp_data: List[Dict[str, Any]]
+    top_competitors: List[Tuple[str, Dict[str, Any]]],
+    serp_data: List[Dict[str, Any]],
+    gsc_keyword_data: pd.DataFrame,
+    user_domain: str
 ) -> List[CompetitorProfile]:
     """
-    Build detailed profiles for each top competitor.
+    Build detailed profiles for top competitors.
     """
     profiles = []
     
-    for comp in top_competitors:
-        domain = comp['domain']
-        domain_data = competitor_mapping[domain]
+    for domain, data in top_competitors:
+        # Get example keywords and URLs
+        keyword_examples = []
+        seen_keywords = set()
         
-        # Determine threat level based on visibility score and position
-        visibility_percentile = comp['visibility_score']
-        max_visibility = max(c['visibility_score'] for c in top_competitors)
-        normalized_visibility = visibility_percentile / max_visibility if max_visibility > 0 else 0
+        for keyword, position, url, search_vol in zip(
+            data['keywords'][:10],
+            data['positions'][:10],
+            data['urls'][:10],
+            data['search_volumes'][:10]
+        ):
+            if keyword not in seen_keywords:
+                keyword_examples.append({
+                    'keyword': keyword,
+                    'position': position,
+                    'search_volume': search_vol,
+                    'url': url
+                })
+                seen_keywords.add(keyword)
         
-        if normalized_visibility > 0.7 and comp['avg_position'] < 5:
+        # Determine threat level
+        visibility_score = data['visibility_score']
+        avg_position = data['avg_position']
+        keywords_count = data['keywords_count']
+        
+        if visibility_score > 1000 and avg_position < 4 and keywords_count > 20:
             threat_level = 'high'
-        elif normalized_visibility > 0.4 or comp['avg_position'] < 8:
+        elif visibility_score > 500 and avg_position < 6 and keywords_count > 10:
             threat_level = 'medium'
         else:
             threat_level = 'low'
         
-        # Get example shared keywords
-        shared_keywords = []
-        for keyword in list(set(domain_data['keywords']))[:5]:
-            keyword_gsc = gsc_data[gsc_data['query'] == keyword]
-            if not keyword_gsc.empty:
-                shared_keywords.append({
-                    'keyword': keyword,
-                    'competitor_position': domain_data['positions'][domain_data['keywords'].index(keyword)],
-                    'user_position': keyword_gsc['position'].iloc[0],
-                    'impressions': int(keyword_gsc['impressions'].iloc[0])
-                })
+        # Position trend (would need historical data, set to None for now)
+        position_trend = None
         
-        # Get example URLs
-        url_examples = list(set(domain_data['urls']))[:3]
+        # Unique URLs
+        url_examples = list(set(data['urls'][:5]))
         
         profiles.append(CompetitorProfile(
             domain=domain,
-            keywords_shared=comp['keywords_shared'],
-            avg_position=round(comp['avg_position'], 1),
-            visibility_score=round(comp['visibility_score'], 1),
-            position_trend=None,  # Would need historical data
+            keywords_shared=keywords_count,
+            avg_position=round(avg_position, 1),
+            visibility_score=round(visibility_score, 2),
+            position_trend=position_trend,
             threat_level=threat_level,
             url_examples=url_examples,
-            shared_keyword_examples=shared_keywords
+            shared_keyword_examples=keyword_examples
         ))
     
     return profiles
 
 
-def _format_output(
-    landscape: CompetitiveLandscape,
-    positioning_analysis: List[Dict[str, Any]]
-) -> Dict[str, Any]:
+def format_competitor_report(analysis_result: Dict[str, Any]) -> str:
     """
-    Format the analysis output into the final structure.
+    Format the competitor analysis into a readable report.
     """
-    return {
-        'competitors': [
-            {
-                'domain': comp.domain,
-                'keywords_shared': comp.keywords_shared,
-                'avg_position': comp.avg_position,
-                'visibility_score': comp.visibility_score,
-                'threat_level': comp.threat_level,
-                'url_examples': comp.url_examples,
-                'shared_keyword_examples': comp.shared_keyword_examples
-            }
-            for comp in landscape.primary_competitors
-        ],
-        'market_overview': {
-            'market_concentration': round(landscape.market_concentration, 3),
-            'user_market_share': round(landscape.user_market_share, 3),
-            'total_addressable_opportunity_monthly_clicks': landscape.total_addressable_opportunity,
-            'competitive_advantages': landscape.competitive_advantages,
-            'competitive_weaknesses': landscape.competitive_weaknesses
-        },
-        'content_gaps': [
-            {
-                'keyword': gap.keyword,
-                'search_volume': gap.search_volume,
-                'difficulty_score': round(gap.difficulty_score, 2),
-                'user_current_position': gap.user_current_position,
-                'competitors_ranking': gap.competitors_ranking,
-                'intent_type': gap.intent_type,
-                'gap_type': gap.gap_type,
-                'opportunity_score': round(gap.opportunity_score, 1),
-                'recommended_action': gap.recommended_action
-            }
-            for gap in landscape.content_gaps
-        ],
-        'positioning_details': [
-            {
-                'keyword': pos['keyword'],
-                'user_position': pos['user_position'],
-                'user_url': pos['user_url'],
-                'competitor_positions': pos['competitor_positions'],
-                'impressions': int(pos['impressions']),
-                'clicks': int(pos['clicks']),
-                'user_outranked_by': pos['user_outranked_by']
-            }
-            for pos in positioning_analysis[:100]  # Limit to top 100 for output size
-        ],
-        'summary': {
-            'total_competitors_analyzed': len(landscape.primary_competitors),
-            'total_content_gaps_identified': len(landscape.content_gaps),
-            'high_threat_competitors': len([c for c in landscape.primary_competitors if c.threat_level == 'high']),
-            'total_opportunity_clicks': landscape.total_addressable_opportunity
-        }
-    }
+    report_lines = []
+    
+    report_lines.append("=" * 80)
+    report_lines.append("COMPETITOR & MARKET INTELLIGENCE REPORT")
+    report_lines.append("=" * 80)
+    report_lines.append("")
+    
+    # Market overview
+    report_lines.append("MARKET OVERVIEW")
+    report_lines.append("-" * 80)
+    report_lines.append(f"Your Market Share: {analysis_result['user_market_share']:.1%}")
+    report_lines.append(f"Market Concentration (HHI): {analysis_result['market_concentration']:.3f}")
+    report_lines.append(f"Total Addressable Opportunity: {analysis_result['total_addressable_opportunity']:,} monthly clicks")
+    report_lines.append("")
+    
+    # Positioning summary
+    pos_summary = analysis_result['positioning_summary']
+    report_lines.append("YOUR COMPETITIVE POSITIONING")
+    report_lines.append("-" * 80)
+    if pos_summary['avg_user_position']:
+        report_lines.append(f"Average Position: {pos_summary['avg_user_position']:.1f}")
+    report_lines.append(f"Keywords Dominated (Top 3): {pos_summary['keywords_dominated']}")
+    report_lines.append(f"Keywords Competitive (4-7): {pos_summary['keywords_competitive']}")
+    report_lines.append(f"Keywords Losing (8-20): {pos_summary['keywords_losing']}")
+    report_lines.append(f"Keywords Absent: {pos_summary['keywords_absent']}")
+    report_lines.append("")
+    
+    # Top competitors
+    report_lines.append("PRIMARY COMPETITORS")
+    report_lines.append("-" * 80)
+    for comp in analysis_result['competitors'][:5]:
+        report_lines.append(f"\n{comp['domain'].upper()} ({comp['threat_level'].upper()} THREAT)")
+        report_lines.append(f"  Shared Keywords: {comp['keywords_shared']}")
+        report_lines.append(f"  Average Position: {comp['avg_position']}")
+        report_lines.append(f"  Visibility Score: {comp['visibility_score']:.1f}")
+        if comp['shared_keyword_examples']:
+            report_lines.append(f"  Example Rankings:")
+            for ex in comp['shared_keyword_examples'][:3]:
+                report_lines.append(f"    - '{ex['keyword']}' at position {ex['position']}")
+    report_lines.append("")
+    
+    # Content gaps
+    report_lines.append("TOP CONTENT GAP OPPORTUNITIES")
+    report_lines.append("-" * 80)
+    for gap in analysis_result['content_gaps'][:10]:
+        report_lines.append(f"\n'{gap['keyword']}' ({gap['intent_type']})")
+        report_lines.append(f"  Gap Type: {gap['gap_type']}")
+        report_lines.append(f"  Search Volume: {gap['search_volume']:,}")
+        report_lines.append(f"  Opportunity Score: {gap['opportunity_score']:.0f} monthly clicks")
+        report_lines.append(f"  Difficulty: {gap['difficulty_score']:.0f}/100")
+        report_lines.append(f"  Action: {gap['recommended_action']}")
+    report_lines.append("")
+    
+    # Strengths and weaknesses
+    report_lines.append("COMPETITIVE ANALYSIS")
+    report_lines.append("-" * 80)
+    report_lines.append("Your Advantages:")
+    for adv in analysis_result['competitive_advantages']:
+        report_lines.append(f"  + {adv}")
+    report_lines.append("\nYour Weaknesses:")
+    for weak in analysis_result['competitive_weaknesses']:
+        report_lines.append(f"  - {weak}")
+    report_lines.append("")
+    
+    report_lines.append("=" * 80)
+    
+    return "\n".join(report_lines)
