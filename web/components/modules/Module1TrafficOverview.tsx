@@ -15,9 +15,8 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  ComposedChart,
 } from 'recharts';
-import { TrendingUp, TrendingDown, Minus, AlertCircle, Calendar, Activity, MapPin, Monitor } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, AlertCircle, Calendar, Activity, Monitor, Globe } from 'lucide-react';
 
 interface TimeSeriesDataPoint {
   date: string;
@@ -68,36 +67,16 @@ interface TrafficOverview {
   summary: Summary;
 }
 
-interface TopPage {
-  url: string;
-  clicks: number;
-  impressions: number;
-  ctr: number;
-  position: number;
-  clicks_change_pct: number;
+interface TrafficSource {
+  source: string;
+  sessions: number;
+  percentage: number;
 }
 
 interface DeviceBreakdown {
   device: string;
-  clicks: number;
-  impressions: number;
+  sessions: number;
   percentage: number;
-}
-
-interface CountryBreakdown {
-  country: string;
-  clicks: number;
-  impressions: number;
-  percentage: number;
-}
-
-interface QueryPerformance {
-  query: string;
-  clicks: number;
-  impressions: number;
-  ctr: number;
-  position: number;
-  clicks_change_pct: number;
 }
 
 interface Module1Data {
@@ -112,15 +91,33 @@ interface Module1Data {
     '90d': Forecast;
   };
   traffic_overview: TrafficOverview;
-  top_pages?: TopPage[];
+  traffic_sources?: TrafficSource[];
   device_breakdown?: DeviceBreakdown[];
-  country_breakdown?: CountryBreakdown[];
-  query_performance?: QueryPerformance[];
+  total_sessions?: number;
+  total_users?: number;
+  total_pageviews?: number;
 }
 
 interface Module1TrafficOverviewProps {
   reportId: string;
 }
+
+const DEVICE_COLORS = {
+  desktop: '#3b82f6',
+  mobile: '#10b981',
+  tablet: '#f59e0b',
+};
+
+const SOURCE_COLORS = [
+  '#3b82f6',
+  '#10b981',
+  '#f59e0b',
+  '#ef4444',
+  '#8b5cf6',
+  '#ec4899',
+  '#06b6d4',
+  '#84cc16',
+];
 
 const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportId }) => {
   const [module1, setModule1] = useState<Module1Data | null>(null);
@@ -142,15 +139,13 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
         const data = await response.json();
         setModule1(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred while loading data');
+        setError(err instanceof Error ? err.message : 'An error occurred');
       } finally {
         setLoading(false);
       }
     };
 
-    if (reportId) {
-      fetchData();
-    }
+    fetchData();
   }, [reportId]);
 
   const formatNumber = (num: number): string => {
@@ -171,20 +166,21 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
     return num.toFixed(1);
   };
 
-  const getDirectionIcon = (direction: string) => {
+  const getTrendIcon = (direction: string) => {
     switch (direction) {
       case 'strong_growth':
       case 'growth':
-        return <TrendingUp className="w-5 h-5 text-green-600" />;
+        return <TrendingUp className="w-5 h-5 text-green-500" />;
       case 'strong_decline':
       case 'decline':
-        return <TrendingDown className="w-5 h-5 text-red-600" />;
+        return <TrendingDown className="w-5 h-5 text-red-500" />;
+      case 'flat':
       default:
-        return <Minus className="w-5 h-5 text-gray-600" />;
+        return <Minus className="w-5 h-5 text-gray-500" />;
     }
   };
 
-  const getDirectionColor = (direction: string): string => {
+  const getTrendColor = (direction: string): string => {
     switch (direction) {
       case 'strong_growth':
       case 'growth':
@@ -192,611 +188,359 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
       case 'strong_decline':
       case 'decline':
         return 'text-red-600';
+      case 'flat':
       default:
         return 'text-gray-600';
     }
   };
 
-  const getDirectionLabel = (direction: string): string => {
-    const labels: { [key: string]: string } = {
-      strong_growth: 'Strong Growth',
-      growth: 'Growth',
-      flat: 'Stable',
-      decline: 'Declining',
-      strong_decline: 'Strong Decline',
-    };
-    return labels[direction] || direction;
+  const getTrendLabel = (direction: string): string => {
+    switch (direction) {
+      case 'strong_growth':
+        return 'Strong Growth';
+      case 'growth':
+        return 'Growth';
+      case 'flat':
+        return 'Flat';
+      case 'decline':
+        return 'Decline';
+      case 'strong_decline':
+        return 'Strong Decline';
+      default:
+        return 'Unknown';
+    }
   };
 
   const getChangeColor = (change: number): string => {
-    if (change > 5) return 'text-green-600';
-    if (change < -5) return 'text-red-600';
+    if (change > 0) return 'text-green-600';
+    if (change < 0) return 'text-red-600';
     return 'text-gray-600';
   };
 
-  const DEVICE_COLORS = {
-    desktop: '#3b82f6',
-    mobile: '#10b981',
-    tablet: '#f59e0b',
+  const getChartData = () => {
+    if (!module1?.traffic_overview?.timeseries) return [];
+    
+    return module1.traffic_overview.timeseries.map(point => ({
+      ...point,
+      date: new Date(point.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    }));
   };
 
-  const COUNTRY_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+  const getChartDataKey = (): string => {
+    return chartView;
+  };
+
+  const getChartLabel = (): string => {
+    switch (chartView) {
+      case 'clicks':
+        return 'Clicks';
+      case 'impressions':
+        return 'Impressions';
+      case 'ctr':
+        return 'CTR';
+      case 'position':
+        return 'Avg Position';
+      default:
+        return '';
+    }
+  };
+
+  const formatChartValue = (value: number): string => {
+    switch (chartView) {
+      case 'clicks':
+      case 'impressions':
+        return formatNumber(value);
+      case 'ctr':
+        return formatPercent(value);
+      case 'position':
+        return formatPosition(value);
+      default:
+        return value.toString();
+    }
+  };
 
   if (loading) {
     return (
-      <div className="w-full py-12 flex justify-center items-center">
-        <div className="flex flex-col items-center space-y-4">
-          <Activity className="w-8 h-8 animate-spin text-blue-600" />
-          <p className="text-gray-600">Loading traffic overview...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="w-full py-12">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-6 flex items-start space-x-3">
-          <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
-          <div>
-            <h3 className="text-red-800 font-semibold mb-1">Error Loading Data</h3>
-            <p className="text-red-700">{error}</p>
+      <div className="bg-white rounded-lg shadow-md p-8">
+        <div className="animate-pulse">
+          <div className="h-8 bg-gray-200 rounded w-1/3 mb-6"></div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="h-32 bg-gray-200 rounded"></div>
+            ))}
+          </div>
+          <div className="h-96 bg-gray-200 rounded mb-8"></div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="h-64 bg-gray-200 rounded"></div>
+            <div className="h-64 bg-gray-200 rounded"></div>
           </div>
         </div>
       </div>
     );
   }
 
-  if (!module1) {
+  if (error || !module1) {
     return (
-      <div className="w-full py-12">
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 flex items-start space-x-3">
-          <AlertCircle className="w-6 h-6 text-yellow-600 flex-shrink-0 mt-0.5" />
+      <div className="bg-white rounded-lg shadow-md p-8">
+        <div className="flex items-center gap-3 text-red-600">
+          <AlertCircle className="w-6 h-6" />
           <div>
-            <h3 className="text-yellow-800 font-semibold mb-1">No Data Available</h3>
-            <p className="text-yellow-700">Traffic overview data is not available for this report.</p>
+            <h3 className="font-semibold text-lg">Error Loading Data</h3>
+            <p className="text-sm text-gray-600">{error || 'Module data not available'}</p>
           </div>
         </div>
       </div>
     );
   }
 
-  const { traffic_overview, summary } = module1;
-  const timeseries = traffic_overview?.timeseries || [];
+  const chartData = getChartData();
+  const summary = module1.traffic_overview?.summary;
 
   return (
-    <div className="w-full space-y-8">
-      {/* Header Section */}
-      <div className="border-b pb-6">
+    <div className="bg-white rounded-lg shadow-md p-8">
+      {/* Header */}
+      <div className="mb-8">
         <h2 className="text-3xl font-bold text-gray-900 mb-2">Traffic Overview & Health</h2>
         <p className="text-gray-600">
-          Comprehensive analysis of your search traffic patterns, trends, and forecasts
+          Comprehensive analysis of your search traffic trends, trajectory, and performance metrics
         </p>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <div className="bg-white border rounded-lg p-6 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-gray-600">Total Clicks</span>
-            <Activity className="w-5 h-5 text-blue-600" />
+      {/* Overall Direction Card */}
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-6 mb-8 border border-blue-200">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            {getTrendIcon(module1.overall_direction)}
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">Overall Trajectory</h3>
+              <p className={`text-2xl font-bold ${getTrendColor(module1.overall_direction)}`}>
+                {getTrendLabel(module1.overall_direction)}
+              </p>
+            </div>
           </div>
-          <div className="text-3xl font-bold text-gray-900 mb-1">
-            {formatNumber(summary.total_clicks)}
-          </div>
-          <div className={`text-sm font-medium ${getChangeColor(summary.clicks_change_pct)}`}>
-            {summary.clicks_change_pct > 0 ? '+' : ''}
-            {summary.clicks_change_pct.toFixed(1)}% vs previous period
-          </div>
-        </div>
-
-        <div className="bg-white border rounded-lg p-6 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-gray-600">Total Impressions</span>
-            <Activity className="w-5 h-5 text-green-600" />
-          </div>
-          <div className="text-3xl font-bold text-gray-900 mb-1">
-            {formatNumber(summary.total_impressions)}
-          </div>
-          <div className={`text-sm font-medium ${getChangeColor(summary.impressions_change_pct)}`}>
-            {summary.impressions_change_pct > 0 ? '+' : ''}
-            {summary.impressions_change_pct.toFixed(1)}% vs previous period
-          </div>
-        </div>
-
-        <div className="bg-white border rounded-lg p-6 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-gray-600">Average CTR</span>
-            <Activity className="w-5 h-5 text-purple-600" />
-          </div>
-          <div className="text-3xl font-bold text-gray-900 mb-1">
-            {formatPercent(summary.avg_ctr)}
-          </div>
-          <div className={`text-sm font-medium ${getChangeColor(summary.ctr_change_pct)}`}>
-            {summary.ctr_change_pct > 0 ? '+' : ''}
-            {summary.ctr_change_pct.toFixed(1)}% vs previous period
-          </div>
-        </div>
-
-        <div className="bg-white border rounded-lg p-6 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-gray-600">Average Position</span>
-            <Activity className="w-5 h-5 text-orange-600" />
-          </div>
-          <div className="text-3xl font-bold text-gray-900 mb-1">
-            {formatPosition(summary.avg_position)}
-          </div>
-          <div className={`text-sm font-medium ${getChangeColor(-summary.position_change)}`}>
-            {summary.position_change < 0 ? '+' : ''}
-            {Math.abs(summary.position_change).toFixed(1)} positions
+          <div className="text-right">
+            <p className="text-sm text-gray-600">Monthly Trend</p>
+            <p className={`text-2xl font-bold ${getChangeColor(module1.trend_slope_pct_per_month)}`}>
+              {module1.trend_slope_pct_per_month > 0 ? '+' : ''}
+              {module1.trend_slope_pct_per_month.toFixed(1)}%
+            </p>
           </div>
         </div>
       </div>
 
-      {/* Overall Direction Card */}
-      <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6">
-        <div className="flex items-start space-x-4">
-          <div className="flex-shrink-0">
-            {getDirectionIcon(module1.overall_direction)}
-          </div>
-          <div className="flex-grow">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">
-              Overall Trend: {getDirectionLabel(module1.overall_direction)}
-            </h3>
-            <p className="text-gray-700 mb-3">
-              Your site is currently {module1.overall_direction === 'strong_decline' || module1.overall_direction === 'decline' ? 'declining' : module1.overall_direction === 'strong_growth' || module1.overall_direction === 'growth' ? 'growing' : 'stable'} at{' '}
-              <span className={`font-semibold ${getDirectionColor(module1.overall_direction)}`}>
-                {Math.abs(module1.trend_slope_pct_per_month).toFixed(1)}% per month
-              </span>
-            </p>
-            {module1.seasonality && (
-              <div className="bg-white rounded-lg p-4 border border-blue-200">
-                <h4 className="font-semibold text-gray-900 mb-2 flex items-center">
-                  <Calendar className="w-4 h-4 mr-2" />
-                  Seasonality Pattern
-                </h4>
-                <div className="space-y-2 text-sm text-gray-700">
-                  <p>
-                    <span className="font-medium">Best day:</span> {module1.seasonality.best_day}
-                  </p>
-                  <p>
-                    <span className="font-medium">Worst day:</span> {module1.seasonality.worst_day}
-                  </p>
-                  {module1.seasonality.monthly_cycle && (
-                    <p>
-                      <span className="font-medium">Monthly pattern:</span> {module1.seasonality.cycle_description}
-                    </p>
-                  )}
-                </div>
+      {/* Summary Metrics Cards */}
+      {summary && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+          {/* Total Sessions */}
+          {module1.total_sessions !== undefined && (
+            <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
+              <div className="flex items-center gap-3 mb-2">
+                <Activity className="w-5 h-5 text-blue-600" />
+                <h3 className="text-sm font-medium text-gray-600">Total Sessions</h3>
               </div>
+              <p className="text-3xl font-bold text-gray-900">{formatNumber(module1.total_sessions)}</p>
+            </div>
+          )}
+
+          {/* Total Users */}
+          {module1.total_users !== undefined && (
+            <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
+              <div className="flex items-center gap-3 mb-2">
+                <Globe className="w-5 h-5 text-green-600" />
+                <h3 className="text-sm font-medium text-gray-600">Total Users</h3>
+              </div>
+              <p className="text-3xl font-bold text-gray-900">{formatNumber(module1.total_users)}</p>
+            </div>
+          )}
+
+          {/* Total Pageviews */}
+          {module1.total_pageviews !== undefined && (
+            <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
+              <div className="flex items-center gap-3 mb-2">
+                <Monitor className="w-5 h-5 text-purple-600" />
+                <h3 className="text-sm font-medium text-gray-600">Total Pageviews</h3>
+              </div>
+              <p className="text-3xl font-bold text-gray-900">{formatNumber(module1.total_pageviews)}</p>
+            </div>
+          )}
+
+          {/* Total Clicks */}
+          <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
+            <div className="flex items-center gap-3 mb-2">
+              <Activity className="w-5 h-5 text-blue-600" />
+              <h3 className="text-sm font-medium text-gray-600">Total Clicks</h3>
+            </div>
+            <p className="text-3xl font-bold text-gray-900">{formatNumber(summary.total_clicks)}</p>
+            {summary.clicks_change_pct !== undefined && (
+              <p className={`text-sm ${getChangeColor(summary.clicks_change_pct)} mt-1`}>
+                {summary.clicks_change_pct > 0 ? '+' : ''}
+                {summary.clicks_change_pct.toFixed(1)}% vs prev period
+              </p>
+            )}
+          </div>
+
+          {/* Total Impressions */}
+          <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
+            <div className="flex items-center gap-3 mb-2">
+              <Globe className="w-5 h-5 text-green-600" />
+              <h3 className="text-sm font-medium text-gray-600">Total Impressions</h3>
+            </div>
+            <p className="text-3xl font-bold text-gray-900">{formatNumber(summary.total_impressions)}</p>
+            {summary.impressions_change_pct !== undefined && (
+              <p className={`text-sm ${getChangeColor(summary.impressions_change_pct)} mt-1`}>
+                {summary.impressions_change_pct > 0 ? '+' : ''}
+                {summary.impressions_change_pct.toFixed(1)}% vs prev period
+              </p>
+            )}
+          </div>
+
+          {/* Average CTR */}
+          <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
+            <div className="flex items-center gap-3 mb-2">
+              <TrendingUp className="w-5 h-5 text-purple-600" />
+              <h3 className="text-sm font-medium text-gray-600">Average CTR</h3>
+            </div>
+            <p className="text-3xl font-bold text-gray-900">{formatPercent(summary.avg_ctr)}</p>
+            {summary.ctr_change_pct !== undefined && (
+              <p className={`text-sm ${getChangeColor(summary.ctr_change_pct)} mt-1`}>
+                {summary.ctr_change_pct > 0 ? '+' : ''}
+                {summary.ctr_change_pct.toFixed(1)}% vs prev period
+              </p>
+            )}
+          </div>
+
+          {/* Average Position */}
+          <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
+            <div className="flex items-center gap-3 mb-2">
+              <Calendar className="w-5 h-5 text-orange-600" />
+              <h3 className="text-sm font-medium text-gray-600">Average Position</h3>
+            </div>
+            <p className="text-3xl font-bold text-gray-900">{formatPosition(summary.avg_position)}</p>
+            {summary.position_change !== undefined && (
+              <p className={`text-sm ${getChangeColor(-summary.position_change)} mt-1`}>
+                {summary.position_change > 0 ? '+' : ''}
+                {summary.position_change.toFixed(1)} vs prev period
+              </p>
             )}
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Chart View Selector */}
-      <div className="bg-white border rounded-lg p-6 shadow-sm">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-xl font-semibold text-gray-900">Performance Trends</h3>
-          <div className="flex space-x-2">
-            <button
-              onClick={() => setChartView('clicks')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                chartView === 'clicks'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              Clicks
-            </button>
-            <button
-              onClick={() => setChartView('impressions')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                chartView === 'impressions'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              Impressions
-            </button>
-            <button
-              onClick={() => setChartView('ctr')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                chartView === 'ctr'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              CTR
-            </button>
-            <button
-              onClick={() => setChartView('position')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                chartView === 'position'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              Position
-            </button>
-          </div>
-        </div>
-
-        <ResponsiveContainer width="100%" height={400}>
-          {chartView === 'clicks' && (
-            <AreaChart data={timeseries}>
-              <defs>
-                <linearGradient id="colorClicks" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis
-                dataKey="date"
-                stroke="#6b7280"
-                fontSize={12}
-                tickFormatter={(value) => {
-                  const date = new Date(value);
-                  return `${date.getMonth() + 1}/${date.getDate()}`;
-                }}
-              />
-              <YAxis stroke="#6b7280" fontSize={12} tickFormatter={formatNumber} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: 'white',
-                  border: '1px solid #e5e7eb',
-                  borderRadius: '8px',
-                  boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                }}
-                formatter={(value: number) => [formatNumber(value), 'Clicks']}
-                labelFormatter={(label) => new Date(label).toLocaleDateString()}
-              />
-              <Area
-                type="monotone"
-                dataKey="clicks"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                fillOpacity={1}
-                fill="url(#colorClicks)"
-              />
-            </AreaChart>
-          )}
-          {chartView === 'impressions' && (
-            <AreaChart data={timeseries}>
-              <defs>
-                <linearGradient id="colorImpressions" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis
-                dataKey="date"
-                stroke="#6b7280"
-                fontSize={12}
-                tickFormatter={(value) => {
-                  const date = new Date(value);
-                  return `${date.getMonth() + 1}/${date.getDate()}`;
-                }}
-              />
-              <YAxis stroke="#6b7280" fontSize={12} tickFormatter={formatNumber} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: 'white',
-                  border: '1px solid #e5e7eb',
-                  borderRadius: '8px',
-                  boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                }}
-                formatter={(value: number) => [formatNumber(value), 'Impressions']}
-                labelFormatter={(label) => new Date(label).toLocaleDateString()}
-              />
-              <Area
-                type="monotone"
-                dataKey="impressions"
-                stroke="#10b981"
-                strokeWidth={2}
-                fillOpacity={1}
-                fill="url(#colorImpressions)"
-              />
-            </AreaChart>
-          )}
-          {chartView === 'ctr' && (
-            <LineChart data={timeseries}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis
-                dataKey="date"
-                stroke="#6b7280"
-                fontSize={12}
-                tickFormatter={(value) => {
-                  const date = new Date(value);
-                  return `${date.getMonth() + 1}/${date.getDate()}`;
-                }}
-              />
-              <YAxis
-                stroke="#6b7280"
-                fontSize={12}
-                tickFormatter={(value) => (value * 100).toFixed(1) + '%'}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: 'white',
-                  border: '1px solid #e5e7eb',
-                  borderRadius: '8px',
-                  boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                }}
-                formatter={(value: number) => [formatPercent(value), 'CTR']}
-                labelFormatter={(label) => new Date(label).toLocaleDateString()}
-              />
-              <Line
-                type="monotone"
-                dataKey="ctr"
-                stroke="#8b5cf6"
-                strokeWidth={2}
-                dot={false}
-              />
-            </LineChart>
-          )}
-          {chartView === 'position' && (
-            <LineChart data={timeseries}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis
-                dataKey="date"
-                stroke="#6b7280"
-                fontSize={12}
-                tickFormatter={(value) => {
-                  const date = new Date(value);
-                  return `${date.getMonth() + 1}/${date.getDate()}`;
-                }}
-              />
-              <YAxis
-                stroke="#6b7280"
-                fontSize={12}
-                reversed
-                domain={[1, 'auto']}
-                tickFormatter={(value) => value.toFixed(1)}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: 'white',
-                  border: '1px solid #e5e7eb',
-                  borderRadius: '8px',
-                  boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                }}
-                formatter={(value: number) => [formatPosition(value), 'Position']}
-                labelFormatter={(label) => new Date(label).toLocaleDateString()}
-              />
-              <Line
-                type="monotone"
-                dataKey="position"
-                stroke="#f59e0b"
-                strokeWidth={2}
-                dot={false}
-              />
-            </LineChart>
-          )}
-        </ResponsiveContainer>
-      </div>
-
-      {/* Change Points */}
-      {module1.change_points && module1.change_points.length > 0 && (
-        <div className="bg-white border rounded-lg p-6 shadow-sm">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
-            <AlertCircle className="w-5 h-5 mr-2 text-orange-600" />
-            Significant Traffic Changes
-          </h3>
-          <div className="space-y-3">
-            {module1.change_points.map((changePoint, index) => (
-              <div
-                key={index}
-                className={`p-4 rounded-lg border ${
-                  changePoint.direction === 'drop'
-                    ? 'bg-red-50 border-red-200'
-                    : 'bg-green-50 border-green-200'
+      {/* Traffic Trend Chart */}
+      {chartData.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-xl font-semibold text-gray-900">Traffic Trends Over Time</h3>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setChartView('clicks')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  chartView === 'clicks'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    {changePoint.direction === 'drop' ? (
-                      <TrendingDown className="w-5 h-5 text-red-600" />
-                    ) : (
-                      <TrendingUp className="w-5 h-5 text-green-600" />
-                    )}
-                    <div>
-                      <span className="font-semibold text-gray-900">
-                        {new Date(changePoint.date).toLocaleDateString()}
-                      </span>
-                      <span className="text-gray-600 ml-2">
-                        {changePoint.direction === 'drop' ? 'Traffic Drop' : 'Traffic Spike'}
-                      </span>
-                    </div>
-                  </div>
-                  <span
-                    className={`font-semibold ${
-                      changePoint.direction === 'drop' ? 'text-red-600' : 'text-green-600'
-                    }`}
-                  >
-                    {changePoint.magnitude > 0 ? '+' : ''}
-                    {(changePoint.magnitude * 100).toFixed(1)}%
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Anomalies */}
-      {module1.anomalies && module1.anomalies.length > 0 && (
-        <div className="bg-white border rounded-lg p-6 shadow-sm">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
-            <AlertCircle className="w-5 h-5 mr-2 text-purple-600" />
-            Detected Anomalies
-          </h3>
-          <div className="space-y-3">
-            {module1.anomalies.map((anomaly, index) => (
-              <div
-                key={index}
-                className="p-4 rounded-lg border bg-purple-50 border-purple-200"
+                Clicks
+              </button>
+              <button
+                onClick={() => setChartView('impressions')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  chartView === 'impressions'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <Activity className="w-5 h-5 text-purple-600" />
-                    <div>
-                      <span className="font-semibold text-gray-900">
-                        {new Date(anomaly.date).toLocaleDateString()}
-                      </span>
-                      <span className="text-gray-600 ml-2">
-                        {anomaly.type === 'discord' ? 'Unusual Pattern' : 'Recurring Pattern'}
-                      </span>
-                    </div>
-                  </div>
-                  <span className="font-semibold text-purple-600">
-                    {anomaly.magnitude > 0 ? '+' : ''}
-                    {(anomaly.magnitude * 100).toFixed(1)}%
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Forecast */}
-      <div className="bg-white border rounded-lg p-6 shadow-sm">
-        <h3 className="text-xl font-semibold text-gray-900 mb-6 flex items-center">
-          <TrendingUp className="w-5 h-5 mr-2 text-blue-600" />
-          Traffic Forecast
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {Object.entries(module1.forecast).map(([period, forecast]) => (
-            <div key={period} className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6">
-              <div className="text-sm font-medium text-gray-600 mb-2">
-                {period === '30d' ? '30-Day' : period === '60d' ? '60-Day' : '90-Day'} Forecast
-              </div>
-              <div className="text-3xl font-bold text-gray-900 mb-2">
-                {formatNumber(forecast.clicks)}
-              </div>
-              <div className="text-sm text-gray-600">
-                Range: {formatNumber(forecast.ci_low)} - {formatNumber(forecast.ci_high)}
-              </div>
+                Impressions
+              </button>
+              <button
+                onClick={() => setChartView('ctr')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  chartView === 'ctr'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                CTR
+              </button>
+              <button
+                onClick={() => setChartView('position')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  chartView === 'position'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Position
+              </button>
             </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Top Performing Pages */}
-      {module1.top_pages && module1.top_pages.length > 0 && (
-        <div className="bg-white border rounded-lg p-6 shadow-sm">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4">Top Performing Pages</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-200">
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Page</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">Clicks</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">Impressions</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">CTR</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">Position</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">Change</th>
-                </tr>
-              </thead>
-              <tbody>
-                {module1.top_pages.slice(0, 10).map((page, index) => (
-                  <tr key={index} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="py-3 px-4 text-sm text-gray-900 max-w-xs truncate">
-                      {page.url}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-900 text-right font-medium">
-                      {formatNumber(page.clicks)}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-600 text-right">
-                      {formatNumber(page.impressions)}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-600 text-right">
-                      {formatPercent(page.ctr)}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-600 text-right">
-                      {formatPosition(page.position)}
-                    </td>
-                    <td className={`py-3 px-4 text-sm text-right font-medium ${getChangeColor(page.clicks_change_pct)}`}>
-                      {page.clicks_change_pct > 0 ? '+' : ''}
-                      {page.clicks_change_pct.toFixed(1)}%
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
+            <ResponsiveContainer width="100%" height={400}>
+              <AreaChart data={chartData}>
+                <defs>
+                  <linearGradient id="colorMetric" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis
+                  dataKey="date"
+                  stroke="#6b7280"
+                  tick={{ fontSize: 12 }}
+                  tickLine={false}
+                />
+                <YAxis
+                  stroke="#6b7280"
+                  tick={{ fontSize: 12 }}
+                  tickLine={false}
+                  tickFormatter={formatChartValue}
+                  reversed={chartView === 'position'}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#fff',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '8px',
+                    padding: '12px',
+                  }}
+                  formatter={(value: number) => [formatChartValue(value), getChartLabel()]}
+                  labelStyle={{ fontWeight: 'bold', marginBottom: '8px' }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey={getChartDataKey()}
+                  stroke="#3b82f6"
+                  strokeWidth={2}
+                  fill="url(#colorMetric)"
+                  animationDuration={1000}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
         </div>
       )}
 
-      {/* Query Performance */}
-      {module1.query_performance && module1.query_performance.length > 0 && (
-        <div className="bg-white border rounded-lg p-6 shadow-sm">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4">Top Query Performance</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-200">
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Query</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">Clicks</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">Impressions</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">CTR</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">Position</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">Change</th>
-                </tr>
-              </thead>
-              <tbody>
-                {module1.query_performance.slice(0, 10).map((query, index) => (
-                  <tr key={index} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="py-3 px-4 text-sm text-gray-900 max-w-xs truncate">
-                      {query.query}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-900 text-right font-medium">
-                      {formatNumber(query.clicks)}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-600 text-right">
-                      {formatNumber(query.impressions)}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-600 text-right">
-                      {formatPercent(query.ctr)}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-600 text-right">
-                      {formatPosition(query.position)}
-                    </td>
-                    <td className={`py-3 px-4 text-sm text-right font-medium ${getChangeColor(query.clicks_change_pct)}`}>
-                      {query.clicks_change_pct > 0 ? '+' : ''}
-                      {query.clicks_change_pct.toFixed(1)}%
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Device and Country Breakdowns */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* Device Breakdown & Traffic Sources */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
         {/* Device Breakdown */}
         {module1.device_breakdown && module1.device_breakdown.length > 0 && (
-          <div className="bg-white border rounded-lg p-6 shadow-sm">
-            <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
-              <Monitor className="w-5 h-5 mr-2 text-blue-600" />
+          <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
+            <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
+              <Monitor className="w-5 h-5 text-blue-600" />
               Device Breakdown
             </h3>
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
                   data={module1.device_breakdown}
+                  dataKey="sessions"
+                  nameKey="device"
                   cx="50%"
                   cy="50%"
-                  labelLine={false}
-                  label={({ device, percentage }) => `${device}: ${percentage.toFixed(1)}%`}
                   outerRadius={100}
-                  fill="#8884d8"
-                  dataKey="clicks"
+                  label={(entry) => `${entry.device}: ${entry.percentage.toFixed(1)}%`}
+                  animationDuration={800}
                 >
                   {module1.device_breakdown.map((entry, index) => (
                     <Cell
@@ -807,14 +551,14 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
                 </Pie>
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: 'white',
+                    backgroundColor: '#fff',
                     border: '1px solid #e5e7eb',
                     borderRadius: '8px',
-                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                    padding: '12px',
                   }}
-                  formatter={(value: number, name: string, props: any) => [
-                    `${formatNumber(value)} clicks (${props.payload.percentage.toFixed(1)}%)`,
-                    props.payload.device,
+                  formatter={(value: number, name: string, entry: any) => [
+                    `${formatNumber(value)} (${entry.payload.percentage.toFixed(1)}%)`,
+                    name,
                   ]}
                 />
               </PieChart>
@@ -822,66 +566,207 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
             <div className="mt-4 space-y-2">
               {module1.device_breakdown.map((device, index) => (
                 <div key={index} className="flex items-center justify-between text-sm">
-                  <div className="flex items-center space-x-2">
+                  <div className="flex items-center gap-2">
                     <div
                       className="w-3 h-3 rounded-full"
                       style={{
-                        backgroundColor: DEVICE_COLORS[device.device.toLowerCase() as keyof typeof DEVICE_COLORS] || '#6b7280',
+                        backgroundColor:
+                          DEVICE_COLORS[device.device.toLowerCase() as keyof typeof DEVICE_COLORS] || '#6b7280',
                       }}
-                    />
-                    <span className="text-gray-700 capitalize">{device.device}</span>
+                    ></div>
+                    <span className="font-medium text-gray-700 capitalize">{device.device}</span>
                   </div>
-                  <div className="text-right">
-                    <div className="font-medium text-gray-900">{formatNumber(device.clicks)}</div>
-                    <div className="text-xs text-gray-500">{device.percentage.toFixed(1)}%</div>
-                  </div>
+                  <span className="text-gray-900 font-semibold">{formatNumber(device.sessions)}</span>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* Country Breakdown */}
-        {module1.country_breakdown && module1.country_breakdown.length > 0 && (
-          <div className="bg-white border rounded-lg p-6 shadow-sm">
-            <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
-              <MapPin className="w-5 h-5 mr-2 text-green-600" />
-              Country Breakdown
+        {/* Traffic Sources */}
+        {module1.traffic_sources && module1.traffic_sources.length > 0 && (
+          <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
+            <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
+              <Globe className="w-5 h-5 text-green-600" />
+              Top Traffic Sources
             </h3>
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={module1.country_breakdown.slice(0, 5)}>
+              <BarChart data={module1.traffic_sources} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="country" stroke="#6b7280" fontSize={12} />
-                <YAxis stroke="#6b7280" fontSize={12} tickFormatter={formatNumber} />
+                <XAxis
+                  type="number"
+                  stroke="#6b7280"
+                  tick={{ fontSize: 12 }}
+                  tickLine={false}
+                  tickFormatter={formatNumber}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="source"
+                  stroke="#6b7280"
+                  tick={{ fontSize: 12 }}
+                  tickLine={false}
+                  width={100}
+                />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: 'white',
+                    backgroundColor: '#fff',
                     border: '1px solid #e5e7eb',
                     borderRadius: '8px',
-                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                    padding: '12px',
                   }}
-                  formatter={(value: number, name: string, props: any) => [
-                    `${formatNumber(value)} clicks (${props.payload.percentage.toFixed(1)}%)`,
-                    'Clicks',
+                  formatter={(value: number, name: string, entry: any) => [
+                    `${formatNumber(value)} (${entry.payload.percentage.toFixed(1)}%)`,
+                    'Sessions',
                   ]}
                 />
-                <Bar dataKey="clicks" fill="#10b981" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="sessions" radius={[0, 4, 4, 0]} animationDuration={800}>
+                  {module1.traffic_sources.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={SOURCE_COLORS[index % SOURCE_COLORS.length]} />
+                  ))}
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
-            <div className="mt-4 space-y-2">
-              {module1.country_breakdown.slice(0, 5).map((country, index) => (
-                <div key={index} className="flex items-center justify-between text-sm">
-                  <span className="text-gray-700">{country.country}</span>
-                  <div className="text-right">
-                    <div className="font-medium text-gray-900">{formatNumber(country.clicks)}</div>
-                    <div className="text-xs text-gray-500">{country.percentage.toFixed(1)}%</div>
-                  </div>
-                </div>
-              ))}
-            </div>
           </div>
         )}
       </div>
+
+      {/* Change Points */}
+      {module1.change_points && module1.change_points.length > 0 && (
+        <div className="bg-yellow-50 rounded-lg p-6 mb-8 border border-yellow-200">
+          <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <AlertCircle className="w-5 h-5 text-yellow-600" />
+            Significant Change Points
+          </h3>
+          <div className="space-y-3">
+            {module1.change_points.map((point, index) => (
+              <div
+                key={index}
+                className="flex items-center justify-between bg-white rounded-md p-4 border border-yellow-200"
+              >
+                <div className="flex items-center gap-3">
+                  {point.direction === 'spike' ? (
+                    <TrendingUp className="w-5 h-5 text-green-600" />
+                  ) : (
+                    <TrendingDown className="w-5 h-5 text-red-600" />
+                  )}
+                  <div>
+                    <p className="font-medium text-gray-900">
+                      {new Date(point.date).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric',
+                      })}
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      {point.direction === 'spike' ? 'Traffic Spike' : 'Traffic Drop'}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p
+                    className={`text-lg font-bold ${
+                      point.magnitude > 0 ? 'text-green-600' : 'text-red-600'
+                    }`}
+                  >
+                    {point.magnitude > 0 ? '+' : ''}
+                    {(point.magnitude * 100).toFixed(1)}%
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Seasonality */}
+      {module1.seasonality && (
+        <div className="bg-blue-50 rounded-lg p-6 mb-8 border border-blue-200">
+          <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <Calendar className="w-5 h-5 text-blue-600" />
+            Seasonality Patterns
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-white rounded-md p-4 border border-blue-200">
+              <p className="text-sm text-gray-600 mb-1">Best Day</p>
+              <p className="text-xl font-bold text-green-600">{module1.seasonality.best_day}</p>
+            </div>
+            <div className="bg-white rounded-md p-4 border border-blue-200">
+              <p className="text-sm text-gray-600 mb-1">Worst Day</p>
+              <p className="text-xl font-bold text-red-600">{module1.seasonality.worst_day}</p>
+            </div>
+          </div>
+          {module1.seasonality.monthly_cycle && (
+            <div className="mt-4 bg-white rounded-md p-4 border border-blue-200">
+              <p className="text-sm text-gray-600 mb-1">Monthly Pattern</p>
+              <p className="text-gray-900">{module1.seasonality.cycle_description}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Forecast */}
+      {module1.forecast && (
+        <div className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-lg p-6 border border-purple-200">
+          <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <TrendingUp className="w-5 h-5 text-purple-600" />
+            Traffic Forecast
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {['30d', '60d', '90d'].map((period) => {
+              const forecast = module1.forecast[period as keyof typeof module1.forecast];
+              return (
+                <div key={period} className="bg-white rounded-md p-4 border border-purple-200">
+                  <p className="text-sm text-gray-600 mb-2">{period.replace('d', ' Days')}</p>
+                  <p className="text-2xl font-bold text-gray-900 mb-1">
+                    {formatNumber(forecast.clicks)}
+                  </p>
+                  <p className="text-xs text-gray-600">
+                    Range: {formatNumber(forecast.ci_low)} - {formatNumber(forecast.ci_high)}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Anomalies */}
+      {module1.anomalies && module1.anomalies.length > 0 && (
+        <div className="bg-red-50 rounded-lg p-6 mt-8 border border-red-200">
+          <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <AlertCircle className="w-5 h-5 text-red-600" />
+            Detected Anomalies
+          </h3>
+          <div className="space-y-2">
+            {module1.anomalies.slice(0, 5).map((anomaly, index) => (
+              <div
+                key={index}
+                className="flex items-center justify-between bg-white rounded-md p-3 border border-red-200"
+              >
+                <div>
+                  <p className="font-medium text-gray-900">
+                    {new Date(anomaly.date).toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'short',
+                      day: 'numeric',
+                    })}
+                  </p>
+                  <p className="text-sm text-gray-600 capitalize">{anomaly.type}</p>
+                </div>
+                <p
+                  className={`text-lg font-bold ${
+                    anomaly.magnitude > 0 ? 'text-green-600' : 'text-red-600'
+                  }`}
+                >
+                  {anomaly.magnitude > 0 ? '+' : ''}
+                  {(anomaly.magnitude * 100).toFixed(1)}%
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
