@@ -675,3 +675,108 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
             )
         except Exception:
             logger.critical("Could not mark report %s as failed", report_id)
+
+
+# ---------------------------------------------------------------------------
+# Stale report recovery
+# ---------------------------------------------------------------------------
+
+def recover_stale_reports(stale_threshold_minutes: int = 30) -> Dict[str, Any]:
+    """
+    Find reports stuck in running states and mark them as failed.
+
+    When the API restarts (Railway deploy, crash, OOM kill), any report
+    that was mid-pipeline gets permanently stuck in "queued", "ingesting",
+    or "analyzing" status.  The user sees a perpetual loading screen with
+    no way to recover except manually hitting the /retry endpoint — which
+    they can't do because the UI shows the report as still running.
+
+    This function:
+    1. Finds all reports in a running state that haven't been updated
+       in the last ``stale_threshold_minutes`` minutes.
+    2. Marks them as "failed" with a descriptive error message.
+    3. Returns a summary of what was recovered.
+
+    Called automatically during API startup (lifespan) so that every
+    deploy or restart cleans up orphaned reports.
+
+    Args:
+        stale_threshold_minutes: How long a report must be in a running
+            state before it's considered stale.  Default 30 minutes.
+            Reports that are genuinely still running (unlikely after a
+            restart) will get at most a 30-minute grace period.
+
+    Returns:
+        Dict with "recovered" count, "report_ids" list, and "errors" list.
+    """
+    result: Dict[str, Any] = {"recovered": 0, "report_ids": [], "errors": []}
+
+    try:
+        supabase = _get_supabase()
+    except Exception as exc:
+        logger.error("Cannot connect to Supabase for stale report recovery: %s", exc)
+        result["errors"].append(f"Supabase connection failed: {exc}")
+        return result
+
+    running_statuses = ("queued", "ingesting", "analyzing", "running")
+    cutoff = (datetime.utcnow() - timedelta(minutes=stale_threshold_minutes)).isoformat()
+
+    try:
+        # Find reports that are in a running state and haven't been
+        # updated recently.  We check updated_at (if set) or fall back
+        # to created_at for reports that never got a status update.
+        stale_reports = (
+            supabase.table("reports")
+            .select("id, status, updated_at, created_at, domain")
+            .in_("status", list(running_statuses))
+            .lt("updated_at", cutoff)
+            .execute()
+        )
+
+        if not stale_reports.data:
+            logger.info(
+                "Stale report recovery: no reports stuck in running state "
+                "for >%d minutes — nothing to recover.",
+                stale_threshold_minutes,
+            )
+            return result
+
+        for report in stale_reports.data:
+            report_id = report["id"]
+            old_status = report.get("status", "unknown")
+            domain = report.get("domain", "unknown")
+
+            try:
+                supabase.table("reports").update({
+                    "status": "failed",
+                    "error_message": (
+                        f"Report was interrupted during '{old_status}' phase "
+                        f"(likely due to a server restart or timeout). "
+                        f"Click 'Retry' to regenerate this report."
+                    ),
+                    "updated_at": datetime.utcnow().isoformat(),
+                }).eq("id", report_id).execute()
+
+                result["recovered"] += 1
+                result["report_ids"].append(report_id)
+                logger.info(
+                    "Recovered stale report %s (domain=%s, was=%s, stuck since %s)",
+                    report_id, domain, old_status,
+                    report.get("updated_at") or report.get("created_at"),
+                )
+            except Exception as exc:
+                logger.error("Failed to recover report %s: %s", report_id, exc)
+                result["errors"].append(f"Report {report_id}: {exc}")
+
+    except Exception as exc:
+        logger.error("Stale report recovery query failed: %s", exc)
+        result["errors"].append(f"Query failed: {exc}")
+
+    if result["recovered"] > 0:
+        logger.info(
+            "Stale report recovery complete: %d reports recovered (%s)",
+            result["recovered"],
+            ", ".join(result["report_ids"][:5]),
+        )
+
+    return result
