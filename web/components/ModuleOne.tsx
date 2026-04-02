@@ -2,9 +2,8 @@ import React from 'react';
 import {
   LineChart,
   Line,
-  PieChart,
-  Pie,
-  Cell,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -20,32 +19,43 @@ interface MetricCardData {
   change: number;
   changeLabel: string;
   trend: 'up' | 'down' | 'flat';
+  format?: 'number' | 'percentage' | 'decimal';
 }
 
 interface TimeSeriesDataPoint {
   date: string;
-  sessions: number;
-  users: number;
-  pageviews: number;
-}
-
-interface TrafficSourceData {
-  name: string;
-  value: number;
-  percentage: number;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
 }
 
 interface ModuleOneData {
   metrics: {
-    totalSessions: MetricCardData;
-    totalUsers: MetricCardData;
-    totalPageviews: MetricCardData;
-    bounceRate: MetricCardData;
-    avgSessionDuration: MetricCardData;
-    pagesPerSession: MetricCardData;
+    totalClicks: MetricCardData;
+    totalImpressions: MetricCardData;
+    avgCTR: MetricCardData;
+    avgPosition: MetricCardData;
   };
   timeSeriesData: TimeSeriesDataPoint[];
-  trafficSources: TrafficSourceData[];
+  overallDirection: string;
+  trendSlopePctPerMonth: number;
+  changePoints: Array<{
+    date: string;
+    magnitude: number;
+    direction: string;
+  }>;
+  seasonality?: {
+    bestDay?: string;
+    worstDay?: string;
+    monthlyCycle?: boolean;
+    cycleDescription?: string;
+  };
+  forecast?: {
+    '30d'?: { clicks: number; ci_low: number; ci_high: number };
+    '60d'?: { clicks: number; ci_low: number; ci_high: number };
+    '90d'?: { clicks: number; ci_low: number; ci_high: number };
+  };
 }
 
 interface ModuleOneProps {
@@ -54,21 +64,22 @@ interface ModuleOneProps {
   error?: string | null;
 }
 
-const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
-
 const ModuleOne: React.FC<ModuleOneProps> = ({ data, loading = false, error = null }) => {
   if (loading) {
     return (
       <div className="w-full bg-white rounded-lg shadow-md p-8">
         <div className="animate-pulse">
-          <div className="h-8 bg-gray-200 rounded w-1/4 mb-6"></div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
+          <div className="h-8 bg-gray-200 rounded w-1/3 mb-6"></div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            {[1, 2, 3, 4].map((i) => (
               <div key={i} className="h-32 bg-gray-200 rounded"></div>
             ))}
           </div>
           <div className="h-96 bg-gray-200 rounded mb-8"></div>
-          <div className="h-80 bg-gray-200 rounded"></div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="h-80 bg-gray-200 rounded"></div>
+            <div className="h-80 bg-gray-200 rounded"></div>
+          </div>
         </div>
       </div>
     );
@@ -79,7 +90,7 @@ const ModuleOne: React.FC<ModuleOneProps> = ({ data, loading = false, error = nu
       <div className="w-full bg-white rounded-lg shadow-md p-8">
         <div className="flex items-center justify-center text-red-600">
           <AlertCircle className="w-6 h-6 mr-2" />
-          <span className="text-lg font-medium">Error loading traffic overview: {error}</span>
+          <span className="text-lg font-medium">Error loading GSC overview: {error}</span>
         </div>
       </div>
     );
@@ -90,7 +101,7 @@ const ModuleOne: React.FC<ModuleOneProps> = ({ data, loading = false, error = nu
       <div className="w-full bg-white rounded-lg shadow-md p-8">
         <div className="flex items-center justify-center text-gray-500">
           <AlertCircle className="w-6 h-6 mr-2" />
-          <span className="text-lg font-medium">No traffic data available</span>
+          <span className="text-lg font-medium">No GSC data available</span>
         </div>
       </div>
     );
@@ -106,65 +117,98 @@ const ModuleOne: React.FC<ModuleOneProps> = ({ data, loading = false, error = nu
     return num.toLocaleString();
   };
 
-  const formatDuration = (seconds: number): string => {
-    const minutes = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${minutes}m ${secs}s`;
+  const formatPercentage = (value: number, decimals: number = 1): string => {
+    return `${value.toFixed(decimals)}%`;
   };
 
-  const formatPercentage = (value: number): string => {
-    return `${value.toFixed(1)}%`;
+  const formatPosition = (value: number): string => {
+    return value.toFixed(1);
+  };
+
+  const formatMetricValue = (value: number, format?: string): string => {
+    switch (format) {
+      case 'percentage':
+        return formatPercentage(value);
+      case 'decimal':
+        return value.toFixed(2);
+      default:
+        return formatNumber(value);
+    }
   };
 
   const getTrendIcon = (trend: 'up' | 'down' | 'flat') => {
     switch (trend) {
       case 'up':
-        return <TrendingUp className="w-4 h-4" />;
+        return <TrendingUp className="w-5 h-5 text-green-600" />;
       case 'down':
-        return <TrendingDown className="w-4 h-4" />;
-      case 'flat':
-        return <Minus className="w-4 h-4" />;
+        return <TrendingDown className="w-5 h-5 text-red-600" />;
+      default:
+        return <Minus className="w-5 h-5 text-gray-600" />;
     }
   };
 
-  const getTrendColor = (trend: 'up' | 'down' | 'flat') => {
+  const getTrendColorClass = (trend: 'up' | 'down' | 'flat') => {
     switch (trend) {
       case 'up':
         return 'text-green-600';
       case 'down':
         return 'text-red-600';
-      case 'flat':
+      default:
         return 'text-gray-600';
     }
   };
 
-  const MetricCard: React.FC<{ data: MetricCardData; formatValue?: (val: number) => string }> = ({
-    data,
-    formatValue = formatNumber,
-  }) => (
-    <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-      <div className="text-sm font-medium text-gray-600 mb-2">{data.label}</div>
-      <div className="text-3xl font-bold text-gray-900 mb-3">{formatValue(data.value)}</div>
-      <div className={`flex items-center text-sm font-medium ${getTrendColor(data.trend)}`}>
-        {getTrendIcon(data.trend)}
-        <span className="ml-1">
-          {data.change > 0 ? '+' : ''}
-          {data.change.toFixed(1)}%
+  const getDirectionBadgeColor = (direction: string) => {
+    if (direction.includes('growth')) return 'bg-green-100 text-green-800';
+    if (direction.includes('decline')) return 'bg-red-100 text-red-800';
+    return 'bg-gray-100 text-gray-800';
+  };
+
+  const MetricCard: React.FC<{ metric: MetricCardData }> = ({ metric }) => (
+    <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-md transition-shadow">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm font-medium text-gray-600">{metric.label}</span>
+        {getTrendIcon(metric.trend)}
+      </div>
+      <div className="text-3xl font-bold text-gray-900 mb-2">
+        {formatMetricValue(metric.value, metric.format)}
+      </div>
+      <div className="flex items-center text-sm">
+        <span className={`font-medium ${getTrendColorClass(metric.trend)}`}>
+          {metric.change > 0 ? '+' : ''}
+          {formatPercentage(metric.change)}
         </span>
-        <span className="ml-2 text-gray-600 font-normal">{data.changeLabel}</span>
+        <span className="text-gray-500 ml-2">{metric.changeLabel}</span>
       </div>
     </div>
   );
 
-  const CustomTooltip: React.FC<any> = ({ active, payload, label }) => {
+  const formatDate = (dateStr: string): string => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const formatFullDate = (dateStr: string): string => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  };
+
+  const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
       return (
-        <div className="bg-white p-4 rounded-lg shadow-lg border border-gray-200">
-          <p className="text-sm font-medium text-gray-900 mb-2">{label}</p>
+        <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-4">
+          <p className="font-semibold text-gray-900 mb-2">{formatFullDate(label)}</p>
           {payload.map((entry: any, index: number) => (
-            <p key={index} className="text-sm" style={{ color: entry.color }}>
-              <span className="font-medium">{entry.name}:</span> {formatNumber(entry.value)}
-            </p>
+            <div key={index} className="flex items-center justify-between space-x-4 text-sm">
+              <span className="text-gray-600">{entry.name}:</span>
+              <span className="font-semibold" style={{ color: entry.color }}>
+                {entry.name === 'CTR'
+                  ? formatPercentage(entry.value)
+                  : entry.name === 'Position'
+                  ? formatPosition(entry.value)
+                  : formatNumber(entry.value)}
+              </span>
+            </div>
           ))}
         </div>
       );
@@ -172,185 +216,261 @@ const ModuleOne: React.FC<ModuleOneProps> = ({ data, loading = false, error = nu
     return null;
   };
 
-  const CustomPieTooltip: React.FC<any> = ({ active, payload }) => {
-    if (active && payload && payload.length) {
-      const data = payload[0];
-      return (
-        <div className="bg-white p-4 rounded-lg shadow-lg border border-gray-200">
-          <p className="text-sm font-medium text-gray-900">{data.name}</p>
-          <p className="text-sm text-gray-700">
-            Sessions: <span className="font-medium">{formatNumber(data.value)}</span>
-          </p>
-          <p className="text-sm text-gray-700">
-            Percentage: <span className="font-medium">{data.payload.percentage.toFixed(1)}%</span>
-          </p>
-        </div>
-      );
-    }
-    return null;
-  };
-
-  const renderCustomLabel = (entry: any) => {
-    return `${entry.name} (${entry.percentage.toFixed(1)}%)`;
-  };
-
   return (
     <div className="w-full bg-white rounded-lg shadow-md p-8">
       <div className="mb-8">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Module 1: Traffic Overview</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-2xl font-bold text-gray-900">Module 1: GSC Overview & Health</h2>
+          <span
+            className={`px-3 py-1 rounded-full text-sm font-medium ${getDirectionBadgeColor(
+              data.overallDirection
+            )}`}
+          >
+            {data.overallDirection.replace('_', ' ').toUpperCase()}
+          </span>
+        </div>
         <p className="text-gray-600">
-          High-level traffic metrics, trends, and source breakdown from Google Analytics 4
+          Performance trends and trajectory analysis over the selected period
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-12">
-        <MetricCard data={data.metrics.totalSessions} />
-        <MetricCard data={data.metrics.totalUsers} />
-        <MetricCard data={data.metrics.totalPageviews} />
-        <MetricCard data={data.metrics.bounceRate} formatValue={formatPercentage} />
-        <MetricCard
-          data={data.metrics.avgSessionDuration}
-          formatValue={(val) => formatDuration(val)}
-        />
-        <MetricCard data={data.metrics.pagesPerSession} formatValue={(val) => val.toFixed(2)} />
+      {/* Metrics Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <MetricCard metric={data.metrics.totalClicks} />
+        <MetricCard metric={data.metrics.totalImpressions} />
+        <MetricCard metric={data.metrics.avgCTR} />
+        <MetricCard metric={data.metrics.avgPosition} />
       </div>
 
-      <div className="mb-12">
-        <h3 className="text-xl font-bold text-gray-900 mb-6">Traffic Trends Over Time</h3>
-        <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-          <ResponsiveContainer width="100%" height={400}>
-            <LineChart
-              data={data.timeSeriesData}
-              margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+      {/* Trend Summary */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 mb-8">
+        <h3 className="text-lg font-semibold text-gray-900 mb-3">Trajectory Analysis</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <p className="text-sm text-gray-600 mb-1">Monthly Trend</p>
+            <p className="text-xl font-bold text-gray-900">
+              {data.trendSlopePctPerMonth > 0 ? '+' : ''}
+              {formatPercentage(data.trendSlopePctPerMonth, 2)} per month
+            </p>
+          </div>
+          {data.seasonality && (
+            <div>
+              <p className="text-sm text-gray-600 mb-1">Seasonality Pattern</p>
+              <p className="text-sm font-medium text-gray-900">
+                {data.seasonality.bestDay && `Best: ${data.seasonality.bestDay}`}
+                {data.seasonality.worstDay && ` • Worst: ${data.seasonality.worstDay}`}
+              </p>
+              {data.seasonality.cycleDescription && (
+                <p className="text-sm text-gray-600 mt-1">{data.seasonality.cycleDescription}</p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Time Series Chart - Clicks & Impressions */}
+      <div className="mb-8">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Clicks & Impressions Trend</h3>
+        <div className="bg-gray-50 rounded-lg p-4">
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={data.timeSeriesData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
               <XAxis
                 dataKey="date"
-                stroke="#6B7280"
+                tickFormatter={formatDate}
+                stroke="#6b7280"
                 style={{ fontSize: '12px' }}
-                tickFormatter={(value) => {
-                  const date = new Date(value);
-                  return `${date.getMonth() + 1}/${date.getDate()}`;
-                }}
               />
-              <YAxis stroke="#6B7280" style={{ fontSize: '12px' }} tickFormatter={formatNumber} />
+              <YAxis
+                yAxisId="left"
+                stroke="#6b7280"
+                style={{ fontSize: '12px' }}
+                tickFormatter={formatNumber}
+              />
+              <YAxis
+                yAxisId="right"
+                orientation="right"
+                stroke="#6b7280"
+                style={{ fontSize: '12px' }}
+                tickFormatter={formatNumber}
+              />
               <Tooltip content={<CustomTooltip />} />
-              <Legend
-                wrapperStyle={{ paddingTop: '20px' }}
-                iconType="line"
-                formatter={(value) => <span className="text-sm font-medium">{value}</span>}
-              />
+              <Legend />
               <Line
+                yAxisId="left"
                 type="monotone"
-                dataKey="sessions"
+                dataKey="clicks"
                 stroke="#3B82F6"
                 strokeWidth={2}
                 dot={false}
-                name="Sessions"
-                activeDot={{ r: 6 }}
+                name="Clicks"
               />
               <Line
+                yAxisId="right"
                 type="monotone"
-                dataKey="users"
+                dataKey="impressions"
                 stroke="#10B981"
                 strokeWidth={2}
                 dot={false}
-                name="Users"
-                activeDot={{ r: 6 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="pageviews"
-                stroke="#F59E0B"
-                strokeWidth={2}
-                dot={false}
-                name="Pageviews"
-                activeDot={{ r: 6 }}
+                name="Impressions"
               />
             </LineChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      <div>
-        <h3 className="text-xl font-bold text-gray-900 mb-6">Traffic Sources Breakdown</h3>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-            <ResponsiveContainer width="100%" height={350}>
-              <PieChart>
-                <Pie
-                  data={data.trafficSources}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={renderCustomLabel}
-                  outerRadius={120}
-                  fill="#8884d8"
-                  dataKey="value"
-                >
-                  {data.trafficSources.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip content={<CustomPieTooltip />} />
-              </PieChart>
+      {/* Time Series Chart - CTR & Position */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">CTR Trend</h3>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <ResponsiveContainer width="100%" height={250}>
+              <LineChart data={data.timeSeriesData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis
+                  dataKey="date"
+                  tickFormatter={formatDate}
+                  stroke="#6b7280"
+                  style={{ fontSize: '12px' }}
+                />
+                <YAxis
+                  stroke="#6b7280"
+                  style={{ fontSize: '12px' }}
+                  tickFormatter={(value) => formatPercentage(value)}
+                />
+                <Tooltip content={<CustomTooltip />} />
+                <Line
+                  type="monotone"
+                  dataKey="ctr"
+                  stroke="#F59E0B"
+                  strokeWidth={2}
+                  dot={false}
+                  name="CTR"
+                />
+              </LineChart>
             </ResponsiveContainer>
           </div>
+        </div>
 
-          <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-            <div className="space-y-4">
-              {data.trafficSources.map((source, index) => (
-                <div key={index} className="flex items-center justify-between">
-                  <div className="flex items-center">
-                    <div
-                      className="w-4 h-4 rounded mr-3"
-                      style={{ backgroundColor: COLORS[index % COLORS.length] }}
-                    ></div>
-                    <span className="text-sm font-medium text-gray-900">{source.name}</span>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-sm font-bold text-gray-900">
-                      {formatNumber(source.value)}
-                    </div>
-                    <div className="text-xs text-gray-600">{source.percentage.toFixed(1)}%</div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Average Position</h3>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <ResponsiveContainer width="100%" height={250}>
+              <LineChart data={data.timeSeriesData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis
+                  dataKey="date"
+                  tickFormatter={formatDate}
+                  stroke="#6b7280"
+                  style={{ fontSize: '12px' }}
+                />
+                <YAxis
+                  reversed
+                  stroke="#6b7280"
+                  style={{ fontSize: '12px' }}
+                  tickFormatter={(value) => value.toFixed(1)}
+                />
+                <Tooltip content={<CustomTooltip />} />
+                <Line
+                  type="monotone"
+                  dataKey="position"
+                  stroke="#8B5CF6"
+                  strokeWidth={2}
+                  dot={false}
+                  name="Position"
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      {/* Change Points */}
+      {data.changePoints && data.changePoints.length > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 mb-8">
+          <h3 className="text-lg font-semibold text-gray-900 mb-3">Detected Change Points</h3>
+          <div className="space-y-3">
+            {data.changePoints.map((changePoint, index) => (
+              <div
+                key={index}
+                className="flex items-center justify-between bg-white rounded p-3 border border-yellow-300"
+              >
+                <div className="flex items-center space-x-4">
+                  {changePoint.direction === 'drop' ? (
+                    <TrendingDown className="w-5 h-5 text-red-600" />
+                  ) : (
+                    <TrendingUp className="w-5 h-5 text-green-600" />
+                  )}
+                  <div>
+                    <p className="font-semibold text-gray-900">
+                      {formatFullDate(changePoint.date)}
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      {changePoint.direction === 'drop' ? 'Traffic drop' : 'Traffic increase'}{' '}
+                      detected
+                    </p>
                   </div>
                 </div>
-              ))}
-            </div>
-
-            <div className="mt-6 pt-6 border-t border-gray-300">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-bold text-gray-900">Total Sessions</span>
-                <span className="text-sm font-bold text-gray-900">
-                  {formatNumber(
-                    data.trafficSources.reduce((sum, source) => sum + source.value, 0)
-                  )}
-                </span>
+                <div className="text-right">
+                  <p
+                    className={`text-lg font-bold ${
+                      changePoint.magnitude < 0 ? 'text-red-600' : 'text-green-600'
+                    }`}
+                  >
+                    {changePoint.magnitude > 0 ? '+' : ''}
+                    {formatPercentage(changePoint.magnitude * 100)}
+                  </p>
+                </div>
               </div>
-            </div>
+            ))}
           </div>
         </div>
-      </div>
+      )}
 
-      <div className="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-        <div className="flex items-start">
-          <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5 mr-3 flex-shrink-0" />
-          <div className="text-sm text-blue-900">
-            <p className="font-medium mb-1">Analysis Summary</p>
-            <p>
-              This module provides a foundational overview of your site's traffic patterns.{' '}
-              {data.metrics.totalSessions.trend === 'up'
-                ? 'Your traffic is growing, which is a positive signal.'
-                : data.metrics.totalSessions.trend === 'down'
-                ? 'Your traffic is declining, which warrants investigation in subsequent modules.'
-                : 'Your traffic is stable.'}{' '}
-              The time series data reveals patterns and trends that will be analyzed in depth in
-              Module 1 (Health & Trajectory). Traffic source distribution helps identify dependency
-              risks and opportunities for diversification.
-            </p>
+      {/* Forecast */}
+      {data.forecast && (
+        <div className="bg-purple-50 border border-purple-200 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Traffic Forecast</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {data.forecast['30d'] && (
+              <div className="bg-white rounded-lg p-4 border border-purple-300">
+                <p className="text-sm text-gray-600 mb-1">30 Days</p>
+                <p className="text-2xl font-bold text-gray-900">
+                  {formatNumber(data.forecast['30d'].clicks)} clicks
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Range: {formatNumber(data.forecast['30d'].ci_low)} -{' '}
+                  {formatNumber(data.forecast['30d'].ci_high)}
+                </p>
+              </div>
+            )}
+            {data.forecast['60d'] && (
+              <div className="bg-white rounded-lg p-4 border border-purple-300">
+                <p className="text-sm text-gray-600 mb-1">60 Days</p>
+                <p className="text-2xl font-bold text-gray-900">
+                  {formatNumber(data.forecast['60d'].clicks)} clicks
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Range: {formatNumber(data.forecast['60d'].ci_low)} -{' '}
+                  {formatNumber(data.forecast['60d'].ci_high)}
+                </p>
+              </div>
+            )}
+            {data.forecast['90d'] && (
+              <div className="bg-white rounded-lg p-4 border border-purple-300">
+                <p className="text-sm text-gray-600 mb-1">90 Days</p>
+                <p className="text-2xl font-bold text-gray-900">
+                  {formatNumber(data.forecast['90d'].clicks)} clicks
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Range: {formatNumber(data.forecast['90d'].ci_low)} -{' '}
+                  {formatNumber(data.forecast['90d'].ci_high)}
+                </p>
+              </div>
+            )}
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
