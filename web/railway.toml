@@ -2,11 +2,10 @@
 builder = "DOCKERFILE"
 dockerfilePath = "web/Dockerfile"
 
-# Build context must be repo root so COPY web/ works
-# Railway sets this automatically when dockerfilePath is specified
+# Build context is repo root so COPY web/ works in the Dockerfile
 
 [deploy]
-startCommand = "npm start"
+startCommand = "npx next start -p $PORT"
 healthcheckPath = "/"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
