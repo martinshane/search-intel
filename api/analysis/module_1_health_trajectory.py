@@ -9,7 +9,9 @@ Analyzes overall site health using GSC time series data:
 - Health scoring based on trajectory direction and volatility
 
 Input: DataFrame with columns [date, clicks, impressions, ctr, position]
-Output: Dict with trend, seasonality, change_points, anomalies, projection, health_score
+Output: Dict with trend, seasonality, change_points, anomalies, projection, health_score,
+        plus spec-compliant top-level keys (overall_direction, trend_slope_pct_per_month,
+        forecast, forecast_chart_data) consumed by the frontend.
 """
 
 import logging
@@ -28,18 +30,21 @@ def analyze_health_trajectory(df: pd.DataFrame) -> Dict[str, Any]:
 
     Args:
         df: DataFrame with columns [date, clicks, impressions, ctr, position].
-            Must have at least 30 rows for meaningful analysis.
+            Must have at least 14 rows for meaningful analysis.
 
     Returns:
-        Dict containing:
-            - summary: human-readable summary string
-            - health_score: 0-100 overall health score
-            - trend: dict with direction, slope, r_squared
-            - seasonality: dict with weekly/monthly patterns detected
-            - change_points: list of dicts with date, metric, direction
-            - anomalies: list of dicts with date, metric, value, z_score
-            - projection: dict with next_30d forecast values
-            - metrics_summary: dict with current vs prior period comparisons
+        Dict containing both the detailed nested structure *and* spec-compliant
+        top-level keys that the frontend directly renders:
+
+        Nested (internal):
+            - trend, seasonality, change_points, anomalies, projection,
+              metrics_summary, health_score, summary
+
+        Top-level (spec / frontend):
+            - overall_direction: "growing" | "declining" | "flat"
+            - trend_slope_pct_per_month: float
+            - forecast: {30d: {clicks, ci_low, ci_high}, 60d: ..., 90d: ...}
+            - forecast_chart_data: [{date, actual?, forecast?, ci_low?, ci_high?}]
     """
     results: Dict[str, Any] = {}
 
@@ -56,6 +61,11 @@ def analyze_health_trajectory(df: pd.DataFrame) -> Dict[str, Any]:
                 "anomalies": [],
                 "projection": None,
                 "metrics_summary": None,
+                # Spec-compliant top-level keys
+                "overall_direction": "unknown",
+                "trend_slope_pct_per_month": 0,
+                "forecast": {},
+                "forecast_chart_data": [],
             }
 
         # 1. Metrics summary (current 30d vs prior 30d)
@@ -73,8 +83,8 @@ def analyze_health_trajectory(df: pd.DataFrame) -> Dict[str, Any]:
         # 5. Anomaly detection
         results["anomalies"] = _detect_anomalies(df)
 
-        # 6. Forward projection (simple)
-        results["projection"] = _project_forward(df)
+        # 6. Forward projection (90 days for full forecast)
+        results["projection"] = _project_forward(df, days=90)
 
         # 7. Health score
         results["health_score"] = _compute_health_score(results)
@@ -82,12 +92,180 @@ def analyze_health_trajectory(df: pd.DataFrame) -> Dict[str, Any]:
         # 8. Human-readable summary
         results["summary"] = _generate_summary(results)
 
+        # 9. Add spec-compliant top-level keys for the frontend
+        _add_frontend_keys(results, df)
+
     except Exception as e:
         logger.error(f"Health trajectory analysis failed: {e}", exc_info=True)
         results["summary"] = f"Analysis encountered an error: {str(e)}"
         results["health_score"] = None
+        results.setdefault("overall_direction", "unknown")
+        results.setdefault("trend_slope_pct_per_month", 0)
+        results.setdefault("forecast", {})
+        results.setdefault("forecast_chart_data", [])
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Spec / frontend normalisation
+# ---------------------------------------------------------------------------
+
+def _add_frontend_keys(results: Dict[str, Any], df: pd.DataFrame) -> None:
+    """
+    Populate the spec-compliant top-level keys that the frontend reads.
+
+    This bridges the gap between the module's internal nested structure
+    (trend.direction, projection.forecast, seasonality.peak_day, …) and
+    the flat keys the React report page expects (overall_direction,
+    forecast_chart_data, seasonality.best_day, …).
+    """
+    trend = results.get("trend") or {}
+    projection = results.get("projection") or {}
+    seasonality = results.get("seasonality") or {}
+
+    # --- overall_direction ---
+    results["overall_direction"] = trend.get("direction", "flat")
+
+    # --- trend_slope_pct_per_month ---
+    # slope is in clicks/day; convert to % per month relative to average
+    daily_slope = trend.get("slope", 0.0)
+    avg_daily = float(df["clicks"].mean()) if len(df) > 0 and df["clicks"].mean() > 0 else 1.0
+    results["trend_slope_pct_per_month"] = round(daily_slope * 30 / avg_daily * 100, 1)
+
+    # --- forecast (spec format: {30d, 60d, 90d}) ---
+    forecast_list = projection.get("forecast", [])
+    # The projection now returns up to 90 days of forecast data.
+    # Build the 30d/60d/90d aggregates from the raw forecast list.
+    results["forecast"] = _build_forecast_buckets(projection, forecast_list)
+
+    # --- forecast_chart_data (for the Recharts LineChart) ---
+    results["forecast_chart_data"] = _build_forecast_chart_data(df, projection)
+
+    # --- Seasonality aliases (frontend reads best_day / worst_day) ---
+    if seasonality:
+        seasonality["best_day"] = seasonality.get("best_day") or seasonality.get("peak_day")
+        seasonality["worst_day"] = seasonality.get("worst_day") or seasonality.get("trough_day")
+        # Add a human-readable cycle description if weekly pattern exists
+        if seasonality.get("weekly_pattern") and not seasonality.get("cycle_description"):
+            peak = seasonality.get("best_day", "")
+            trough = seasonality.get("worst_day", "")
+            cv = seasonality.get("variation_coefficient", 0)
+            if peak and trough:
+                pct = round(cv * 100, 0)
+                seasonality["cycle_description"] = (
+                    f"Weekly traffic varies ~{pct}% across days. "
+                    f"{peak} is the peak day; {trough} is the quietest."
+                )
+
+    # --- Change-point direction normalisation ---
+    # The frontend checks for "drop" but the module emits "down".
+    # Also, the frontend does `magnitude * 100` expecting a 0-1 fraction,
+    # but the module emits absolute click deltas.  Convert to a fraction
+    # relative to the before-period average so the frontend shows a
+    # sensible percentage.
+    for cp in results.get("change_points", []):
+        if cp.get("direction") == "down":
+            cp["direction"] = "drop"
+        elif cp.get("direction") == "up":
+            cp["direction"] = "rise"
+        # Convert absolute magnitude to a fraction (0-1)
+        before_avg = cp.get("before_avg", 0)
+        if before_avg and before_avg > 0:
+            cp["magnitude"] = round(cp.get("magnitude", 0) / before_avg, 3)
+        else:
+            cp["magnitude"] = 0
+
+
+def _build_forecast_buckets(
+    projection: Dict[str, Any],
+    forecast_list: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, float]]:
+    """
+    Build the spec-compliant forecast buckets {30d, 60d, 90d} from the
+    daily forecast array.
+
+    Each bucket contains:
+      - clicks: total projected clicks for the period
+      - ci_low: ~85% lower bound (simple heuristic: forecast * 0.85)
+      - ci_high: ~115% upper bound (simple heuristic: forecast * 1.15)
+    """
+    buckets: Dict[str, Dict[str, float]] = {}
+
+    total_forecast = projection.get("forecast_total_clicks", 0)
+    forecast_days = projection.get("forecast_days", 30)
+
+    if forecast_days <= 0 or total_forecast <= 0:
+        return buckets
+
+    # If we have the full daily list, compute actual sums
+    if forecast_list:
+        for period_label, end_day in [("30d", 30), ("60d", 60), ("90d", 90)]:
+            subset = forecast_list[:end_day]
+            if not subset:
+                continue
+            total = sum(f.get("predicted_clicks", 0) for f in subset)
+            buckets[period_label] = {
+                "clicks": round(total),
+                "ci_low": round(total * 0.85),
+                "ci_high": round(total * 1.15),
+            }
+    else:
+        # Fallback: extrapolate from total_forecast (which covers forecast_days)
+        daily_avg = total_forecast / forecast_days
+        for period_label, days in [("30d", 30), ("60d", 60), ("90d", 90)]:
+            total = round(daily_avg * days)
+            buckets[period_label] = {
+                "clicks": total,
+                "ci_low": round(total * 0.85),
+                "ci_high": round(total * 1.15),
+            }
+
+    return buckets
+
+
+def _build_forecast_chart_data(
+    df: pd.DataFrame,
+    projection: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Build the chart-ready array for the frontend's Recharts LineChart.
+
+    Returns a list of dicts, each with:
+      - date: "YYYY-MM-DD"
+      - actual: float | None  (historical clicks)
+      - forecast: float | None  (projected clicks)
+      - ci_low: float | None
+      - ci_high: float | None
+
+    Historical rows have actual set; forecast rows have forecast/ci set.
+    """
+    chart_data: List[Dict[str, Any]] = []
+
+    # Last 60 days of actuals (keeps chart readable)
+    recent = df.tail(60).copy()
+    for _, row in recent.iterrows():
+        chart_data.append({
+            "date": row["date"].strftime("%Y-%m-%d"),
+            "actual": round(float(row["clicks"]), 0),
+            "forecast": None,
+            "ci_low": None,
+            "ci_high": None,
+        })
+
+    # Forecast rows
+    forecast_list = projection.get("forecast", [])
+    for entry in forecast_list:
+        predicted = entry.get("predicted_clicks", 0)
+        chart_data.append({
+            "date": entry.get("date", ""),
+            "actual": None,
+            "forecast": round(predicted, 0),
+            "ci_low": round(predicted * 0.85, 0),
+            "ci_high": round(predicted * 1.15, 0),
+        })
+
+    return chart_data
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +337,7 @@ def _compute_trend(df: pd.DataFrame) -> Dict[str, Any]:
     x = np.arange(len(y), dtype=float)
 
     if len(x) < 2 or np.std(y) == 0:
-        return {"direction": "flat", "slope": 0.0, "r_squared": 0.0}
+        return {"direction": "flat", "slope": 0.0, "r_squared": 0.0, "daily_trend_clicks": 0.0}
 
     coeffs = np.polyfit(x, y, 1)
     slope = float(coeffs[0])
@@ -208,12 +386,18 @@ def _detect_seasonality(df: pd.DataFrame) -> Dict[str, Any]:
         day_names[i]: round(float(dow_means.get(i, 0)), 1) for i in range(7)
     }
 
+    peak = day_names[int(dow_means.idxmax())] if has_weekly else None
+    trough = day_names[int(dow_means.idxmin())] if has_weekly else None
+
     return {
         "weekly_pattern": has_weekly,
         "variation_coefficient": round(cv, 3),
         "day_of_week_index": day_of_week_index,
-        "peak_day": day_names[int(dow_means.idxmax())] if has_weekly else None,
-        "trough_day": day_names[int(dow_means.idxmin())] if has_weekly else None,
+        "peak_day": peak,
+        "trough_day": trough,
+        # Aliases for the frontend
+        "best_day": peak,
+        "worst_day": trough,
     }
 
 
@@ -242,14 +426,16 @@ def _detect_change_points(df: pd.DataFrame) -> List[Dict[str, Any]]:
             bp_date = df.iloc[bp]["date"]
             before_mean = float(signal[max(0, bp - 7):bp].mean())
             after_mean = float(signal[bp:min(len(signal), bp + 7)].mean())
-            direction = "up" if after_mean > before_mean else "down"
-            magnitude = round(abs(after_mean - before_mean), 1)
+            raw_direction = "rise" if after_mean > before_mean else "drop"
+            abs_magnitude = abs(after_mean - before_mean)
+            # Express magnitude as a fraction of before_mean (frontend does * 100)
+            frac_magnitude = round(abs_magnitude / before_mean, 3) if before_mean > 0 else 0
 
             change_points.append({
                 "date": bp_date.strftime("%Y-%m-%d"),
                 "metric": "clicks",
-                "direction": direction,
-                "magnitude": magnitude,
+                "direction": raw_direction,
+                "magnitude": frac_magnitude,
                 "before_avg": round(before_mean, 1),
                 "after_avg": round(after_mean, 1),
             })
@@ -266,11 +452,14 @@ def _detect_change_points(df: pd.DataFrame) -> List[Dict[str, Any]]:
                 shifts = diff[diff.abs() > threshold]
                 for idx in shifts.index:
                     row = df.iloc[idx]
+                    shift_val = float(shifts[idx])
+                    rolling_val = float(rolling.iloc[idx]) if idx < len(rolling) else 1.0
+                    frac = round(abs(shift_val) / rolling_val, 3) if rolling_val > 0 else 0
                     change_points.append({
                         "date": row["date"].strftime("%Y-%m-%d"),
                         "metric": "clicks",
-                        "direction": "up" if float(shifts[idx]) > 0 else "down",
-                        "magnitude": round(abs(float(shifts[idx])), 1),
+                        "direction": "rise" if shift_val > 0 else "drop",
+                        "magnitude": frac,
                     })
 
     except Exception as e:
@@ -319,8 +508,14 @@ def _detect_anomalies(df: pd.DataFrame) -> List[Dict[str, Any]]:
     return anomalies[:20]
 
 
-def _project_forward(df: pd.DataFrame, days: int = 30) -> Dict[str, Any]:
-    """Project clicks forward using linear trend + weekly seasonality."""
+def _project_forward(df: pd.DataFrame, days: int = 90) -> Dict[str, Any]:
+    """
+    Project clicks forward using linear trend + weekly seasonality.
+
+    Now defaults to 90 days (was 30) so the spec-compliant forecast
+    buckets (30d / 60d / 90d) can all be populated from actual data
+    rather than extrapolation.
+    """
     if len(df) < 14:
         return {"forecast": [], "method": "insufficient_data"}
 
@@ -361,14 +556,14 @@ def _project_forward(df: pd.DataFrame, days: int = 30) -> Dict[str, Any]:
         "forecast_total_clicks": round(total_forecast, 0),
         "current_30d_clicks": round(current_30d, 0),
         "projected_change_pct": round((total_forecast - current_30d) / current_30d * 100, 1) if current_30d > 0 else None,
-        "forecast": forecast[:7],  # Only include first 7 days in response (keep it light)
+        "forecast": forecast,  # Full daily forecast (up to 90 days)
     }
 
 
 def _compute_health_score(results: Dict[str, Any]) -> int:
     """
     Compute a 0-100 health score based on trend, anomalies, and change points.
-    
+
     Scoring breakdown:
     - Trend direction: 40 points (growing=40, flat=25, declining=10)
     - Trend fit (R²): 15 points
@@ -418,7 +613,7 @@ def _compute_health_score(results: Dict[str, Any]) -> int:
 
     # Change points penalty (10 pts)
     cps = results.get("change_points", [])
-    negative_cps = [cp for cp in cps if cp.get("direction") == "down"]
+    negative_cps = [cp for cp in cps if cp.get("direction") in ("down", "drop")]
     if len(negative_cps) == 0:
         score += 10
     elif len(negative_cps) <= 2:
