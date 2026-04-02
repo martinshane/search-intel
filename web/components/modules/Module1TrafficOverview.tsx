@@ -15,8 +15,9 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
+  ComposedChart,
 } from 'recharts';
-import { TrendingUp, TrendingDown, Minus, AlertCircle, Calendar, Activity, Monitor, Globe } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, AlertCircle, Calendar, Activity, Monitor, Globe, Eye, MousePointerClick, Target, Search } from 'lucide-react';
 
 interface TimeSeriesDataPoint {
   date: string;
@@ -24,6 +25,8 @@ interface TimeSeriesDataPoint {
   impressions: number;
   ctr: number;
   position: number;
+  sessions?: number;
+  users?: number;
 }
 
 interface Forecast {
@@ -49,6 +52,7 @@ interface Anomaly {
   date: string;
   type: 'discord' | 'motif';
   magnitude: number;
+  description?: string;
 }
 
 interface Summary {
@@ -102,7 +106,7 @@ interface Module1TrafficOverviewProps {
   reportId: string;
 }
 
-const DEVICE_COLORS = {
+const DEVICE_COLORS: { [key: string]: string } = {
   desktop: '#3b82f6',
   mobile: '#10b981',
   tablet: '#f59e0b',
@@ -119,11 +123,73 @@ const SOURCE_COLORS = [
   '#84cc16',
 ];
 
+const directionConfig = {
+  strong_growth: {
+    label: 'Strong Growth',
+    color: 'text-green-600',
+    bgColor: 'bg-green-50',
+    icon: TrendingUp,
+    borderColor: 'border-green-200',
+  },
+  growth: {
+    label: 'Growth',
+    color: 'text-green-600',
+    bgColor: 'bg-green-50',
+    icon: TrendingUp,
+    borderColor: 'border-green-200',
+  },
+  flat: {
+    label: 'Stable',
+    color: 'text-gray-600',
+    bgColor: 'bg-gray-50',
+    icon: Minus,
+    borderColor: 'border-gray-200',
+  },
+  decline: {
+    label: 'Declining',
+    color: 'text-orange-600',
+    bgColor: 'bg-orange-50',
+    icon: TrendingDown,
+    borderColor: 'border-orange-200',
+  },
+  strong_decline: {
+    label: 'Strong Decline',
+    color: 'text-red-600',
+    bgColor: 'bg-red-50',
+    icon: TrendingDown,
+    borderColor: 'border-red-200',
+  },
+};
+
+const formatNumber = (num: number): string => {
+  if (num >= 1000000) {
+    return (num / 1000000).toFixed(1) + 'M';
+  }
+  if (num >= 1000) {
+    return (num / 1000).toFixed(1) + 'K';
+  }
+  return num.toFixed(0);
+};
+
+const formatPercent = (num: number): string => {
+  return (num * 100).toFixed(2) + '%';
+};
+
+const formatPosition = (num: number): string => {
+  return num.toFixed(1);
+};
+
+const formatDate = (dateStr: string): string => {
+  const date = new Date(dateStr);
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
 const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportId }) => {
   const [module1, setModule1] = useState<Module1Data | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [chartView, setChartView] = useState<'clicks' | 'impressions' | 'ctr' | 'position'>('clicks');
+  const [comparisonView, setComparisonView] = useState<'separate' | 'overlay'>('separate');
 
   useEffect(() => {
     const fetchData = async () => {
@@ -139,305 +205,196 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
         const data = await response.json();
         setModule1(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : 'Failed to load module data');
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
+    if (reportId) {
+      fetchData();
+    }
   }, [reportId]);
-
-  const formatNumber = (num: number): string => {
-    if (num >= 1000000) {
-      return (num / 1000000).toFixed(1) + 'M';
-    }
-    if (num >= 1000) {
-      return (num / 1000).toFixed(1) + 'K';
-    }
-    return num.toFixed(0);
-  };
-
-  const formatPercent = (num: number): string => {
-    return (num * 100).toFixed(2) + '%';
-  };
-
-  const formatPosition = (num: number): string => {
-    return num.toFixed(1);
-  };
-
-  const getTrendIcon = (direction: string) => {
-    switch (direction) {
-      case 'strong_growth':
-      case 'growth':
-        return <TrendingUp className="w-5 h-5 text-green-500" />;
-      case 'strong_decline':
-      case 'decline':
-        return <TrendingDown className="w-5 h-5 text-red-500" />;
-      case 'flat':
-      default:
-        return <Minus className="w-5 h-5 text-gray-500" />;
-    }
-  };
-
-  const getTrendColor = (direction: string): string => {
-    switch (direction) {
-      case 'strong_growth':
-      case 'growth':
-        return 'text-green-600';
-      case 'strong_decline':
-      case 'decline':
-        return 'text-red-600';
-      case 'flat':
-      default:
-        return 'text-gray-600';
-    }
-  };
-
-  const getTrendLabel = (direction: string): string => {
-    switch (direction) {
-      case 'strong_growth':
-        return 'Strong Growth';
-      case 'growth':
-        return 'Growth';
-      case 'flat':
-        return 'Flat';
-      case 'decline':
-        return 'Decline';
-      case 'strong_decline':
-        return 'Strong Decline';
-      default:
-        return 'Unknown';
-    }
-  };
-
-  const getChangeColor = (change: number): string => {
-    if (change > 0) return 'text-green-600';
-    if (change < 0) return 'text-red-600';
-    return 'text-gray-600';
-  };
-
-  const getChartData = () => {
-    if (!module1?.traffic_overview?.timeseries) return [];
-    
-    return module1.traffic_overview.timeseries.map(point => ({
-      ...point,
-      date: new Date(point.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-    }));
-  };
-
-  const getChartDataKey = (): string => {
-    return chartView;
-  };
-
-  const getChartLabel = (): string => {
-    switch (chartView) {
-      case 'clicks':
-        return 'Clicks';
-      case 'impressions':
-        return 'Impressions';
-      case 'ctr':
-        return 'CTR';
-      case 'position':
-        return 'Avg Position';
-      default:
-        return '';
-    }
-  };
-
-  const formatChartValue = (value: number): string => {
-    switch (chartView) {
-      case 'clicks':
-      case 'impressions':
-        return formatNumber(value);
-      case 'ctr':
-        return formatPercent(value);
-      case 'position':
-        return formatPosition(value);
-      default:
-        return value.toString();
-    }
-  };
 
   if (loading) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-8">
-        <div className="animate-pulse">
-          <div className="h-8 bg-gray-200 rounded w-1/3 mb-6"></div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            {[1, 2, 3].map(i => (
-              <div key={i} className="h-32 bg-gray-200 rounded"></div>
-            ))}
-          </div>
-          <div className="h-96 bg-gray-200 rounded mb-8"></div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="h-64 bg-gray-200 rounded"></div>
-            <div className="h-64 bg-gray-200 rounded"></div>
-          </div>
+      <div className="flex items-center justify-center py-16">
+        <div className="flex items-center space-x-3">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+          <span className="text-gray-600">Loading traffic overview...</span>
         </div>
       </div>
     );
   }
 
-  if (error || !module1) {
+  if (error) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-8">
-        <div className="flex items-center gap-3 text-red-600">
-          <AlertCircle className="w-6 h-6" />
+      <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+        <div className="flex items-start space-x-3">
+          <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
           <div>
-            <h3 className="font-semibold text-lg">Error Loading Data</h3>
-            <p className="text-sm text-gray-600">{error || 'Module data not available'}</p>
+            <h3 className="text-red-800 font-semibold mb-1">Error Loading Data</h3>
+            <p className="text-red-700">{error}</p>
           </div>
         </div>
       </div>
     );
   }
 
-  const chartData = getChartData();
-  const summary = module1.traffic_overview?.summary;
+  if (!module1) {
+    return (
+      <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 text-center">
+        <p className="text-gray-600">No data available</p>
+      </div>
+    );
+  }
+
+  const directionInfo = directionConfig[module1.overall_direction];
+  const DirectionIcon = directionInfo.icon;
+
+  const summary = module1.traffic_overview.summary;
+  const timeseries = module1.traffic_overview.timeseries;
+
+  // Prepare chart data with both GSC and GA4 metrics
+  const chartData = timeseries.map(point => ({
+    date: formatDate(point.date),
+    fullDate: point.date,
+    clicks: point.clicks,
+    impressions: point.impressions,
+    ctr: point.ctr * 100, // Convert to percentage
+    position: point.position,
+    sessions: point.sessions || 0,
+    users: point.users || 0,
+  }));
+
+  // Get last 30 days for comparison
+  const last30Days = timeseries.slice(-30);
+  const previous30Days = timeseries.slice(-60, -30);
+
+  const avg30DayClicks = last30Days.reduce((sum, d) => sum + d.clicks, 0) / last30Days.length;
+  const avgPrevious30DayClicks = previous30Days.length > 0 
+    ? previous30Days.reduce((sum, d) => sum + d.clicks, 0) / previous30Days.length 
+    : avg30DayClicks;
+
+  const clicksChange30d = avgPrevious30DayClicks > 0 
+    ? ((avg30DayClicks - avgPrevious30DayClicks) / avgPrevious30DayClicks) * 100 
+    : 0;
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-8">
-      {/* Header */}
-      <div className="mb-8">
-        <h2 className="text-3xl font-bold text-gray-900 mb-2">Traffic Overview & Health</h2>
-        <p className="text-gray-600">
-          Comprehensive analysis of your search traffic trends, trajectory, and performance metrics
-        </p>
-      </div>
-
-      {/* Overall Direction Card */}
-      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-6 mb-8 border border-blue-200">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            {getTrendIcon(module1.overall_direction)}
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">Overall Trajectory</h3>
-              <p className={`text-2xl font-bold ${getTrendColor(module1.overall_direction)}`}>
-                {getTrendLabel(module1.overall_direction)}
-              </p>
-            </div>
-          </div>
-          <div className="text-right">
-            <p className="text-sm text-gray-600">Monthly Trend</p>
-            <p className={`text-2xl font-bold ${getChangeColor(module1.trend_slope_pct_per_month)}`}>
-              {module1.trend_slope_pct_per_month > 0 ? '+' : ''}
-              {module1.trend_slope_pct_per_month.toFixed(1)}%
+    <div className="space-y-8">
+      {/* Header Section */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="flex items-start justify-between mb-6">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">Traffic Health & Trajectory</h2>
+            <p className="text-gray-600">
+              Comprehensive overview of your search and site traffic performance over the past 16 months
             </p>
           </div>
+          <div className={`flex items-center space-x-2 px-4 py-2 rounded-lg ${directionInfo.bgColor} ${directionInfo.borderColor} border`}>
+            <DirectionIcon className={`w-5 h-5 ${directionInfo.color}`} />
+            <span className={`font-semibold ${directionInfo.color}`}>{directionInfo.label}</span>
+          </div>
+        </div>
+
+        {/* Trend Summary */}
+        <div className={`border-l-4 ${directionInfo.borderColor} bg-gray-50 p-4 rounded-r-lg`}>
+          <p className="text-gray-900 leading-relaxed">
+            Your site is currently <span className={`font-semibold ${directionInfo.color}`}>
+              {module1.overall_direction.replace('_', ' ')}
+            </span> at a rate of{' '}
+            <span className="font-semibold">{module1.trend_slope_pct_per_month.toFixed(2)}%</span> per month.
+            {module1.change_points.length > 0 && (
+              <> We detected <span className="font-semibold">{module1.change_points.length}</span> significant 
+              change point{module1.change_points.length > 1 ? 's' : ''} in your traffic pattern.</>
+            )}
+          </p>
         </div>
       </div>
 
-      {/* Summary Metrics Cards */}
-      {summary && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          {/* Total Sessions */}
-          {module1.total_sessions !== undefined && (
-            <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-              <div className="flex items-center gap-3 mb-2">
-                <Activity className="w-5 h-5 text-blue-600" />
-                <h3 className="text-sm font-medium text-gray-600">Total Sessions</h3>
-              </div>
-              <p className="text-3xl font-bold text-gray-900">{formatNumber(module1.total_sessions)}</p>
-            </div>
+      {/* Key Metrics Cards - GSC Metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <MetricCard
+          title="Total Clicks"
+          value={formatNumber(summary.total_clicks)}
+          change={summary.clicks_change_pct}
+          icon={MousePointerClick}
+          iconColor="text-blue-600"
+          iconBg="bg-blue-50"
+        />
+        <MetricCard
+          title="Total Impressions"
+          value={formatNumber(summary.total_impressions)}
+          change={summary.impressions_change_pct}
+          icon={Eye}
+          iconColor="text-purple-600"
+          iconBg="bg-purple-50"
+        />
+        <MetricCard
+          title="Average CTR"
+          value={formatPercent(summary.avg_ctr)}
+          change={summary.ctr_change_pct}
+          icon={Target}
+          iconColor="text-green-600"
+          iconBg="bg-green-50"
+          isPercentage
+        />
+        <MetricCard
+          title="Average Position"
+          value={formatPosition(summary.avg_position)}
+          change={-summary.position_change} // Negative because lower position is better
+          icon={Search}
+          iconColor="text-orange-600"
+          iconBg="bg-orange-50"
+          inverse
+        />
+      </div>
+
+      {/* GA4 Metrics Cards (if available) */}
+      {(module1.total_sessions || module1.total_users) && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {module1.total_sessions && (
+            <MetricCard
+              title="Total Sessions"
+              value={formatNumber(module1.total_sessions)}
+              icon={Activity}
+              iconColor="text-indigo-600"
+              iconBg="bg-indigo-50"
+            />
           )}
-
-          {/* Total Users */}
-          {module1.total_users !== undefined && (
-            <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-              <div className="flex items-center gap-3 mb-2">
-                <Globe className="w-5 h-5 text-green-600" />
-                <h3 className="text-sm font-medium text-gray-600">Total Users</h3>
-              </div>
-              <p className="text-3xl font-bold text-gray-900">{formatNumber(module1.total_users)}</p>
-            </div>
+          {module1.total_users && (
+            <MetricCard
+              title="Total Users"
+              value={formatNumber(module1.total_users)}
+              icon={Globe}
+              iconColor="text-cyan-600"
+              iconBg="bg-cyan-50"
+            />
           )}
-
-          {/* Total Pageviews */}
-          {module1.total_pageviews !== undefined && (
-            <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-              <div className="flex items-center gap-3 mb-2">
-                <Monitor className="w-5 h-5 text-purple-600" />
-                <h3 className="text-sm font-medium text-gray-600">Total Pageviews</h3>
-              </div>
-              <p className="text-3xl font-bold text-gray-900">{formatNumber(module1.total_pageviews)}</p>
-            </div>
+          {module1.total_pageviews && (
+            <MetricCard
+              title="Total Pageviews"
+              value={formatNumber(module1.total_pageviews)}
+              icon={Eye}
+              iconColor="text-pink-600"
+              iconBg="bg-pink-50"
+            />
           )}
-
-          {/* Total Clicks */}
-          <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-            <div className="flex items-center gap-3 mb-2">
-              <Activity className="w-5 h-5 text-blue-600" />
-              <h3 className="text-sm font-medium text-gray-600">Total Clicks</h3>
-            </div>
-            <p className="text-3xl font-bold text-gray-900">{formatNumber(summary.total_clicks)}</p>
-            {summary.clicks_change_pct !== undefined && (
-              <p className={`text-sm ${getChangeColor(summary.clicks_change_pct)} mt-1`}>
-                {summary.clicks_change_pct > 0 ? '+' : ''}
-                {summary.clicks_change_pct.toFixed(1)}% vs prev period
-              </p>
-            )}
-          </div>
-
-          {/* Total Impressions */}
-          <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-            <div className="flex items-center gap-3 mb-2">
-              <Globe className="w-5 h-5 text-green-600" />
-              <h3 className="text-sm font-medium text-gray-600">Total Impressions</h3>
-            </div>
-            <p className="text-3xl font-bold text-gray-900">{formatNumber(summary.total_impressions)}</p>
-            {summary.impressions_change_pct !== undefined && (
-              <p className={`text-sm ${getChangeColor(summary.impressions_change_pct)} mt-1`}>
-                {summary.impressions_change_pct > 0 ? '+' : ''}
-                {summary.impressions_change_pct.toFixed(1)}% vs prev period
-              </p>
-            )}
-          </div>
-
-          {/* Average CTR */}
-          <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-            <div className="flex items-center gap-3 mb-2">
-              <TrendingUp className="w-5 h-5 text-purple-600" />
-              <h3 className="text-sm font-medium text-gray-600">Average CTR</h3>
-            </div>
-            <p className="text-3xl font-bold text-gray-900">{formatPercent(summary.avg_ctr)}</p>
-            {summary.ctr_change_pct !== undefined && (
-              <p className={`text-sm ${getChangeColor(summary.ctr_change_pct)} mt-1`}>
-                {summary.ctr_change_pct > 0 ? '+' : ''}
-                {summary.ctr_change_pct.toFixed(1)}% vs prev period
-              </p>
-            )}
-          </div>
-
-          {/* Average Position */}
-          <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-            <div className="flex items-center gap-3 mb-2">
-              <Calendar className="w-5 h-5 text-orange-600" />
-              <h3 className="text-sm font-medium text-gray-600">Average Position</h3>
-            </div>
-            <p className="text-3xl font-bold text-gray-900">{formatPosition(summary.avg_position)}</p>
-            {summary.position_change !== undefined && (
-              <p className={`text-sm ${getChangeColor(-summary.position_change)} mt-1`}>
-                {summary.position_change > 0 ? '+' : ''}
-                {summary.position_change.toFixed(1)} vs prev period
-              </p>
-            )}
-          </div>
         </div>
       )}
 
-      {/* Traffic Trend Chart */}
-      {chartData.length > 0 && (
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xl font-semibold text-gray-900">Traffic Trends Over Time</h3>
-            <div className="flex gap-2">
+      {/* Chart View Selector */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-lg font-semibold text-gray-900">Traffic Trends</h3>
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-1">
               <button
                 onClick={() => setChartView('clicks')}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                   chartView === 'clicks'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    ? 'bg-white text-blue-600 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
                 Clicks
@@ -446,8 +403,8 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
                 onClick={() => setChartView('impressions')}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                   chartView === 'impressions'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    ? 'bg-white text-purple-600 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
                 Impressions
@@ -456,8 +413,8 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
                 onClick={() => setChartView('ctr')}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                   chartView === 'ctr'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    ? 'bg-white text-green-600 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
                 CTR
@@ -466,307 +423,700 @@ const Module1TrafficOverview: React.FC<Module1TrafficOverviewProps> = ({ reportI
                 onClick={() => setChartView('position')}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                   chartView === 'position'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    ? 'bg-white text-orange-600 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
                 Position
               </button>
             </div>
+            {timeseries.some(d => d.sessions) && (
+              <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-1">
+                <button
+                  onClick={() => setComparisonView('separate')}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                    comparisonView === 'separate'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Separate
+                </button>
+                <button
+                  onClick={() => setComparisonView('overlay')}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                    comparisonView === 'overlay'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Overlay
+                </button>
+              </div>
+            )}
           </div>
-          <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-            <ResponsiveContainer width="100%" height={400}>
+        </div>
+
+        {/* Main Chart */}
+        <div className="h-96">
+          <ResponsiveContainer width="100%" height="100%">
+            {chartView === 'clicks' ? (
               <AreaChart data={chartData}>
                 <defs>
-                  <linearGradient id="colorMetric" x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient id="colorClicks" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
                     <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis
-                  dataKey="date"
+                <XAxis 
+                  dataKey="date" 
                   stroke="#6b7280"
                   tick={{ fontSize: 12 }}
-                  tickLine={false}
                 />
-                <YAxis
+                <YAxis 
                   stroke="#6b7280"
                   tick={{ fontSize: 12 }}
-                  tickLine={false}
-                  tickFormatter={formatChartValue}
-                  reversed={chartView === 'position'}
                 />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: '#fff',
+                    backgroundColor: 'white',
                     border: '1px solid #e5e7eb',
-                    borderRadius: '8px',
-                    padding: '12px',
+                    borderRadius: '0.5rem',
+                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
                   }}
-                  formatter={(value: number) => [formatChartValue(value), getChartLabel()]}
-                  labelStyle={{ fontWeight: 'bold', marginBottom: '8px' }}
                 />
+                <Legend />
                 <Area
                   type="monotone"
-                  dataKey={getChartDataKey()}
+                  dataKey="clicks"
                   stroke="#3b82f6"
                   strokeWidth={2}
-                  fill="url(#colorMetric)"
-                  animationDuration={1000}
+                  fill="url(#colorClicks)"
+                  name="Clicks"
+                />
+                {module1.change_points.map((cp, idx) => (
+                  <Line
+                    key={idx}
+                    type="monotone"
+                    dataKey={() => null}
+                    stroke={cp.direction === 'drop' ? '#ef4444' : '#10b981'}
+                    strokeWidth={2}
+                    strokeDasharray="5 5"
+                    dot={false}
+                  />
+                ))}
+              </AreaChart>
+            ) : chartView === 'impressions' ? (
+              <AreaChart data={chartData}>
+                <defs>
+                  <linearGradient id="colorImpressions" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis 
+                  dataKey="date" 
+                  stroke="#6b7280"
+                  tick={{ fontSize: 12 }}
+                />
+                <YAxis 
+                  stroke="#6b7280"
+                  tick={{ fontSize: 12 }}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'white',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '0.5rem',
+                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                  }}
+                />
+                <Legend />
+                <Area
+                  type="monotone"
+                  dataKey="impressions"
+                  stroke="#8b5cf6"
+                  strokeWidth={2}
+                  fill="url(#colorImpressions)"
+                  name="Impressions"
                 />
               </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-
-      {/* Device Breakdown & Traffic Sources */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-        {/* Device Breakdown */}
-        {module1.device_breakdown && module1.device_breakdown.length > 0 && (
-          <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-            <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
-              <Monitor className="w-5 h-5 text-blue-600" />
-              Device Breakdown
-            </h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={module1.device_breakdown}
-                  dataKey="sessions"
-                  nameKey="device"
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={100}
-                  label={(entry) => `${entry.device}: ${entry.percentage.toFixed(1)}%`}
-                  animationDuration={800}
-                >
-                  {module1.device_breakdown.map((entry, index) => (
-                    <Cell
-                      key={`cell-${index}`}
-                      fill={DEVICE_COLORS[entry.device.toLowerCase() as keyof typeof DEVICE_COLORS] || '#6b7280'}
-                    />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#fff',
-                    border: '1px solid #e5e7eb',
-                    borderRadius: '8px',
-                    padding: '12px',
-                  }}
-                  formatter={(value: number, name: string, entry: any) => [
-                    `${formatNumber(value)} (${entry.payload.percentage.toFixed(1)}%)`,
-                    name,
-                  ]}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="mt-4 space-y-2">
-              {module1.device_breakdown.map((device, index) => (
-                <div key={index} className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="w-3 h-3 rounded-full"
-                      style={{
-                        backgroundColor:
-                          DEVICE_COLORS[device.device.toLowerCase() as keyof typeof DEVICE_COLORS] || '#6b7280',
-                      }}
-                    ></div>
-                    <span className="font-medium text-gray-700 capitalize">{device.device}</span>
-                  </div>
-                  <span className="text-gray-900 font-semibold">{formatNumber(device.sessions)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Traffic Sources */}
-        {module1.traffic_sources && module1.traffic_sources.length > 0 && (
-          <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-            <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
-              <Globe className="w-5 h-5 text-green-600" />
-              Top Traffic Sources
-            </h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={module1.traffic_sources} layout="vertical">
+            ) : chartView === 'ctr' ? (
+              <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis
-                  type="number"
+                <XAxis 
+                  dataKey="date" 
                   stroke="#6b7280"
                   tick={{ fontSize: 12 }}
-                  tickLine={false}
-                  tickFormatter={formatNumber}
                 />
-                <YAxis
-                  type="category"
-                  dataKey="source"
+                <YAxis 
                   stroke="#6b7280"
                   tick={{ fontSize: 12 }}
-                  tickLine={false}
-                  width={100}
+                  tickFormatter={(value) => `${value.toFixed(1)}%`}
                 />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: '#fff',
+                    backgroundColor: 'white',
                     border: '1px solid #e5e7eb',
-                    borderRadius: '8px',
-                    padding: '12px',
+                    borderRadius: '0.5rem',
+                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
                   }}
-                  formatter={(value: number, name: string, entry: any) => [
-                    `${formatNumber(value)} (${entry.payload.percentage.toFixed(1)}%)`,
-                    'Sessions',
-                  ]}
+                  formatter={(value: number) => [`${value.toFixed(2)}%`, 'CTR']}
                 />
-                <Bar dataKey="sessions" radius={[0, 4, 4, 0]} animationDuration={800}>
-                  {module1.traffic_sources.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={SOURCE_COLORS[index % SOURCE_COLORS.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
+                <Legend />
+                <Line
+                  type="monotone"
+                  dataKey="ctr"
+                  stroke="#10b981"
+                  strokeWidth={2}
+                  dot={false}
+                  name="CTR (%)"
+                />
+              </LineChart>
+            ) : (
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis 
+                  dataKey="date" 
+                  stroke="#6b7280"
+                  tick={{ fontSize: 12 }}
+                />
+                <YAxis 
+                  stroke="#6b7280"
+                  tick={{ fontSize: 12 }}
+                  reversed
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'white',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '0.5rem',
+                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                  }}
+                  formatter={(value: number) => [value.toFixed(1), 'Position']}
+                />
+                <Legend />
+                <Line
+                  type="monotone"
+                  dataKey="position"
+                  stroke="#f59e0b"
+                  strokeWidth={2}
+                  dot={false}
+                  name="Average Position"
+                />
+              </LineChart>
+            )}
+          </ResponsiveContainer>
+        </div>
       </div>
 
-      {/* Change Points */}
-      {module1.change_points && module1.change_points.length > 0 && (
-        <div className="bg-yellow-50 rounded-lg p-6 mb-8 border border-yellow-200">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <AlertCircle className="w-5 h-5 text-yellow-600" />
-            Significant Change Points
-          </h3>
-          <div className="space-y-3">
-            {module1.change_points.map((point, index) => (
-              <div
-                key={index}
-                className="flex items-center justify-between bg-white rounded-md p-4 border border-yellow-200"
-              >
-                <div className="flex items-center gap-3">
-                  {point.direction === 'spike' ? (
-                    <TrendingUp className="w-5 h-5 text-green-600" />
-                  ) : (
-                    <TrendingDown className="w-5 h-5 text-red-600" />
-                  )}
-                  <div>
-                    <p className="font-medium text-gray-900">
-                      {new Date(point.date).toLocaleDateString('en-US', {
-                        year: 'numeric',
-                        month: 'long',
-                        day: 'numeric',
-                      })}
-                    </p>
-                    <p className="text-sm text-gray-600">
-                      {point.direction === 'spike' ? 'Traffic Spike' : 'Traffic Drop'}
-                    </p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p
-                    className={`text-lg font-bold ${
-                      point.magnitude > 0 ? 'text-green-600' : 'text-red-600'
-                    }`}
-                  >
-                    {point.magnitude > 0 ? '+' : ''}
-                    {(point.magnitude * 100).toFixed(1)}%
-                  </p>
+      {/* GSC vs GA4 Comparison */}
+      {timeseries.some(d => d.sessions) && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-6">Search Console vs Analytics Comparison</h3>
+          
+          {comparisonView === 'separate' ? (
+            <div className="space-y-6">
+              {/* GSC Clicks vs GA4 Sessions */}
+              <div>
+                <h4 className="text-sm font-medium text-gray-700 mb-3">Clicks (GSC) vs Sessions (GA4)</h4>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis 
+                        dataKey="date" 
+                        stroke="#6b7280"
+                        tick={{ fontSize: 12 }}
+                      />
+                      <YAxis 
+                        yAxisId="left"
+                        stroke="#3b82f6"
+                        tick={{ fontSize: 12 }}
+                      />
+                      <YAxis 
+                        yAxisId="right"
+                        orientation="right"
+                        stroke="#10b981"
+                        tick={{ fontSize: 12 }}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: 'white',
+                          border: '1px solid #e5e7eb',
+                          borderRadius: '0.5rem',
+                          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                        }}
+                      />
+                      <Legend />
+                      <Area
+                        yAxisId="left"
+                        type="monotone"
+                        dataKey="clicks"
+                        stroke="#3b82f6"
+                        fill="#3b82f6"
+                        fillOpacity={0.2}
+                        name="Clicks (GSC)"
+                      />
+                      <Line
+                        yAxisId="right"
+                        type="monotone"
+                        dataKey="sessions"
+                        stroke="#10b981"
+                        strokeWidth={2}
+                        dot={false}
+                        name="Sessions (GA4)"
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
 
-      {/* Seasonality */}
-      {module1.seasonality && (
-        <div className="bg-blue-50 rounded-lg p-6 mb-8 border border-blue-200">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <Calendar className="w-5 h-5 text-blue-600" />
-            Seasonality Patterns
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="bg-white rounded-md p-4 border border-blue-200">
-              <p className="text-sm text-gray-600 mb-1">Best Day</p>
-              <p className="text-xl font-bold text-green-600">{module1.seasonality.best_day}</p>
+              {/* Users Trend */}
+              {timeseries.some(d => d.users) && (
+                <div>
+                  <h4 className="text-sm font-medium text-gray-700 mb-3">Users (GA4)</h4>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={chartData}>
+                        <defs>
+                          <linearGradient id="colorUsers" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#06b6d4" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis 
+                          dataKey="date" 
+                          stroke="#6b7280"
+                          tick={{ fontSize: 12 }}
+                        />
+                        <YAxis 
+                          stroke="#6b7280"
+                          tick={{ fontSize: 12 }}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: 'white',
+                            border: '1px solid #e5e7eb',
+                            borderRadius: '0.5rem',
+                            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                          }}
+                        />
+                        <Legend />
+                        <Area
+                          type="monotone"
+                          dataKey="users"
+                          stroke="#06b6d4"
+                          strokeWidth={2}
+                          fill="url(#colorUsers)"
+                          name="Users"
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="bg-white rounded-md p-4 border border-blue-200">
-              <p className="text-sm text-gray-600 mb-1">Worst Day</p>
-              <p className="text-xl font-bold text-red-600">{module1.seasonality.worst_day}</p>
-            </div>
-          </div>
-          {module1.seasonality.monthly_cycle && (
-            <div className="mt-4 bg-white rounded-md p-4 border border-blue-200">
-              <p className="text-sm text-gray-600 mb-1">Monthly Pattern</p>
-              <p className="text-gray-900">{module1.seasonality.cycle_description}</p>
+          ) : (
+            <div className="h-96">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis 
+                    dataKey="date" 
+                    stroke="#6b7280"
+                    tick={{ fontSize: 12 }}
+                  />
+                  <YAxis 
+                    yAxisId="left"
+                    stroke="#6b7280"
+                    tick={{ fontSize: 12 }}
+                  />
+                  <YAxis 
+                    yAxisId="right"
+                    orientation="right"
+                    stroke="#6b7280"
+                    tick={{ fontSize: 12 }}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'white',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '0.5rem',
+                      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                    }}
+                  />
+                  <Legend />
+                  <Area
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="clicks"
+                    stroke="#3b82f6"
+                    fill="#3b82f6"
+                    fillOpacity={0.2}
+                    name="Clicks (GSC)"
+                  />
+                  <Line
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="sessions"
+                    stroke="#10b981"
+                    strokeWidth={2}
+                    dot={false}
+                    name="Sessions (GA4)"
+                  />
+                  <Line
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="users"
+                    stroke="#06b6d4"
+                    strokeWidth={2}
+                    dot={false}
+                    strokeDasharray="5 5"
+                    name="Users (GA4)"
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
             </div>
           )}
         </div>
       )}
 
-      {/* Forecast */}
-      {module1.forecast && (
-        <div className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-lg p-6 border border-purple-200">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-purple-600" />
-            Traffic Forecast
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {['30d', '60d', '90d'].map((period) => {
-              const forecast = module1.forecast[period as keyof typeof module1.forecast];
-              return (
-                <div key={period} className="bg-white rounded-md p-4 border border-purple-200">
-                  <p className="text-sm text-gray-600 mb-2">{period.replace('d', ' Days')}</p>
-                  <p className="text-2xl font-bold text-gray-900 mb-1">
-                    {formatNumber(forecast.clicks)}
-                  </p>
-                  <p className="text-xs text-gray-600">
-                    Range: {formatNumber(forecast.ci_low)} - {formatNumber(forecast.ci_high)}
-                  </p>
+      {/* Traffic Sources and Device Breakdown */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Traffic Sources */}
+        {module1.traffic_sources && module1.traffic_sources.length > 0 && (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Traffic Sources (GA4)</h3>
+            <div className="space-y-4">
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={module1.traffic_sources}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={false}
+                      label={({ source, percentage }) => `${source}: ${percentage.toFixed(1)}%`}
+                      outerRadius={80}
+                      fill="#8884d8"
+                      dataKey="sessions"
+                    >
+                      {module1.traffic_sources.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={SOURCE_COLORS[index % SOURCE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: 'white',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '0.5rem',
+                        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="space-y-2">
+                {module1.traffic_sources.map((source, index) => (
+                  <div key={source.source} className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div 
+                        className="w-3 h-3 rounded-full"
+                        style={{ backgroundColor: SOURCE_COLORS[index % SOURCE_COLORS.length] }}
+                      />
+                      <span className="text-sm text-gray-700 font-medium">{source.source}</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold text-gray-900">
+                        {formatNumber(source.sessions)}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {source.percentage.toFixed(1)}%
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Device Breakdown */}
+        {module1.device_breakdown && module1.device_breakdown.length > 0 && (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Device Breakdown (GA4)</h3>
+            <div className="space-y-4">
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={module1.device_breakdown} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis type="number" stroke="#6b7280" tick={{ fontSize: 12 }} />
+                    <YAxis type="category" dataKey="device" stroke="#6b7280" tick={{ fontSize: 12 }} />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: 'white',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '0.5rem',
+                        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                      }}
+                    />
+                    <Bar dataKey="sessions" fill="#8884d8">
+                      {module1.device_breakdown.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={DEVICE_COLORS[entry.device] || '#94a3b8'} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="space-y-2">
+                {module1.device_breakdown.map((device) => (
+                  <div key={device.device} className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <Monitor className={`w-4 h-4 ${
+                        device.device === 'desktop' ? 'text-blue-600' :
+                        device.device === 'mobile' ? 'text-green-600' :
+                        'text-orange-600'
+                      }`} />
+                      <span className="text-sm text-gray-700 font-medium capitalize">{device.device}</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold text-gray-900">
+                        {formatNumber(device.sessions)}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {device.percentage.toFixed(1)}%
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Seasonality & Patterns */}
+      {module1.seasonality && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Seasonality & Patterns</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <div className="flex items-center space-x-2 mb-2">
+                <Calendar className="w-5 h-5 text-blue-600" />
+                <h4 className="font-semibold text-blue-900">Weekly Pattern</h4>
+              </div>
+              <p className="text-sm text-blue-800">
+                <span className="font-semibold">Best day:</span> {module1.seasonality.best_day}
+              </p>
+              <p className="text-sm text-blue-800">
+                <span className="font-semibold">Worst day:</span> {module1.seasonality.worst_day}
+              </p>
+            </div>
+            
+            {module1.seasonality.monthly_cycle && (
+              <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                <div className="flex items-center space-x-2 mb-2">
+                  <Activity className="w-5 h-5 text-purple-600" />
+                  <h4 className="font-semibold text-purple-900">Monthly Cycle</h4>
                 </div>
-              );
-            })}
+                <p className="text-sm text-purple-800">{module1.seasonality.cycle_description}</p>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Anomalies */}
-      {module1.anomalies && module1.anomalies.length > 0 && (
-        <div className="bg-red-50 rounded-lg p-6 mt-8 border border-red-200">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <AlertCircle className="w-5 h-5 text-red-600" />
-            Detected Anomalies
-          </h3>
-          <div className="space-y-2">
-            {module1.anomalies.slice(0, 5).map((anomaly, index) => (
+      {/* Change Points */}
+      {module1.change_points.length > 0 && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Significant Change Points</h3>
+          <div className="space-y-3">
+            {module1.change_points.map((cp, index) => (
               <div
                 key={index}
-                className="flex items-center justify-between bg-white rounded-md p-3 border border-red-200"
+                className={`flex items-start space-x-3 p-4 rounded-lg border ${
+                  cp.direction === 'drop'
+                    ? 'bg-red-50 border-red-200'
+                    : 'bg-green-50 border-green-200'
+                }`}
               >
-                <div>
-                  <p className="font-medium text-gray-900">
-                    {new Date(anomaly.date).toLocaleDateString('en-US', {
-                      year: 'numeric',
-                      month: 'short',
-                      day: 'numeric',
-                    })}
+                {cp.direction === 'drop' ? (
+                  <TrendingDown className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                ) : (
+                  <TrendingUp className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                )}
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`font-semibold ${
+                      cp.direction === 'drop' ? 'text-red-900' : 'text-green-900'
+                    }`}>
+                      {cp.direction === 'drop' ? 'Traffic Drop' : 'Traffic Spike'}
+                    </span>
+                    <span className={`text-sm ${
+                      cp.direction === 'drop' ? 'text-red-700' : 'text-green-700'
+                    }`}>
+                      {new Date(cp.date).toLocaleDateString('en-US', { 
+                        year: 'numeric', 
+                        month: 'long', 
+                        day: 'numeric' 
+                      })}
+                    </span>
+                  </div>
+                  <p className={`text-sm ${
+                    cp.direction === 'drop' ? 'text-red-800' : 'text-green-800'
+                  }`}>
+                    Magnitude: {(cp.magnitude * 100).toFixed(1)}% change detected
                   </p>
-                  <p className="text-sm text-gray-600 capitalize">{anomaly.type}</p>
                 </div>
-                <p
-                  className={`text-lg font-bold ${
-                    anomaly.magnitude > 0 ? 'text-green-600' : 'text-red-600'
-                  }`}
-                >
-                  {anomaly.magnitude > 0 ? '+' : ''}
-                  {(anomaly.magnitude * 100).toFixed(1)}%
-                </p>
               </div>
             ))}
           </div>
         </div>
       )}
+
+      {/* Anomalies */}
+      {module1.anomalies.length > 0 && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Traffic Anomalies</h3>
+          <div className="space-y-3">
+            {module1.anomalies.map((anomaly, index) => (
+              <div
+                key={index}
+                className="flex items-start space-x-3 p-4 bg-yellow-50 border border-yellow-200 rounded-lg"
+              >
+                <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-yellow-900">
+                      {anomaly.type === 'discord' ? 'Unusual Pattern' : 'Recurring Pattern'}
+                    </span>
+                    <span className="text-sm text-yellow-700">
+                      {new Date(anomaly.date).toLocaleDateString('en-US', { 
+                        year: 'numeric', 
+                        month: 'long', 
+                        day: 'numeric' 
+                      })}
+                    </span>
+                  </div>
+                  <p className="text-sm text-yellow-800">
+                    {anomaly.description || `Anomaly magnitude: ${(anomaly.magnitude * 100).toFixed(1)}%`}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Forecast */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Traffic Forecast</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <ForecastCard
+            period="30 Days"
+            forecast={module1.forecast['30d']}
+          />
+          <ForecastCard
+            period="60 Days"
+            forecast={module1.forecast['60d']}
+          />
+          <ForecastCard
+            period="90 Days"
+            forecast={module1.forecast['90d']}
+          />
+        </div>
+        <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+          <p className="text-sm text-gray-600">
+            <span className="font-semibold">Note:</span> Forecasts are based on historical patterns and trends. 
+            Actual results may vary due to seasonality, algorithm updates, competitive changes, and other factors.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+interface MetricCardProps {
+  title: string;
+  value: string;
+  change?: number;
+  icon: React.ComponentType<{ className?: string }>;
+  iconColor: string;
+  iconBg: string;
+  isPercentage?: boolean;
+  inverse?: boolean;
+}
+
+const MetricCard: React.FC<MetricCardProps> = ({
+  title,
+  value,
+  change,
+  icon: Icon,
+  iconColor,
+  iconBg,
+  isPercentage = false,
+  inverse = false,
+}) => {
+  const hasChange = change !== undefined && !isNaN(change);
+  const isPositive = inverse ? change! < 0 : change! > 0;
+  const isNegative = inverse ? change! > 0 : change! < 0;
+
+  return (
+    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className={`p-3 rounded-lg ${iconBg}`}>
+          <Icon className={`w-6 h-6 ${iconColor}`} />
+        </div>
+        {hasChange && (
+          <div className={`flex items-center space-x-1 ${
+            isPositive ? 'text-green-600' : isNegative ? 'text-red-600' : 'text-gray-600'
+          }`}>
+            {isPositive ? (
+              <TrendingUp className="w-4 h-4" />
+            ) : isNegative ? (
+              <TrendingDown className="w-4 h-4" />
+            ) : (
+              <Minus className="w-4 h-4" />
+            )}
+            <span className="text-sm font-semibold">
+              {Math.abs(change!).toFixed(1)}%
+            </span>
+          </div>
+        )}
+      </div>
+      <div>
+        <p className="text-sm text-gray-600 mb-1">{title}</p>
+        <p className="text-2xl font-bold text-gray-900">{value}</p>
+      </div>
+    </div>
+  );
+};
+
+interface ForecastCardProps {
+  period: string;
+  forecast: Forecast;
+}
+
+const ForecastCard: React.FC<ForecastCardProps> = ({ period, forecast }) => {
+  return (
+    <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6">
+      <h4 className="text-sm font-semibold text-blue-900 mb-3">{period}</h4>
+      <div className="space-y-2">
+        <div>
+          <p className="text-xs text-blue-700 mb-1">Projected Clicks</p>
+          <p className="text-2xl font-bold text-blue-900">{formatNumber(forecast.clicks)}</p>
+        </div>
+        <div className="pt-2 border-t border-blue-200">
+          <p className="text-xs text-blue-700 mb-1">Confidence Range</p>
+          <p className="text-sm font-semibold text-blue-800">
+            {formatNumber(forecast.ci_low)} - {formatNumber(forecast.ci_high)}
+          </p>
+        </div>
+      </div>
     </div>
   );
 };
