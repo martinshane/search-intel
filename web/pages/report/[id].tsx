@@ -115,7 +115,7 @@ export default function ReportPage() {
     setRetrying(true);
     setRetryError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/v1/reports/${id}/retry`, {
+      const res = await fetch(`${API_BASE}/api/reports/${id}/retry`, {
         method: 'POST',
         credentials: 'include',
       });
@@ -138,7 +138,7 @@ export default function ReportPage() {
     setEmailSending(true);
     setEmailResult(null);
     try {
-      const res = await fetch(`${API_BASE}/api/v1/reports/${id}/email`, {
+      const res = await fetch(`${API_BASE}/api/reports/${id}/email`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -168,7 +168,7 @@ export default function ReportPage() {
   const fetchProgressiveModules = useCallback(async () => {
     if (!id) return;
     try {
-      const res = await fetch(`${API_BASE}/api/v1/reports/${id}/modules`, {
+      const res = await fetch(`${API_BASE}/api/reports/${id}/modules`, {
         credentials: 'include',
       });
       if (res.ok) {
@@ -200,7 +200,7 @@ export default function ReportPage() {
     if (!id) return;
 
     try {
-      const response = await fetch(`${API_BASE}/api/v1/reports/${id}`, {
+      const response = await fetch(`${API_BASE}/api/reports/${id}`, {
         credentials: 'include',
       });
       if (!response.ok) {
@@ -574,7 +574,7 @@ export default function ReportPage() {
                 <button
                   onClick={() => {
                     const a = document.createElement('a');
-                    a.href = `${process.env.NEXT_PUBLIC_API_URL || 'https://search-intel-api-production.up.railway.app'}/api/v1/reports/${id}/pdf`;
+                    a.href = `${process.env.NEXT_PUBLIC_API_URL || 'https://search-intel-api-production.up.railway.app'}/api/reports/${id}/pdf`;
                     a.download = `search_intelligence_${report.domain}.pdf`;
                     a.click();
                   }}
