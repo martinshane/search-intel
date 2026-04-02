@@ -4,7 +4,7 @@ import Head from 'next/head';
 import Link from 'next/link';
 import NavHeader from '../components/NavHeader';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 interface Property {
   id: string;
@@ -72,7 +72,7 @@ export default function HomePage() {
 
   const checkAuthStatus = async () => {
     try {
-      const response = await fetch(`${API_URL}/api/auth/status`, {
+      const response = await fetch(`${API_BASE}/api/auth/status`, {
         credentials: 'include',
       });
       
@@ -99,7 +99,7 @@ export default function HomePage() {
 
   const handleGscConnect = async () => {
     try {
-      const response = await fetch(`${API_URL}/api/auth/gsc/authorize`, {
+      const response = await fetch(`${API_BASE}/api/auth/gsc/authorize`, {
         credentials: 'include',
       });
       const data = await response.json();
@@ -111,7 +111,7 @@ export default function HomePage() {
 
   const handleGa4Connect = async () => {
     try {
-      const response = await fetch(`${API_URL}/api/auth/ga4/authorize`, {
+      const response = await fetch(`${API_BASE}/api/auth/ga4/authorize`, {
         credentials: 'include',
       });
       const data = await response.json();
@@ -133,7 +133,7 @@ export default function HomePage() {
     try {
       const domain = extractDomain(selectedGscProperty);
 
-      const response = await fetch(`${API_URL}/api/reports/generate`, {
+      const response = await fetch(`${API_BASE}/api/reports/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
