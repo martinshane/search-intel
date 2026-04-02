@@ -427,7 +427,7 @@ export default function ComparePage() {
   useEffect(() => {
     if (!authenticated) return;
     setLoadingHistory(true);
-    fetch(`${API_BASE}/api/v1/reports/user/history?limit=20`, {
+    fetch(`${API_BASE}/api/reports/user/history?limit=20`, {
       credentials: 'include',
     })
       .then(r => {
@@ -464,7 +464,7 @@ export default function ComparePage() {
 
     try {
       const res = await fetch(
-        `${API_BASE}/api/v1/reports/${selectedCurrent}/compare?baseline_id=${selectedBaseline}`,
+        `${API_BASE}/api/reports/${selectedCurrent}/compare?baseline_id=${selectedBaseline}`,
         { credentials: 'include' },
       );
       if (!res.ok) {
