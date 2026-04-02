@@ -27,8 +27,6 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("OAUTH_REDIRECT_URI", "http://localhost:8000/auth/callback")
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")  # Must be set in production
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # OAuth scopes
 SCOPES = [
@@ -44,15 +42,16 @@ _supabase_client: Client = None
 
 
 def _get_supabase() -> Client:
-    """Lazy-initialise and return the module-level Supabase client."""
-    global _supabase_client
-    if _supabase_client is None:
-        url = os.getenv("SUPABASE_URL", "")
-        key = os.getenv("SUPABASE_KEY", "")
-        if not url or not key:
-            raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY environment variables")
-        _supabase_client = create_client(url, key)
-    return _supabase_client
+    """Get Supabase client via centralized database module.
+
+    Replaces the previous inline client creation, ensuring consistent
+    env-var resolution and connection caching across the application.
+    """
+    try:
+        from api.database import get_supabase_client
+        return get_supabase_client()
+    except (ValueError, Exception) as e:
+        raise ValueError(f"Supabase not configured: {e}")
 
 
 class TokenEncryption:
