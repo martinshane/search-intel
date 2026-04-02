@@ -30,7 +30,7 @@ import {
   ReferenceLine,
   Cell,
 } from 'recharts';
-import { Menu, X, ChevronDown, ChevronUp, ExternalLink, Download, Calendar, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Target, Zap, RefreshCw, Clock, BarChart2, Shield, Globe, DollarSign, Search, FileText, Activity, Layers, Users } from 'lucide-react';
+import { Menu, X, ChevronDown, ChevronUp, ExternalLink, Download, Calendar, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Target, Zap, RefreshCw, Clock, BarChart2, Shield, Globe, DollarSign, Search, FileText, Activity, Layers, Users, Mail, Loader2, Check } from 'lucide-react';
 import NavHeader from '../../components/NavHeader';
 
 // ---------------------------------------------------------------------------
@@ -89,6 +89,41 @@ export default function ReportPage() {
   const [error, setError] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Email modal state
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [emailAddress, setEmailAddress] = useState('');
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailResult, setEmailResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  const sendReportEmail = async () => {
+    if (!emailAddress || !id) return;
+    setEmailSending(true);
+    setEmailResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/reports/${id}/email`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to_email: emailAddress }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setEmailResult({ success: true, message: data.message || 'Report sent!' });
+        setTimeout(() => {
+          setShowEmailModal(false);
+          setEmailResult(null);
+          setEmailAddress('');
+        }, 2500);
+      } else {
+        setEmailResult({ success: false, message: data.detail || data.message || 'Failed to send email' });
+      }
+    } catch (err: any) {
+      setEmailResult({ success: false, message: err.message || 'Network error' });
+    } finally {
+      setEmailSending(false);
+    }
+  };
 
   // ---------------------------------------------------------------------------
   // Fetch report data from API
@@ -377,6 +412,13 @@ export default function ReportPage() {
                   <span className="text-sm font-medium">Download PDF</span>
                 </button>
                 <button
+                  onClick={() => setShowEmailModal(true)}
+                  className="flex items-center space-x-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm"
+                >
+                  <Mail className="w-4 h-4" />
+                  <span className="text-sm font-medium">Email Report</span>
+                </button>
+                <button
                   onClick={() => window.print()}
                   className="flex items-center space-x-2 px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm text-sm"
                 >
@@ -573,6 +615,90 @@ export default function ReportPage() {
             </button>
           </div>
         </div>
+
+        {/* Email Report Modal */}
+        {showEmailModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { if (!emailSending) { setShowEmailModal(false); setEmailResult(null); } }}>
+            <div className="bg-slate-800 border border-slate-700/50 rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-blue-600/20 rounded-lg flex items-center justify-center">
+                    <Mail className="w-5 h-5 text-blue-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-white">Email Report</h3>
+                    <p className="text-sm text-slate-400">Send a PDF copy via email</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => { if (!emailSending) { setShowEmailModal(false); setEmailResult(null); } }}
+                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700/50 transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {emailResult ? (
+                <div className={`flex items-center space-x-3 p-4 rounded-lg ${emailResult.success ? 'bg-emerald-900/30 border border-emerald-700/50' : 'bg-red-900/30 border border-red-700/50'}`}>
+                  {emailResult.success ? (
+                    <Check className="w-5 h-5 text-emerald-400 flex-shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                  )}
+                  <p className={`text-sm ${emailResult.success ? 'text-emerald-300' : 'text-red-300'}`}>
+                    {emailResult.message}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="mb-4">
+                    <label htmlFor="email-input" className="block text-sm font-medium text-slate-300 mb-2">
+                      Recipient email address
+                    </label>
+                    <input
+                      id="email-input"
+                      type="email"
+                      value={emailAddress}
+                      onChange={(e) => setEmailAddress(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && emailAddress) sendReportEmail(); }}
+                      placeholder="name@company.com"
+                      disabled={emailSending}
+                      className="w-full px-4 py-2.5 bg-slate-700/60 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50 text-sm"
+                      autoFocus
+                    />
+                  </div>
+                  <div className="flex items-center justify-end space-x-3">
+                    <button
+                      onClick={() => { setShowEmailModal(false); setEmailResult(null); }}
+                      disabled={emailSending}
+                      className="px-4 py-2 text-sm text-slate-300 hover:text-white transition disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={sendReportEmail}
+                      disabled={emailSending || !emailAddress}
+                      className="flex items-center space-x-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white text-sm font-medium rounded-lg transition disabled:cursor-not-allowed"
+                    >
+                      {emailSending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Sending...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Mail className="w-4 h-4" />
+                          <span>Send Report</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
       </main>
     </>
   );
