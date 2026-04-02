@@ -99,14 +99,12 @@ class EnvValidator:
         try:
             result = urlparse(value)
             if not all([result.scheme, result.netloc]):
-                raise ValueError(f"Invalid URL format")
+                raise ValueError("Invalid URL format")
             if result.scheme not in ['http', 'https']:
-                raise ValueError(f"URL must use http or https scheme")
+                raise ValueError("URL must use http or https scheme")
         except Exception as e:
             raise EnvironmentValidationError(
-                f"{var_name} is not a valid URL: {value}\n"
-                f"Error: {str(e)}\n"
-                f"Expected format: {EnvValidator.REQUIRED_VARS.get(var_name, EnvValidator.OPTIONAL_VARS.get(var_name, {})).get('example', 'https://example.com')}"
+                f"{var_name} is not a valid URL: {value} — {str(e)}"
             )
     
     @staticmethod
@@ -115,43 +113,30 @@ class EnvValidator:
         email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
         if not email_pattern.match(value):
             raise EnvironmentValidationError(
-                f"{var_name} is not a valid email address: {value}\n"
-                f"Expected format: user@example.com"
+                f"{var_name} is not a valid email address: {value}"
             )
     
     @staticmethod
     def validate_non_empty(value: str, var_name: str, min_length: Optional[int] = None) -> None:
         """Validate non-empty string with optional minimum length."""
         if not value or not value.strip():
-            raise EnvironmentValidationError(
-                f"{var_name} cannot be empty\n"
-                f"Expected: {EnvValidator.REQUIRED_VARS.get(var_name, EnvValidator.OPTIONAL_VARS.get(var_name, {})).get('example', 'a non-empty value')}"
-            )
-        
+            raise EnvironmentValidationError(f"{var_name} cannot be empty")
         if min_length and len(value) < min_length:
             raise EnvironmentValidationError(
-                f"{var_name} must be at least {min_length} characters long\n"
-                f"Current length: {len(value)}\n"
-                f"Expected format: {EnvValidator.REQUIRED_VARS.get(var_name, EnvValidator.OPTIONAL_VARS.get(var_name, {})).get('example', 'a longer value')}"
+                f"{var_name} must be at least {min_length} characters long (got {len(value)})"
             )
     
     @staticmethod
     def validate_google_client_id(value: str, var_name: str) -> None:
         """Validate Google OAuth client ID format."""
-        # Google client IDs typically end with .apps.googleusercontent.com
         if not value.endswith('.apps.googleusercontent.com'):
             raise EnvironmentValidationError(
-                f"{var_name} does not appear to be a valid Google OAuth client ID\n"
-                f"Expected format: xxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com\n"
-                f"Got: {value}"
+                f"{var_name} does not appear to be a valid Google OAuth client ID"
             )
-        
-        # Check for basic structure
         parts = value.split('.apps.googleusercontent.com')[0]
         if '-' not in parts:
             raise EnvironmentValidationError(
-                f"{var_name} does not match expected Google OAuth client ID format\n"
-                f"Expected format: xxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com"
+                f"{var_name} does not match expected Google OAuth client ID format"
             )
     
     @staticmethod
@@ -159,9 +144,7 @@ class EnvValidator:
         """Validate OpenAI API key format."""
         if not value.startswith('sk-'):
             raise EnvironmentValidationError(
-                f"{var_name} does not appear to be a valid OpenAI API key\n"
-                f"Expected format: sk-proj-... or sk-...\n"
-                f"Got: {value[:10]}..."
+                f"{var_name} does not appear to be a valid OpenAI API key"
             )
     
     @staticmethod
@@ -169,9 +152,7 @@ class EnvValidator:
         """Validate Anthropic API key format."""
         if not value.startswith('sk-ant-'):
             raise EnvironmentValidationError(
-                f"{var_name} does not appear to be a valid Anthropic API key\n"
-                f"Expected format: sk-ant-...\n"
-                f"Got: {value[:10]}..."
+                f"{var_name} does not appear to be a valid Anthropic API key"
             )
     
     @staticmethod
@@ -180,8 +161,7 @@ class EnvValidator:
         valid_environments = ['development', 'staging', 'production', 'test']
         if value.lower() not in valid_environments:
             raise EnvironmentValidationError(
-                f"{var_name} must be one of: {', '.join(valid_environments)}\n"
-                f"Got: {value}"
+                f"{var_name} must be one of: {', '.join(valid_environments)} (got: {value})"
             )
     
     @staticmethod
@@ -190,8 +170,7 @@ class EnvValidator:
         valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
         if value.upper() not in valid_levels:
             raise EnvironmentValidationError(
-                f"{var_name} must be one of: {', '.join(valid_levels)}\n"
-                f"Got: {value}"
+                f"{var_name} must be one of: {', '.join(valid_levels)} (got: {value})"
             )
     
     @classmethod
@@ -217,155 +196,106 @@ class EnvValidator:
         elif validator_type == 'log_level':
             cls.validate_log_level(value, var_name)
         else:
-            # Default: just check non-empty
             cls.validate_non_empty(value, var_name)
-    
-    @classmethod
-    def validate_all(cls, raise_on_optional: bool = False) -> Dict[str, str]:
-        """
-        Validate all environment variables.
-        
-        Args:
-            raise_on_optional: If True, raise errors for missing optional variables
-        
-        Returns:
-            Dict of all validated environment variables
-        
-        Raises:
-            EnvironmentValidationError: If any required variables are missing or invalid
-        """
-        errors: List[str] = []
-        warnings: List[str] = []
-        validated_vars: Dict[str, str] = {}
-        
-        # Validate required variables
-        for var_name, config in cls.REQUIRED_VARS.items():
-            value = os.getenv(var_name)
-            
-            if value is None:
-                errors.append(
-                    f"❌ {var_name} is required but not set\n"
-                    f"   Description: {config['description']}\n"
-                    f"   Example: {config['example']}"
-                )
-            else:
-                try:
-                    cls.validate_variable(var_name, value, config)
-                    validated_vars[var_name] = value
-                except EnvironmentValidationError as e:
-                    errors.append(f"❌ {str(e)}")
-        
-        # Validate optional variables
-        for var_name, config in cls.OPTIONAL_VARS.items():
-            value = os.getenv(var_name)
-            
-            if value is None:
-                message = (
-                    f"⚠️  {var_name} is not set (optional)\n"
-                    f"   Description: {config['description']}\n"
-                    f"   Example: {config['example']}"
-                )
-                if raise_on_optional:
-                    errors.append(message)
-                else:
-                    warnings.append(message)
-            else:
-                try:
-                    cls.validate_variable(var_name, value, config)
-                    validated_vars[var_name] = value
-                except EnvironmentValidationError as e:
-                    if raise_on_optional:
-                        errors.append(f"❌ {str(e)}")
-                    else:
-                        warnings.append(f"⚠️  {str(e)}")
-        
-        # Print warnings if any
-        if warnings:
-            print("\n" + "="*80)
-            print("ENVIRONMENT VARIABLE WARNINGS")
-            print("="*80)
-            for warning in warnings:
-                print(f"\n{warning}")
-            print("\n" + "="*80 + "\n")
-        
-        # Raise if there are errors
-        if errors:
-            error_message = "\n" + "="*80 + "\n"
-            error_message += "ENVIRONMENT VARIABLE VALIDATION FAILED\n"
-            error_message += "="*80 + "\n\n"
-            error_message += "\n\n".join(errors)
-            error_message += "\n\n" + "="*80 + "\n"
-            error_message += "Please set all required environment variables in your .env file\n"
-            error_message += "or environment configuration before starting the application.\n"
-            error_message += "="*80 + "\n"
-            raise EnvironmentValidationError(error_message)
-        
-        return validated_vars
-    
-    @classmethod
-    def print_config_template(cls) -> None:
-        """Print a template .env file with all variables."""
-        print("# Search Intelligence Report - Environment Configuration")
-        print("# Copy this template to .env and fill in your values\n")
-        
-        print("# Required Variables")
-        print("# " + "="*70)
-        for var_name, config in cls.REQUIRED_VARS.items():
-            print(f"\n# {config['description']}")
-            print(f"# Example: {config['example']}")
-            print(f"{var_name}=")
-        
-        print("\n\n# Optional Variables")
-        print("# " + "="*70)
-        for var_name, config in cls.OPTIONAL_VARS.items():
-            print(f"\n# {config['description']}")
-            print(f"# Example: {config['example']}")
-            print(f"# {var_name}=")
-    
-    @classmethod
-    def get_validated_config(cls) -> Dict[str, str]:
-        """
-        Convenience method to get validated configuration.
-        
-        Returns:
-            Dict of validated environment variables
-        """
-        return cls.validate_all(raise_on_optional=False)
 
 
-def validate_environment(raise_on_optional: bool = False) -> Dict[str, str]:
+def validate_environment(raise_on_optional: bool = False) -> Dict:
     """
     Validate environment variables at application startup.
     
-    Args:
-        raise_on_optional: If True, raise errors for missing optional variables
+    Returns a structured dict that main.py's lifespan handler expects:
+        {
+            "valid": bool,
+            "errors": List[str],
+            "critical_errors": List[str],
+            "warnings": List[str],
+        }
     
-    Returns:
-        Dict of all validated environment variables
-    
-    Raises:
-        EnvironmentValidationError: If validation fails
+    This function never raises — it captures all validation issues into
+    the returned dict so the caller can decide how to handle them.
     """
-    return EnvValidator.validate_all(raise_on_optional=raise_on_optional)
+    result: Dict = {
+        "valid": True,
+        "errors": [],
+        "critical_errors": [],
+        "warnings": [],
+    }
+    
+    # ── Required variables ──────────────────────────────────────────
+    for var_name, config in EnvValidator.REQUIRED_VARS.items():
+        value = os.getenv(var_name)
+        if value is None:
+            msg = f"{var_name} is required but not set ({config['description']})"
+            result["errors"].append(msg)
+            result["critical_errors"].append(msg)
+            result["valid"] = False
+        else:
+            try:
+                EnvValidator.validate_variable(var_name, value, config)
+            except EnvironmentValidationError as e:
+                msg = str(e)
+                result["errors"].append(msg)
+                result["critical_errors"].append(msg)
+                result["valid"] = False
+    
+    # ── Optional variables ──────────────────────────────────────────
+    for var_name, config in EnvValidator.OPTIONAL_VARS.items():
+        value = os.getenv(var_name)
+        if value is None:
+            result["warnings"].append(
+                f"{var_name} is not set (optional): {config['description']}"
+            )
+        else:
+            try:
+                EnvValidator.validate_variable(var_name, value, config)
+            except EnvironmentValidationError as e:
+                if raise_on_optional:
+                    result["errors"].append(str(e))
+                    result["valid"] = False
+                else:
+                    result["warnings"].append(str(e))
+    
+    return result
 
 
 def print_env_template() -> None:
     """Print a template .env file."""
-    EnvValidator.print_config_template()
+    print("# Search Intelligence Report - Environment Configuration")
+    print("# Copy this template to .env and fill in your values\n")
+    
+    print("# Required Variables")
+    print("# " + "=" * 70)
+    for var_name, config in EnvValidator.REQUIRED_VARS.items():
+        print(f"\n# {config['description']}")
+        print(f"# Example: {config['example']}")
+        print(f"{var_name}=")
+    
+    print("\n\n# Optional Variables")
+    print("# " + "=" * 70)
+    for var_name, config in EnvValidator.OPTIONAL_VARS.items():
+        print(f"\n# {config['description']}")
+        print(f"# Example: {config['example']}")
+        print(f"# {var_name}=")
 
 
 if __name__ == "__main__":
-    # When run directly, print the template
     import sys
     
     if len(sys.argv) > 1 and sys.argv[1] == "template":
         print_env_template()
     else:
-        # Try to validate current environment
         try:
-            config = validate_environment(raise_on_optional=False)
-            print("\n✅ Environment validation passed!")
-            print(f"✅ {len(config)} variables validated successfully\n")
-        except EnvironmentValidationError as e:
-            print(str(e))
+            result = validate_environment(raise_on_optional=False)
+            if result["valid"]:
+                print("\nEnvironment validation passed!")
+            else:
+                print("\nEnvironment validation FAILED:")
+                for err in result["errors"]:
+                    print(f"  - {err}")
+            if result["warnings"]:
+                print("\nWarnings:")
+                for w in result["warnings"]:
+                    print(f"  - {w}")
+        except Exception as e:
+            print(f"Unexpected error: {e}")
             sys.exit(1)
