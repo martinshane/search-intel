@@ -796,8 +796,18 @@ class RevenueAttributionAnalyzer:
             roi_opportunities, funnel, concentration, recommendations,
         )
 
+        # Compute total potential value for the consulting CTA.
+        # Current attributed revenue + best-case additional revenue from
+        # ALL position improvement opportunities (not just top 10).
+        current_revenue = funnel.get("total_revenue", 0)
+        potential_additional = sum(
+            o.get("best_scenario_revenue", 0) for o in roi_opportunities
+        )
+        total_potential_value = round(current_revenue + potential_additional, 2)
+
         return {
             "summary": summary,
+            "total_potential_value": total_potential_value,
             "revenue_by_page": page_revenue[:50],
             "top_converting_queries": query_revenue,
             "revenue_at_risk": at_risk,
@@ -811,6 +821,7 @@ class RevenueAttributionAnalyzer:
                 "gsc_rows_analyzed": len(self.gsc_rows),
                 "pages_analyzed": len(page_agg),
                 "queries_analyzed": len(query_agg),
+                "total_potential_value": total_potential_value,
             },
         }
 
