@@ -693,7 +693,7 @@ def recover_stale_reports(stale_threshold_minutes: int = 30) -> Dict[str, Any]:
     Find reports stuck in running states and mark them as failed.
 
     When the API restarts (Railway deploy, crash, OOM kill), any report
-    that was mid-pipeline gets permanently stuck in "queued", "ingesting",
+    that was mid-pipeline gets permanently stuck in "pending", "ingesting",
     or "analyzing" status.  The user sees a perpetual loading screen with
     no way to recover except manually hitting the /retry endpoint — which
     they can't do because the UI shows the report as still running.
@@ -725,7 +725,7 @@ def recover_stale_reports(stale_threshold_minutes: int = 30) -> Dict[str, Any]:
         result["errors"].append(f"Supabase connection failed: {exc}")
         return result
 
-    running_statuses = ("queued", "ingesting", "analyzing", "running")
+    running_statuses = ("pending", "ingesting", "analyzing", "running")
     cutoff = (datetime.utcnow() - timedelta(minutes=stale_threshold_minutes)).isoformat()
 
     try:
