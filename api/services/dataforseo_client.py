@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
 from datetime import datetime, timedelta
 import httpx
 from tenacity import (
@@ -12,6 +12,7 @@ from tenacity import (
 )
 import hashlib
 import json
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +37,13 @@ class DataForSEOClient:
     Async client for DataForSEO API with rate limiting, retries, error handling, and caching.
     
     Supports:
-    - Live SERP results retrieval
-    - Competitor analysis (top ranking domains)
-    - SERP feature detection (featured snippets, PAA, knowledge panels, etc.)
+    - Live SERP results retrieval (Google organic)
+    - Keyword difficulty and volume lookups
+    - Competitor domain analysis (top ranking domains)
+    - SERP feature detection (featured snippets, PAA, knowledge panels, AI Overview, etc.)
     - Batch processing of multiple keywords
     - Response caching via Supabase
+    - Visual position calculation (accounting for SERP features)
     
     Example:
         >>> client = DataForSEOClient()
@@ -54,13 +57,13 @@ class DataForSEOClient:
     
     BASE_URL = "https://api.dataforseo.com/v3"
     
-    # SERP feature type mappings
+    # SERP feature type mappings (DataForSEO item types)
     SERP_FEATURE_TYPES = {
-        "featured_snippet": ["featured_snippet"],
+        "featured_snippet": ["featured_snippet", "answer_box"],
         "people_also_ask": ["people_also_ask"],
         "knowledge_graph": ["knowledge_graph"],
         "local_pack": ["local_pack", "map"],
-        "video": ["video"],
+        "video": ["video", "video_carousel"],
         "image": ["images"],
         "shopping": ["shopping", "google_shopping"],
         "top_stories": ["top_stories"],
@@ -68,6 +71,32 @@ class DataForSEOClient:
         "recipes": ["recipes"],
         "ai_overview": ["ai_overview"],
         "related_searches": ["people_also_search", "related_searches"],
+        "hotels_pack": ["hotels_pack"],
+        "flights": ["google_flights"],
+        "jobs": ["jobs"],
+        "events": ["events"],
+        "find_results_on": ["find_results_on"],
+    }
+    
+    # Visual position impact per SERP feature (positions pushed down)
+    SERP_FEATURE_VISUAL_IMPACT = {
+        "featured_snippet": 2.0,
+        "knowledge_graph": 0.0,  # Usually on the right side
+        "people_also_ask": 0.5,  # Per question
+        "local_pack": 3.0,
+        "video": 1.5,
+        "image": 1.0,
+        "shopping": 2.0,
+        "top_stories": 2.5,
+        "ai_overview": 3.0,
+        "twitter": 1.0,
+        "recipes": 1.5,
+        "hotels_pack": 3.0,
+        "flights": 2.0,
+        "jobs": 2.0,
+        "events": 1.5,
+        "find_results_on": 0.5,
+        "related_searches": 0.0,  # Usually at bottom
     }
     
     # Position-based CTR curves (baseline, adjusted by SERP features)
@@ -86,7 +115,7 @@ class DataForSEOClient:
         max_retries: int = 3,
         supabase_client: Optional[Any] = None,
         cache_ttl_hours: int = 24,
-        rate_limit_per_second: int = 2,
+        rate_limit_per_second: float = 2.0,
     ):
         """
         Initialize DataForSEO client.
@@ -104,9 +133,8 @@ class DataForSEOClient:
         self.password = password or os.getenv("DATAFORSEO_PASSWORD")
         
         if not self.login or not self.password:
-            raise ValueError(
-                "DataForSEO credentials not provided. Set DATAFORSEO_LOGIN and "
-                "DATAFORSEO_PASSWORD environment variables or pass them to constructor."
+            raise DataForSEOAuthError(
+                "DataForSEO credentials not found. Set DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD environment variables."
             )
         
         self.timeout = timeout
@@ -115,41 +143,58 @@ class DataForSEOClient:
         self.cache_ttl_hours = cache_ttl_hours
         self.rate_limit_per_second = rate_limit_per_second
         
-        # Rate limiting
+        self._client: Optional[httpx.AsyncClient] = None
+        self._auth_validated = False
         self._last_request_time = 0.0
         self._request_lock = asyncio.Lock()
-        
-        # HTTP client (initialized on first request)
-        self._client: Optional[httpx.AsyncClient] = None
     
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client with authentication."""
-        if self._client is None or self._client.is_closed:
+    async def __aenter__(self):
+        """Async context manager entry"""
+        await self.authenticate()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        await self.close()
+    
+    async def authenticate(self):
+        """Validate credentials and initialize HTTP client"""
+        if self._client is None:
             self._client = httpx.AsyncClient(
                 auth=(self.login, self.password),
                 timeout=self.timeout,
                 headers={
                     "Content-Type": "application/json",
-                    "User-Agent": "SearchIntelligenceReport/1.0",
                 },
             )
-        return self._client
+        
+        if not self._auth_validated:
+            # Test authentication with a cheap API call
+            try:
+                response = await self._client.get(f"{self.BASE_URL}/serp/google/languages")
+                response.raise_for_status()
+                data = response.json()
+                
+                if data.get("status_code") != 20000:
+                    raise DataForSEOAuthError(
+                        f"Authentication failed: {data.get('status_message', 'Unknown error')}"
+                    )
+                
+                self._auth_validated = True
+                logger.info("DataForSEO authentication successful")
+            
+            except httpx.HTTPStatusError as e:
+                raise DataForSEOAuthError(f"Authentication failed: {e}")
     
     async def close(self):
-        """Close HTTP client connection."""
-        if self._client and not self._client.is_closed:
+        """Close the HTTP client"""
+        if self._client:
             await self._client.aclose()
-    
-    async def __aenter__(self):
-        """Async context manager entry."""
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        await self.close()
+            self._client = None
+            self._auth_validated = False
     
     async def _rate_limit(self):
-        """Enforce rate limiting."""
+        """Enforce rate limiting"""
         async with self._request_lock:
             now = asyncio.get_event_loop().time()
             time_since_last = now - self._last_request_time
@@ -160,136 +205,306 @@ class DataForSEOClient:
             
             self._last_request_time = asyncio.get_event_loop().time()
     
-    def _generate_cache_key(self, endpoint: str, params: Dict[str, Any]) -> str:
-        """Generate cache key from endpoint and parameters."""
-        key_str = f"{endpoint}:{json.dumps(params, sort_keys=True)}"
-        return hashlib.md5(key_str.encode()).hexdigest()
+    def _generate_cache_key(self, prefix: str, params: Dict[str, Any]) -> str:
+        """Generate a cache key from parameters"""
+        param_str = json.dumps(params, sort_keys=True)
+        hash_suffix = hashlib.md5(param_str.encode()).hexdigest()[:8]
+        return f"{prefix}_{hash_suffix}"
     
-    async def _get_cached_response(self, cache_key: str) -> Optional[Dict[str, Any]]:
-        """Retrieve cached response from Supabase if available."""
+    async def _get_cached_result(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve cached result from Supabase"""
         if not self.supabase:
             return None
         
         try:
-            cutoff_time = datetime.utcnow() - timedelta(hours=self.cache_ttl_hours)
+            result = self.supabase.table("dataforseo_cache") \
+                .select("data, created_at") \
+                .eq("cache_key", cache_key) \
+                .single() \
+                .execute()
             
-            result = self.supabase.table("api_cache").select("*").eq(
-                "cache_key", cache_key
-            ).gte("created_at", cutoff_time.isoformat()).execute()
-            
-            if result.data and len(result.data) > 0:
-                logger.info(f"Cache hit for key: {cache_key}")
-                return result.data[0]["response_data"]
+            if result.data:
+                created_at = datetime.fromisoformat(result.data["created_at"].replace("Z", "+00:00"))
+                age = datetime.now(created_at.tzinfo) - created_at
+                
+                if age < timedelta(hours=self.cache_ttl_hours):
+                    logger.info(f"Cache hit for key: {cache_key}")
+                    return result.data["data"]
+                else:
+                    logger.info(f"Cache expired for key: {cache_key}")
+        
         except Exception as e:
-            logger.warning(f"Failed to retrieve cached response: {e}")
+            logger.warning(f"Cache retrieval failed: {e}")
         
         return None
     
-    async def _cache_response(self, cache_key: str, response: Dict[str, Any]):
-        """Cache response to Supabase."""
+    async def _set_cached_result(self, cache_key: str, data: Dict[str, Any]):
+        """Store result in Supabase cache"""
         if not self.supabase:
             return
         
         try:
-            self.supabase.table("api_cache").upsert({
+            self.supabase.table("dataforseo_cache").upsert({
                 "cache_key": cache_key,
-                "response_data": response,
+                "data": data,
                 "created_at": datetime.utcnow().isoformat(),
-                "source": "dataforseo",
             }).execute()
-            logger.info(f"Cached response for key: {cache_key}")
+            
+            logger.info(f"Cached result for key: {cache_key}")
+        
         except Exception as e:
-            logger.warning(f"Failed to cache response: {e}")
+            logger.warning(f"Cache storage failed: {e}")
     
     @retry(
-        retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
     )
     async def _make_request(
         self,
         endpoint: str,
+        method: str = "POST",
         data: Optional[List[Dict[str, Any]]] = None,
-        use_cache: bool = True,
     ) -> Dict[str, Any]:
         """
-        Make authenticated request to DataForSEO API with rate limiting and caching.
+        Make an authenticated request to DataForSEO API with retries and rate limiting.
         
         Args:
-            endpoint: API endpoint path (e.g., "/serp/google/organic/live/advanced")
-            data: Request payload
-            use_cache: Whether to use cached responses
+            endpoint: API endpoint path (without base URL)
+            method: HTTP method (GET or POST)
+            data: Request payload for POST requests
         
         Returns:
-            API response dictionary
+            Parsed JSON response
         
         Raises:
             DataForSEOError: On API errors
             DataForSEORateLimitError: On rate limit exceeded
-            DataForSEOAuthError: On authentication failure
         """
-        url = f"{self.BASE_URL}{endpoint}"
+        if not self._client or not self._auth_validated:
+            await self.authenticate()
         
-        # Check cache first
-        if use_cache and data:
-            cache_key = self._generate_cache_key(endpoint, data[0] if data else {})
-            cached = await self._get_cached_response(cache_key)
-            if cached:
-                return cached
-        
-        # Rate limiting
         await self._rate_limit()
         
-        # Make request
-        client = await self._get_client()
+        url = f"{self.BASE_URL}/{endpoint}"
         
         try:
-            if data:
-                response = await client.post(url, json=data)
+            if method == "POST":
+                response = await self._client.post(url, json=data)
             else:
-                response = await client.get(url)
+                response = await self._client.get(url)
             
             response.raise_for_status()
+            result = response.json()
             
+            # Check DataForSEO status code
+            status_code = result.get("status_code")
+            status_message = result.get("status_message", "Unknown error")
+            
+            if status_code == 40000:  # Rate limit
+                raise DataForSEORateLimitError(f"Rate limit exceeded: {status_message}")
+            elif status_code == 40100:  # Authentication failed
+                raise DataForSEOAuthError(f"Authentication failed: {status_message}")
+            elif status_code != 20000:  # Not OK
+                raise DataForSEOError(f"API error ({status_code}): {status_message}")
+            
+            return result
+        
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                raise DataForSEOAuthError("Authentication failed. Check credentials.")
-            elif e.response.status_code == 429:
-                raise DataForSEORateLimitError("Rate limit exceeded. Retry later.")
-            else:
-                raise DataForSEOError(f"HTTP {e.response.status_code}: {e.response.text}")
+            if e.response.status_code == 429:
+                raise DataForSEORateLimitError("Rate limit exceeded")
+            raise DataForSEOError(f"HTTP error: {e}")
         
-        result = response.json()
+        except httpx.TimeoutException:
+            logger.warning(f"Request timeout for {endpoint}, retrying...")
+            raise
         
-        # DataForSEO API structure: {"status_code": 20000, "tasks": [...]}
-        if result.get("status_code") != 20000:
-            error_msg = result.get("status_message", "Unknown error")
-            raise DataForSEOError(f"API error: {error_msg}")
-        
-        # Cache successful response
-        if use_cache and data:
-            await self._cache_response(cache_key, result)
-        
-        return result
+        except httpx.NetworkError as e:
+            logger.warning(f"Network error for {endpoint}, retrying: {e}")
+            raise
     
-    async def authenticate(self) -> bool:
+    def _classify_serp_features(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Test authentication by making a simple API call.
+        Classify and count SERP features from DataForSEO items.
+        
+        Args:
+            items: List of SERP items from DataForSEO response
         
         Returns:
-            True if authentication successful
-        
-        Raises:
-            DataForSEOAuthError: If authentication fails
+            Dictionary with feature classifications and counts
         """
-        try:
-            await self._make_request("/serp/google/locations", use_cache=False)
-            logger.info("DataForSEO authentication successful")
-            return True
-        except DataForSEOAuthError:
-            raise
-        except Exception as e:
-            raise DataForSEOAuthError(f"Authentication test failed: {e}")
+        features = {
+            "featured_snippet": False,
+            "people_also_ask": False,
+            "people_also_ask_count": 0,
+            "knowledge_graph": False,
+            "local_pack": False,
+            "video": False,
+            "image": False,
+            "shopping": False,
+            "top_stories": False,
+            "ai_overview": False,
+            "related_searches": False,
+            "all_features": [],
+        }
+        
+        for item in items:
+            item_type = item.get("type", "")
+            
+            for feature_name, type_list in self.SERP_FEATURE_TYPES.items():
+                if item_type in type_list:
+                    features["all_features"].append(item_type)
+                    
+                    if feature_name == "people_also_ask":
+                        features[feature_name] = True
+                        # Count number of PAA items
+                        if "items" in item:
+                            features["people_also_ask_count"] += len(item.get("items", []))
+                    else:
+                        features[feature_name] = True
+        
+        return features
+    
+    def _calculate_visual_position(
+        self,
+        organic_position: int,
+        items: List[Dict[str, Any]],
+    ) -> Tuple[float, List[str]]:
+        """
+        Calculate visual position accounting for SERP features above the result.
+        
+        Args:
+            organic_position: Organic ranking position (1-based)
+            items: All SERP items from DataForSEO response
+        
+        Returns:
+            Tuple of (visual_position, list_of_features_above)
+        """
+        features_above = []
+        visual_offset = 0.0
+        
+        # Find organic result to get its rank_absolute
+        target_rank = None
+        for item in items:
+            if item.get("type") == "organic" and item.get("rank_group") == organic_position:
+                target_rank = item.get("rank_absolute", organic_position)
+                break
+        
+        if target_rank is None:
+            target_rank = organic_position
+        
+        # Count features that appear before this rank
+        for item in items:
+            item_type = item.get("type", "")
+            item_rank = item.get("rank_absolute", 999)
+            
+            # Only count features above the target result
+            if item_rank < target_rank:
+                for feature_name, type_list in self.SERP_FEATURE_TYPES.items():
+                    if item_type in type_list:
+                        impact = self.SERP_FEATURE_VISUAL_IMPACT.get(feature_name, 0.5)
+                        
+                        # For PAA, multiply by number of questions
+                        if feature_name == "people_also_ask" and "items" in item:
+                            impact *= len(item.get("items", []))
+                        
+                        visual_offset += impact
+                        features_above.append(item_type)
+        
+        visual_position = organic_position + visual_offset
+        return visual_position, features_above
+    
+    def _extract_competitor_domains(
+        self,
+        items: List[Dict[str, Any]],
+        exclude_domain: Optional[str] = None,
+        top_n: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract competitor domains from organic results.
+        
+        Args:
+            items: SERP items from DataForSEO response
+            exclude_domain: Domain to exclude (user's own domain)
+            top_n: Number of top positions to consider
+        
+        Returns:
+            List of competitor domain dictionaries with position info
+        """
+        competitors = []
+        
+        for item in items:
+            if item.get("type") != "organic":
+                continue
+            
+            position = item.get("rank_group")
+            if not position or position > top_n:
+                continue
+            
+            url = item.get("url", "")
+            domain = item.get("domain", "")
+            
+            # Extract domain from URL if not provided
+            if not domain and url:
+                match = re.search(r"https?://(?:www\.)?([^/]+)", url)
+                if match:
+                    domain = match.group(1)
+            
+            # Skip user's own domain
+            if exclude_domain and domain and exclude_domain.lower() in domain.lower():
+                continue
+            
+            competitors.append({
+                "domain": domain,
+                "url": url,
+                "position": position,
+                "title": item.get("title", ""),
+                "description": item.get("description", ""),
+            })
+        
+        return competitors
+    
+    def _estimate_ctr(
+        self,
+        position: int,
+        features: Dict[str, Any],
+        visual_position: float,
+    ) -> float:
+        """
+        Estimate CTR based on position and SERP features.
+        
+        Uses baseline CTR curve adjusted for SERP feature displacement.
+        
+        Args:
+            position: Organic position
+            features: SERP features dictionary
+            visual_position: Visual position accounting for features
+        
+        Returns:
+            Estimated CTR (0.0 to 1.0)
+        """
+        # Get baseline CTR for organic position
+        baseline_ctr = self.BASELINE_CTR_CURVE.get(position, 0.003)
+        
+        # Apply displacement penalty based on visual position shift
+        displacement = visual_position - position
+        
+        if displacement > 0:
+            # Each position of displacement reduces CTR by ~30%
+            penalty_factor = 0.7 ** displacement
+            estimated_ctr = baseline_ctr * penalty_factor
+        else:
+            estimated_ctr = baseline_ctr
+        
+        # Additional penalty if AI Overview is present (can take significant clicks)
+        if features.get("ai_overview"):
+            estimated_ctr *= 0.7
+        
+        # Additional penalty if featured snippet is present and we're not in position 1
+        if features.get("featured_snippet") and position > 1:
+            estimated_ctr *= 0.8
+        
+        return max(0.0, min(1.0, estimated_ctr))
     
     async def fetch_serp_results(
         self,
@@ -299,631 +514,430 @@ class DataForSEOClient:
         device: str = "desktop",
         depth: int = 100,
         use_cache: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         Fetch live SERP results for multiple keywords.
         
         Args:
-            keywords: List of search keywords
+            keywords: List of keywords to analyze
             location_code: DataForSEO location code (2840 = US)
-            language_code: Language code (e.g., "en")
-            device: Device type ("desktop", "mobile")
-            depth: Number of results to fetch (max 100)
-            use_cache: Whether to use cached responses
+            language_code: Language code
+            device: Device type (desktop, mobile)
+            depth: Number of results to retrieve (max 100)
+            use_cache: Whether to use cached results
         
         Returns:
-            List of standardized SERP result dictionaries, one per keyword
-        
-        Example:
-            >>> results = await client.fetch_serp_results(
-            ...     keywords=["best crm", "crm software"],
-            ...     location_code=2840
-            ... )
-            >>> for result in results:
-            ...     print(result["keyword"], result["organic_results"][:3])
+            Dictionary mapping keywords to SERP analysis results
         """
-        tasks = []
+        results = {}
+        
         for keyword in keywords:
-            task_data = {
-                "keyword": keyword,
-                "location_code": location_code,
-                "language_code": language_code,
-                "device": device,
-                "depth": depth,
-                "calculate_rectangles": True,  # For visual position calculation
-            }
-            tasks.append(task_data)
-        
-        response = await self._make_request(
-            "/serp/google/organic/live/advanced",
-            data=tasks,
-            use_cache=use_cache,
-        )
-        
-        results = []
-        for task in response.get("tasks", []):
-            if task["status_code"] != 20000:
-                logger.warning(f"Task failed: {task.get('status_message')}")
-                continue
+            cache_key = self._generate_cache_key(
+                "serp",
+                {
+                    "keyword": keyword,
+                    "location": location_code,
+                    "language": language_code,
+                    "device": device,
+                }
+            )
             
-            for result_item in task.get("result", []):
-                parsed = self._parse_serp_result(result_item)
-                results.append(parsed)
+            # Check cache
+            if use_cache:
+                cached = await self._get_cached_result(cache_key)
+                if cached:
+                    results[keyword] = cached
+                    continue
+            
+            # Make API request
+            try:
+                payload = [{
+                    "keyword": keyword,
+                    "location_code": location_code,
+                    "language_code": language_code,
+                    "device": device,
+                    "depth": depth,
+                }]
+                
+                response = await self._make_request(
+                    "serp/google/organic/live/advanced",
+                    method="POST",
+                    data=payload,
+                )
+                
+                # Parse response
+                tasks = response.get("tasks", [])
+                if not tasks or not tasks[0].get("result"):
+                    logger.warning(f"No SERP results for keyword: {keyword}")
+                    results[keyword] = None
+                    continue
+                
+                task_result = tasks[0]["result"][0]
+                items = task_result.get("items", [])
+                
+                # Classify SERP features
+                features = self._classify_serp_features(items)
+                
+                # Extract organic results with visual positions
+                organic_results = []
+                for item in items:
+                    if item.get("type") == "organic":
+                        position = item.get("rank_group")
+                        if position:
+                            visual_pos, features_above = self._calculate_visual_position(
+                                position, items
+                            )
+                            
+                            estimated_ctr = self._estimate_ctr(position, features, visual_pos)
+                            
+                            organic_results.append({
+                                "position": position,
+                                "visual_position": visual_pos,
+                                "url": item.get("url", ""),
+                                "domain": item.get("domain", ""),
+                                "title": item.get("title", ""),
+                                "description": item.get("description", ""),
+                                "features_above": features_above,
+                                "estimated_ctr": estimated_ctr,
+                            })
+                
+                # Extract competitors
+                competitors = self._extract_competitor_domains(items)
+                
+                keyword_result = {
+                    "keyword": keyword,
+                    "serp_features": features,
+                    "organic_results": organic_results,
+                    "competitors": competitors,
+                    "total_results": task_result.get("items_count", 0),
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                
+                results[keyword] = keyword_result
+                
+                # Cache result
+                if use_cache:
+                    await self._set_cached_result(cache_key, keyword_result)
+            
+            except Exception as e:
+                logger.error(f"Error fetching SERP for keyword '{keyword}': {e}")
+                results[keyword] = None
         
         return results
     
-    def _parse_serp_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Parse and standardize SERP result data.
-        
-        Returns standardized structure for modules 3, 8, and 11.
-        """
-        keyword = result.get("keyword", "")
-        items = result.get("items", [])
-        
-        # Extract organic results
-        organic_results = []
-        for item in items:
-            if item.get("type") == "organic":
-                organic_results.append({
-                    "position": item.get("rank_group", 0),
-                    "url": item.get("url", ""),
-                    "domain": item.get("domain", ""),
-                    "title": item.get("title", ""),
-                    "description": item.get("description", ""),
-                    "breadcrumb": item.get("breadcrumb", ""),
-                })
-        
-        # Detect SERP features
-        serp_features = self._detect_serp_features(items)
-        
-        # Calculate visual position adjustments
-        visual_adjustments = self._calculate_visual_positions(items)
-        
-        # Extract competitor domains
-        competitor_domains = self._extract_competitor_domains(organic_results)
-        
-        return {
-            "keyword": keyword,
-            "organic_results": organic_results,
-            "serp_features": serp_features,
-            "visual_adjustments": visual_adjustments,
-            "competitor_domains": competitor_domains,
-            "total_results": result.get("items_count", 0),
-            "fetch_time": datetime.utcnow().isoformat(),
-        }
-    
-    def _detect_serp_features(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Detect presence and characteristics of SERP features.
-        
-        Returns:
-            Dictionary mapping feature types to their details
-        """
-        features = {
-            "featured_snippet": None,
-            "people_also_ask": [],
-            "knowledge_graph": None,
-            "local_pack": None,
-            "video": [],
-            "image": None,
-            "shopping": [],
-            "top_stories": [],
-            "ai_overview": None,
-            "related_searches": [],
-        }
-        
-        for item in items:
-            item_type = item.get("type", "")
-            
-            if item_type == "featured_snippet":
-                features["featured_snippet"] = {
-                    "title": item.get("title", ""),
-                    "description": item.get("description", ""),
-                    "url": item.get("url", ""),
-                    "domain": item.get("domain", ""),
-                }
-            
-            elif item_type == "people_also_ask":
-                for expanded_item in item.get("items", []):
-                    features["people_also_ask"].append({
-                        "question": expanded_item.get("title", ""),
-                        "answer": expanded_item.get("description", ""),
-                        "url": expanded_item.get("url", ""),
-                    })
-            
-            elif item_type == "knowledge_graph":
-                features["knowledge_graph"] = {
-                    "title": item.get("title", ""),
-                    "description": item.get("description", ""),
-                    "type": item.get("card_id", ""),
-                }
-            
-            elif item_type == "local_pack":
-                features["local_pack"] = {
-                    "count": len(item.get("items", [])),
-                }
-            
-            elif item_type == "video":
-                features["video"].append({
-                    "title": item.get("title", ""),
-                    "source": item.get("source", ""),
-                    "url": item.get("url", ""),
-                })
-            
-            elif item_type == "images":
-                features["image"] = {
-                    "count": len(item.get("items", [])),
-                }
-            
-            elif item_type in ["shopping", "google_shopping"]:
-                features["shopping"].append({
-                    "title": item.get("title", ""),
-                    "price": item.get("price", ""),
-                })
-            
-            elif item_type == "top_stories":
-                for story in item.get("items", []):
-                    features["top_stories"].append({
-                        "title": story.get("title", ""),
-                        "source": story.get("source", ""),
-                        "url": story.get("url", ""),
-                    })
-            
-            elif item_type == "ai_overview":
-                features["ai_overview"] = {
-                    "text": item.get("text", ""),
-                }
-            
-            elif item_type in ["people_also_search", "related_searches"]:
-                for search in item.get("items", []):
-                    features["related_searches"].append(search.get("title", ""))
-        
-        return features
-    
-    def _calculate_visual_positions(self, items: List[Dict[str, Any]]) -> Dict[int, int]:
-        """
-        Calculate visual position adjustments based on SERP features.
-        
-        Returns:
-            Dictionary mapping organic rank_group to visual position
-            (accounting for SERP features appearing above)
-        """
-        adjustments = {}
-        visual_offset = 0
-        
-        for item in items:
-            item_type = item.get("type", "")
-            rank_group = item.get("rank_group", 0)
-            
-            # Adjust visual offset based on feature type
-            if item_type == "featured_snippet":
-                visual_offset += 2  # Featured snippets push down ~2 positions
-            elif item_type == "people_also_ask":
-                # Each PAA question adds ~0.5 visual positions
-                paa_count = len(item.get("items", []))
-                visual_offset += paa_count * 0.5
-            elif item_type == "knowledge_graph":
-                visual_offset += 1.5
-            elif item_type == "local_pack":
-                visual_offset += 3  # Local pack typically shows 3 results
-            elif item_type == "video":
-                visual_offset += 1
-            elif item_type == "images":
-                visual_offset += 0.5
-            elif item_type == "shopping":
-                visual_offset += 1
-            elif item_type == "top_stories":
-                visual_offset += 3
-            elif item_type == "ai_overview":
-                visual_offset += 2
-            
-            # Map organic positions to visual positions
-            if item_type == "organic" and rank_group > 0:
-                adjustments[rank_group] = rank_group + int(visual_offset)
-        
-        return adjustments
-    
-    def _extract_competitor_domains(
-        self, organic_results: List[Dict[str, Any]]
-    ) -> List[str]:
-        """Extract unique competitor domains from organic results."""
-        domains = []
-        for result in organic_results:
-            domain = result.get("domain", "")
-            if domain and domain not in domains:
-                domains.append(domain)
-        return domains
-    
-    async def analyze_competitor_rankings(
+    async def fetch_keyword_data(
         self,
         keywords: List[str],
-        user_domain: str,
         location_code: int = 2840,
         language_code: str = "en",
         use_cache: bool = True,
     ) -> Dict[str, Any]:
         """
-        Analyze competitor domain rankings across keyword set.
+        Fetch keyword difficulty and search volume data.
         
         Args:
             keywords: List of keywords to analyze
-            user_domain: User's domain (to exclude from competitors)
             location_code: DataForSEO location code
             language_code: Language code
-            use_cache: Whether to use cached responses
+            use_cache: Whether to use cached results
         
         Returns:
-            Dictionary with competitor analysis:
+            Dictionary mapping keywords to keyword metrics
+        """
+        cache_key = self._generate_cache_key(
+            "keywords",
             {
-                "competitors": [
-                    {
-                        "domain": "competitor.com",
-                        "keywords_shared": 15,
-                        "avg_position": 4.2,
-                        "keywords": ["keyword1", "keyword2", ...],
-                        "threat_level": "high"
-                    }
-                ],
-                "total_keywords_analyzed": 50
+                "keywords": sorted(keywords),
+                "location": location_code,
+                "language": language_code,
             }
-        """
-        # Fetch SERP results for all keywords
-        serp_results = await self.fetch_serp_results(
-            keywords=keywords,
-            location_code=location_code,
-            language_code=language_code,
-            use_cache=use_cache,
         )
         
-        # Build competitor frequency matrix
-        competitor_data: Dict[str, Dict[str, Any]] = {}
+        # Check cache
+        if use_cache:
+            cached = await self._get_cached_result(cache_key)
+            if cached:
+                return cached
         
-        for result in serp_results:
-            keyword = result["keyword"]
-            for domain in result["competitor_domains"]:
-                # Skip user's own domain
-                if domain.lower() == user_domain.lower():
-                    continue
-                
-                if domain not in competitor_data:
-                    competitor_data[domain] = {
-                        "keywords": [],
-                        "positions": [],
+        # Make API request
+        try:
+            payload = [{
+                "keywords": keywords,
+                "location_code": location_code,
+                "language_code": language_code,
+            }]
+            
+            response = await self._make_request(
+                "keywords_data/google_ads/search_volume/live",
+                method="POST",
+                data=payload,
+            )
+            
+            # Parse response
+            tasks = response.get("tasks", [])
+            if not tasks or not tasks[0].get("result"):
+                logger.warning("No keyword data returned")
+                return {}
+            
+            result_data = {}
+            for item in tasks[0]["result"]:
+                keyword = item.get("keyword")
+                if keyword:
+                    result_data[keyword] = {
+                        "keyword": keyword,
+                        "search_volume": item.get("search_volume"),
+                        "competition": item.get("competition"),
+                        "competition_index": item.get("competition_index"),
+                        "cpc": item.get("cpc"),
+                        "low_top_of_page_bid": item.get("low_top_of_page_bid"),
+                        "high_top_of_page_bid": item.get("high_top_of_page_bid"),
+                        "monthly_searches": item.get("monthly_searches", []),
                     }
-                
-                competitor_data[domain]["keywords"].append(keyword)
-                
-                # Find position for this domain
-                for org_result in result["organic_results"]:
-                    if org_result["domain"] == domain:
-                        competitor_data[domain]["positions"].append(
-                            org_result["position"]
-                        )
-                        break
-        
-        # Calculate metrics for each competitor
-        competitors = []
-        for domain, data in competitor_data.items():
-            keywords_shared = len(data["keywords"])
-            avg_position = (
-                sum(data["positions"]) / len(data["positions"])
-                if data["positions"] else 0
-            )
             
-            # Classify threat level
-            threat_level = "low"
-            if keywords_shared > len(keywords) * 0.5:
-                threat_level = "high"
-            elif keywords_shared > len(keywords) * 0.2:
-                threat_level = "medium"
+            # Cache result
+            if use_cache:
+                await self._set_cached_result(cache_key, result_data)
             
-            competitors.append({
-                "domain": domain,
-                "keywords_shared": keywords_shared,
-                "avg_position": round(avg_position, 2),
-                "keywords": data["keywords"],
-                "threat_level": threat_level,
-            })
+            return result_data
         
-        # Sort by keywords_shared DESC
-        competitors.sort(key=lambda x: x["keywords_shared"], reverse=True)
-        
-        return {
-            "competitors": competitors,
-            "total_keywords_analyzed": len(keywords),
-        }
+        except Exception as e:
+            logger.error(f"Error fetching keyword data: {e}")
+            return {}
     
-    def calculate_ctr_with_features(
+    async def analyze_competitor_domains(
         self,
-        position: int,
-        serp_features: Dict[str, Any],
-        visual_position: Optional[int] = None,
-    ) -> float:
-        """
-        Calculate estimated CTR for a position, adjusted for SERP features.
-        
-        Args:
-            position: Organic position (1-20)
-            serp_features: Dictionary of SERP features present
-            visual_position: Calculated visual position (if different from organic)
-        
-        Returns:
-            Estimated CTR as decimal (e.g., 0.15 = 15%)
-        """
-        # Start with baseline CTR
-        base_ctr = self.BASELINE_CTR_CURVE.get(position, 0.005)
-        
-        # If visual position is significantly lower, use that as base
-        if visual_position and visual_position > position + 2:
-            base_ctr = self.BASELINE_CTR_CURVE.get(
-                min(visual_position, 20), 0.005
-            )
-        
-        # Apply feature-based adjustments
-        ctr_multiplier = 1.0
-        
-        # Featured snippet reduces CTR for position 1
-        if serp_features.get("featured_snippet") and position == 1:
-            ctr_multiplier *= 0.6
-        
-        # PAA reduces CTR moderately
-        paa_count = len(serp_features.get("people_also_ask", []))
-        if paa_count > 0:
-            ctr_multiplier *= (1.0 - (paa_count * 0.05))
-        
-        # Knowledge graph reduces CTR significantly
-        if serp_features.get("knowledge_graph"):
-            ctr_multiplier *= 0.7
-        
-        # Local pack dominates for local queries
-        if serp_features.get("local_pack") and position <= 5:
-            ctr_multiplier *= 0.5
-        
-        # Video carousel reduces organic CTR
-        if serp_features.get("video"):
-            ctr_multiplier *= 0.8
-        
-        # AI overview significantly reduces CTR
-        if serp_features.get("ai_overview"):
-            ctr_multiplier *= 0.4
-        
-        return max(base_ctr * ctr_multiplier, 0.001)  # Floor at 0.1%
-    
-    async def get_organic_ctr_data(
-        self,
-        keywords: List[str],
-        user_domain: str,
+        domain: str,
         location_code: int = 2840,
         language_code: str = "en",
-        use_cache: bool = True,
-    ) -> List[Dict[str, Any]]:
-        """
-        Get organic CTR estimates for user's rankings on given keywords.
-        
-        Args:
-            keywords: List of keywords to analyze
-            user_domain: User's domain
-            location_code: DataForSEO location code
-            language_code: Language code
-            use_cache: Whether to use cached responses
-        
-        Returns:
-            List of CTR data dictionaries:
-            [
-                {
-                    "keyword": "best crm",
-                    "position": 3,
-                    "visual_position": 8,
-                    "estimated_ctr": 0.045,
-                    "estimated_ctr_without_features": 0.105,
-                    "ctr_impact": -0.060,
-                    "serp_features_present": ["featured_snippet", "people_also_ask"],
-                    "url": "https://example.com/page"
-                }
-            ]
-        """
-        serp_results = await self.fetch_serp_results(
-            keywords=keywords,
-            location_code=location_code,
-            language_code=language_code,
-            use_cache=use_cache,
-        )
-        
-        ctr_data = []
-        
-        for result in serp_results:
-            keyword = result["keyword"]
-            serp_features = result["serp_features"]
-            visual_adjustments = result["visual_adjustments"]
-            
-            # Find user's position
-            user_position = None
-            user_url = None
-            
-            for org_result in result["organic_results"]:
-                if org_result["domain"].lower() == user_domain.lower():
-                    user_position = org_result["position"]
-                    user_url = org_result["url"]
-                    break
-            
-            if user_position is None:
-                # User not ranking for this keyword
-                continue
-            
-            visual_position = visual_adjustments.get(user_position, user_position)
-            
-            # Calculate CTR with and without features
-            estimated_ctr = self.calculate_ctr_with_features(
-                user_position, serp_features, visual_position
-            )
-            baseline_ctr = self.BASELINE_CTR_CURVE.get(user_position, 0.005)
-            
-            # List active features
-            active_features = []
-            for feature_type, feature_data in serp_features.items():
-                if feature_data:  # Not None or empty list/dict
-                    active_features.append(feature_type)
-            
-            ctr_data.append({
-                "keyword": keyword,
-                "position": user_position,
-                "visual_position": visual_position,
-                "estimated_ctr": round(estimated_ctr, 4),
-                "estimated_ctr_without_features": round(baseline_ctr, 4),
-                "ctr_impact": round(estimated_ctr - baseline_ctr, 4),
-                "serp_features_present": active_features,
-                "url": user_url,
-            })
-        
-        return ctr_data
-    
-    async def batch_keyword_analysis(
-        self,
-        keywords: List[str],
-        user_domain: str,
-        location_code: int = 2840,
-        language_code: str = "en",
-        batch_size: int = 10,
+        limit: int = 100,
         use_cache: bool = True,
     ) -> Dict[str, Any]:
         """
-        Comprehensive batch analysis of keywords for modules 3, 8, and 11.
+        Analyze competitor domain performance (organic keywords, traffic estimates).
         
-        Combines SERP results, competitor analysis, and CTR estimates into
-        a single standardized output.
+        Args:
+            domain: Domain to analyze
+            location_code: DataForSEO location code
+            language_code: Language code
+            limit: Number of keywords to retrieve
+            use_cache: Whether to use cached results
+        
+        Returns:
+            Domain analysis with top keywords and metrics
+        """
+        cache_key = self._generate_cache_key(
+            "domain",
+            {
+                "domain": domain,
+                "location": location_code,
+                "language": language_code,
+            }
+        )
+        
+        # Check cache
+        if use_cache:
+            cached = await self._get_cached_result(cache_key)
+            if cached:
+                return cached
+        
+        # Make API request
+        try:
+            payload = [{
+                "target": domain,
+                "location_code": location_code,
+                "language_code": language_code,
+                "limit": limit,
+            }]
+            
+            response = await self._make_request(
+                "dataforseo_labs/google/ranked_keywords/live",
+                method="POST",
+                data=payload,
+            )
+            
+            # Parse response
+            tasks = response.get("tasks", [])
+            if not tasks or not tasks[0].get("result"):
+                logger.warning(f"No domain data for: {domain}")
+                return {}
+            
+            task_result = tasks[0]["result"][0]
+            
+            # Extract metrics
+            metrics = task_result.get("metrics", {})
+            items = task_result.get("items", [])
+            
+            # Process top keywords
+            top_keywords = []
+            for item in items[:50]:  # Top 50 keywords
+                keyword_data = item.get("keyword_data", {})
+                ranked_serp_element = item.get("ranked_serp_element", {})
+                
+                top_keywords.append({
+                    "keyword": keyword_data.get("keyword"),
+                    "search_volume": keyword_data.get("keyword_info", {}).get("search_volume"),
+                    "position": ranked_serp_element.get("serp_item", {}).get("rank_group"),
+                    "etv": item.get("etv"),  # Estimated traffic value
+                })
+            
+            domain_analysis = {
+                "domain": domain,
+                "metrics": {
+                    "organic_keywords_count": metrics.get("organic", {}).get("count"),
+                    "organic_etv": metrics.get("organic", {}).get("etv"),
+                    "organic_pos_1": metrics.get("organic", {}).get("pos_1"),
+                    "organic_pos_2_3": metrics.get("organic", {}).get("pos_2_3"),
+                    "organic_pos_4_10": metrics.get("organic", {}).get("pos_4_10"),
+                    "organic_pos_11_20": metrics.get("organic", {}).get("pos_11_20"),
+                },
+                "top_keywords": top_keywords,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            
+            # Cache result
+            if use_cache:
+                await self._set_cached_result(cache_key, domain_analysis)
+            
+            return domain_analysis
+        
+        except Exception as e:
+            logger.error(f"Error analyzing domain '{domain}': {e}")
+            return {}
+    
+    async def batch_serp_analysis(
+        self,
+        keywords: List[str],
+        user_domain: Optional[str] = None,
+        location_code: int = 2840,
+        language_code: str = "en",
+        use_cache: bool = True,
+        batch_size: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Batch process multiple keywords with full SERP analysis.
+        
+        Includes:
+        - SERP features for each keyword
+        - User's ranking position (if domain provided)
+        - Visual position calculation
+        - Competitor analysis
+        - CTR estimation
         
         Args:
             keywords: List of keywords to analyze
-            user_domain: User's domain
+            user_domain: User's domain (to identify their rankings)
             location_code: DataForSEO location code
             language_code: Language code
-            batch_size: Number of keywords to process per batch
-            use_cache: Whether to use cached responses
+            use_cache: Whether to use cached results
+            batch_size: Process keywords in batches to avoid overwhelming API
         
         Returns:
-            Comprehensive analysis dictionary with all data needed for
-            Module 3 (SERP landscape), Module 8 (CTR), and Module 11 (competitors)
+            Comprehensive SERP analysis for all keywords
         """
-        all_results = []
+        all_results = {}
         
-        # Process in batches to avoid overwhelming the API
+        # Process in batches
         for i in range(0, len(keywords), batch_size):
             batch = keywords[i:i + batch_size]
-            logger.info(f"Processing batch {i//batch_size + 1}: {len(batch)} keywords")
-            
             batch_results = await self.fetch_serp_results(
                 keywords=batch,
                 location_code=location_code,
                 language_code=language_code,
                 use_cache=use_cache,
             )
-            all_results.extend(batch_results)
+            all_results.update(batch_results)
             
-            # Rate limiting between batches
+            # Small delay between batches
             if i + batch_size < len(keywords):
                 await asyncio.sleep(1)
         
-        # Competitor analysis
-        competitor_analysis = await self.analyze_competitor_rankings(
-            keywords=keywords,
-            user_domain=user_domain,
-            location_code=location_code,
-            language_code=language_code,
-            use_cache=use_cache,
-        )
+        # Aggregate analysis
+        total_keywords = len([r for r in all_results.values() if r is not None])
         
-        # CTR data
-        ctr_data = await self.get_organic_ctr_data(
-            keywords=keywords,
-            user_domain=user_domain,
-            location_code=location_code,
-            language_code=language_code,
-            use_cache=use_cache,
-        )
-        
-        # Aggregate SERP feature statistics
-        feature_stats = self._aggregate_feature_stats(all_results)
-        
-        # Calculate overall click share
-        click_share_data = self._calculate_click_share(all_results, user_domain)
-        
-        return {
-            "serp_results": all_results,
-            "competitor_analysis": competitor_analysis,
-            "ctr_data": ctr_data,
-            "feature_statistics": feature_stats,
-            "click_share": click_share_data,
-            "keywords_analyzed": len(keywords),
-            "keywords_ranking": len(ctr_data),
-            "analysis_timestamp": datetime.utcnow().isoformat(),
-        }
-    
-    def _aggregate_feature_stats(
-        self, serp_results: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """Aggregate SERP feature presence statistics across all keywords."""
-        feature_counts = {
-            feature: 0 for feature in self.SERP_FEATURE_TYPES.keys()
-        }
-        total = len(serp_results)
-        
-        for result in serp_results:
-            features = result["serp_features"]
-            for feature_type, feature_data in features.items():
-                if feature_data:  # Present
-                    feature_counts[feature_type] += 1
-        
-        # Calculate percentages
-        feature_percentages = {
-            feature: round((count / total) * 100, 1)
-            for feature, count in feature_counts.items()
-        }
-        
-        return {
-            "counts": feature_counts,
-            "percentages": feature_percentages,
-            "total_keywords": total,
-        }
-    
-    def _calculate_click_share(
-        self, serp_results: List[Dict[str, Any]], user_domain: str
-    ) -> Dict[str, Any]:
-        """Calculate estimated click share across keyword portfolio."""
-        total_clicks_available = 0.0
-        total_clicks_captured = 0.0
-        
-        for result in serp_results:
-            serp_features = result["serp_features"]
-            
-            # Estimate total clicks available for this keyword
-            # (sum of CTRs for all positions, adjusted for features)
-            available = 0.0
-            captured = 0.0
-            
-            for position in range(1, 11):  # Top 10 positions
-                ctr = self.calculate_ctr_with_features(
-                    position, serp_features, None
-                )
-                available += ctr
+        # Find user's rankings if domain provided
+        user_rankings = []
+        if user_domain:
+            for keyword, data in all_results.items():
+                if not data:
+                    continue
                 
-                # Check if user ranks at this position
-                for org_result in result["organic_results"]:
-                    if (org_result["domain"].lower() == user_domain.lower() and
-                        org_result["position"] == position):
-                        captured += ctr
-            
-            total_clicks_available += available
-            total_clicks_captured += captured
+                for result in data.get("organic_results", []):
+                    if user_domain.lower() in result.get("domain", "").lower():
+                        user_rankings.append({
+                            "keyword": keyword,
+                            "position": result["position"],
+                            "visual_position": result["visual_position"],
+                            "url": result["url"],
+                            "estimated_ctr": result["estimated_ctr"],
+                            "features_above": result["features_above"],
+                        })
+                        break
         
-        click_share = (
-            (total_clicks_captured / total_clicks_available)
-            if total_clicks_available > 0 else 0.0
-        )
+        # Aggregate competitor domains
+        competitor_frequency = {}
+        for keyword, data in all_results.items():
+            if not data:
+                continue
+            
+            for comp in data.get("competitors", []):
+                domain = comp["domain"]
+                if user_domain and user_domain.lower() in domain.lower():
+                    continue
+                
+                if domain not in competitor_frequency:
+                    competitor_frequency[domain] = {
+                        "domain": domain,
+                        "appearances": 0,
+                        "avg_position": 0,
+                        "positions": [],
+                    }
+                
+                competitor_frequency[domain]["appearances"] += 1
+                competitor_frequency[domain]["positions"].append(comp["position"])
+        
+        # Calculate average positions for competitors
+        top_competitors = []
+        for domain, data in competitor_frequency.items():
+            data["avg_position"] = sum(data["positions"]) / len(data["positions"])
+            data["keyword_count"] = len(data["positions"])
+            del data["positions"]  # Remove raw positions list
+            top_competitors.append(data)
+        
+        # Sort by frequency
+        top_competitors.sort(key=lambda x: x["appearances"], reverse=True)
+        
+        # Aggregate SERP features
+        feature_stats = {
+            "featured_snippet": 0,
+            "people_also_ask": 0,
+            "knowledge_graph": 0,
+            "local_pack": 0,
+            "video": 0,
+            "image": 0,
+            "shopping": 0,
+            "top_stories": 0,
+            "ai_overview": 0,
+        }
+        
+        for keyword, data in all_results.items():
+            if not data:
+                continue
+            
+            features = data.get("serp_features", {})
+            for feature in feature_stats.keys():
+                if features.get(feature):
+                    feature_stats[feature] += 1
         
         return {
-            "click_share": round(click_share, 4),
-            "clicks_captured": round(total_clicks_captured, 4),
-            "clicks_available": round(total_clicks_available, 4),
-            "opportunity": round(total_clicks_available - total_clicks_captured, 4),
+            "keywords_analyzed": total_keywords,
+            "user_rankings": user_rankings,
+            "top_competitors": top_competitors[:20],  # Top 20 competitors
+            "serp_feature_prevalence": feature_stats,
+            "detailed_results": all_results,
+            "summary": {
+                "avg_user_position": sum(r["position"] for r in user_rankings) / len(user_rankings) if user_rankings else None,
+                "avg_visual_displacement": sum(r["visual_position"] - r["position"] for r in user_rankings) / len(user_rankings) if user_rankings else None,
+                "keywords_with_ai_overview": feature_stats["ai_overview"],
+                "keywords_with_featured_snippet": feature_stats["featured_snippet"],
+            },
         }
