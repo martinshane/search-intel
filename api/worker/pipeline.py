@@ -178,6 +178,186 @@ def _ensure_dataframe(data: Any, name: str) -> Optional[pd.DataFrame]:
     return data  # return as-is; module will handle or fail gracefully
 
 
+def _normalize_serp_data(raw_serp: Any) -> List[Dict[str, Any]]:
+    """
+    Convert the DataForSEO wrapper dict into a flat list of SERP dicts
+    suitable for modules 3, 8, and 11.
+
+    The DataForSEO ingestion (fetch_serps_for_top_keywords) returns:
+
+        {
+            "total_keywords_requested": N,
+            "successful_fetches": N,
+            "results": [
+                {
+                    "keyword": "best crm",
+                    "success": True,
+                    "data": {
+                        "keyword": "best crm",
+                        "serp_features": {
+                            "featured_snippet": True,
+                            "people_also_ask": 3,
+                            "video_carousel": False,
+                            "local_pack": False,
+                            "knowledge_panel": True,
+                            "ai_overview": True,
+                            "image_pack": False,
+                            "shopping_results": False,
+                            ...
+                        },
+                        "organic_results": [
+                            {"position": 1, "url": "...", "domain": "...",
+                             "title": "...", "is_user_result": False},
+                            ...
+                        ],
+                        "user_position": 3,
+                        "user_url": "https://...",
+                        "visual_position": 8.5,
+                        "competitors": [...],
+                    }
+                },
+                ...
+            ],
+            "spending": {...},
+        }
+
+    Modules 3 and 11 expect a flat list of SERP dicts with features as
+    top-level keys, e.g.:
+
+        [
+            {
+                "keyword": "best crm",
+                "user_domain": "example.com",
+                "organic_results": [...],
+                "featured_snippet": {"position": 0, "text": "..."} or None,
+                "knowledge_panel": {...} or None,
+                "ai_overview": {...} or None,
+                "local_pack": {"position": 2} or None,
+                "people_also_ask": [{"question": "q", "position": 4}, ...],
+                "video_results": [...] or None,
+                "images_pack": {"position": N} or None,
+                "shopping_results": [...] or None,
+                # Also preserved for module 8 backward-compat:
+                "serp_features": {...},
+            },
+            ...
+        ]
+
+    This function bridges the two formats so all three SERP-consuming
+    modules receive correctly shaped data.
+    """
+    if raw_serp is None:
+        return []
+
+    # Already a list — pass through (e.g. test data already in correct format)
+    if isinstance(raw_serp, list):
+        return raw_serp
+
+    if not isinstance(raw_serp, dict):
+        logger.warning(
+            "_normalize_serp_data: unexpected type %s; returning empty list",
+            type(raw_serp).__name__,
+        )
+        return []
+
+    results_list = raw_serp.get("results", [])
+    if not isinstance(results_list, list):
+        logger.warning("_normalize_serp_data: 'results' key is not a list")
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+
+    for entry in results_list:
+        if not isinstance(entry, dict):
+            continue
+        if not entry.get("success", False):
+            continue
+
+        data = entry.get("data", {})
+        if not isinstance(data, dict):
+            continue
+
+        keyword = data.get("keyword", entry.get("keyword", ""))
+        features = data.get("serp_features", {})
+        organic = data.get("organic_results", [])
+
+        # Infer user_domain from the organic results
+        user_domain = ""
+        for org in organic:
+            if org.get("is_user_result"):
+                domain = org.get("domain", "")
+                user_domain = domain.lower().replace("www.", "") if domain else ""
+                break
+
+        # Promote serp_features booleans/counts into the nested structure
+        # that module 3's helpers (_features_above_position, _find_user_result,
+        # _classify_keyword_intent, etc.) expect as top-level keys.
+        #
+        # Module 3 checks:  serp.get("featured_snippet") → truthy dict or None
+        #                    serp.get("knowledge_panel") → truthy dict or None
+        #                    serp.get("ai_overview")      → truthy dict or None
+        #                    serp.get("local_pack")        → truthy dict w/ position
+        #                    serp.get("people_also_ask")   → list of dicts
+        #                    serp.get("video_results")     → list w/ position
+        #                    serp.get("images_pack")       → dict w/ position
+        #                    serp.get("shopping_results")  → list w/ position
+
+        serp_dict: Dict[str, Any] = {
+            "keyword": keyword,
+            "user_domain": user_domain,
+            "organic_results": organic,
+            # Preserve original features for module 8 backward-compat
+            "serp_features": features,
+            # Promote features to top-level keys for module 3 / 11
+            "featured_snippet": (
+                {"position": 0, "text": "featured snippet"}
+                if features.get("featured_snippet") else None
+            ),
+            "knowledge_panel": (
+                {"title": keyword}
+                if features.get("knowledge_panel") else None
+            ),
+            "ai_overview": (
+                {"text": "ai overview"}
+                if features.get("ai_overview") else None
+            ),
+            "local_pack": (
+                {"position": 2}
+                if features.get("local_pack") else None
+            ),
+            "people_also_ask": (
+                [{"question": f"paa_{i}", "position": 4 + i}
+                 for i in range(features.get("people_also_ask", 0))]
+                if features.get("people_also_ask") else []
+            ),
+            "video_results": (
+                [{"url": "https://youtube.com", "position": 6}]
+                if features.get("video_carousel") else None
+            ),
+            "images_pack": (
+                {"position": 7}
+                if features.get("image_pack") else None
+            ),
+            "shopping_results": (
+                [{"price": "$0", "position": 1}]
+                if features.get("shopping_results") else None
+            ),
+            # Extra metadata from DataForSEO processing
+            "user_position": data.get("user_position"),
+            "user_url": data.get("user_url"),
+            "visual_position": data.get("visual_position"),
+            "competitors_raw": data.get("competitors", []),
+        }
+
+        normalized.append(serp_dict)
+
+    logger.info(
+        "_normalize_serp_data: converted %d successful SERP results from DataForSEO wrapper",
+        len(normalized),
+    )
+    return normalized
+
+
 def _get_module_data(completed_modules: Dict[str, 'ModuleResult'], name: str) -> Optional[Dict[str, Any]]:
     """Safely extract data from a completed module result, returning None on failure."""
     result = completed_modules.get(name)
@@ -430,8 +610,10 @@ class AnalysisPipeline:
             }
         
         elif module_name == "serp_landscape":
+            # Module 3 expects a LIST of SERP dicts with top-level feature
+            # keys.  DataForSEO returns a wrapper dict — normalize it.
             inputs = {
-                "serp_data": data_context.get("serp_data"),
+                "serp_data": _normalize_serp_data(data_context.get("serp_data")),
                 "gsc_keyword_data": _ensure_dataframe(
                     data_context.get("gsc_keyword_data"), "gsc_keyword_data"
                 ),
@@ -493,9 +675,21 @@ class AnalysisPipeline:
             # gsc_coverage  → GSC keyword data (query, position, ctr, impressions)
             # crawl_technical → SERP data from DataForSEO (features, competitors)
             # The function uses legacy param names for pipeline backward-compat.
+            #
+            # Module 8 already handles the wrapper dict format (it looks for
+            # "results" key), but its _extract_serp_features expects raw
+            # DataForSEO items which are NOT preserved after pre-parsing.
+            # We pass the normalized list so module 8 can fall back to the
+            # "serp_features" dict on each entry.  Module 8's handler at
+            # line ~580 iterates the list and calls _extract_serp_features
+            # which checks for "items" (raw) — we also need to pass the raw
+            # wrapper dict since module 8 has its own extraction logic.
+            # Pass BOTH the raw dict (for its existing handler) and ensure
+            # each result's "data" is accessible.
+            raw_serp = data_context.get("serp_data")
             inputs = {
                 "gsc_coverage": data_context.get("gsc_keyword_data"),
-                "crawl_technical": data_context.get("serp_data"),
+                "crawl_technical": raw_serp,
             }
         
         elif module_name == "site_architecture":
@@ -548,8 +742,10 @@ class AnalysisPipeline:
             }
         
         elif module_name == "competitive_threats":
+            # Module 11 expects a LIST of SERP dicts — normalize the
+            # DataForSEO wrapper dict into the flat list format.
             inputs = {
-                "serp_data": data_context.get("serp_data"),
+                "serp_data": _normalize_serp_data(data_context.get("serp_data")),
                 "gsc_data": _ensure_dataframe(
                     data_context.get("gsc_keyword_data"), "gsc_keyword_data"
                 ),
