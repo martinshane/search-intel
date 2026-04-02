@@ -801,6 +801,41 @@ class SiteArchitectureAnalyzer:
             "graph_edges": graph_edges,
         }
 
+        # -----------------------------------------------------------------
+        # Frontend-compatible keys
+        # -----------------------------------------------------------------
+        # The React report viewer ([id].tsx) reads different keys and data
+        # shapes than the canonical analysis output.  Adding normalised
+        # aliases here so the frontend renders correctly without changing
+        # the canonical keys (which PDF export and Gameplan may consume).
+        #
+        # 1. network_graph: Frontend passes data.network_graph to the
+        #    <NetworkGraph> D3 component which expects {nodes, links}.
+        #    Module 9 stores these as separate graph_nodes / graph_edges.
+        result["network_graph"] = {
+            "nodes": graph_nodes,
+            "links": graph_edges,
+        }
+
+        # 2. hub_pages: Frontend reads data.hub_pages expecting objects
+        #    with {url, pagerank, inbound_links}.  Module 9 stores
+        #    top_pages_by_pagerank with {url, pagerank_pct}.
+        result["hub_pages"] = [
+            {
+                "url": p["url"],
+                "pagerank": p["pagerank_pct"],
+                "inbound_links": len(self.reverse_adj.get(p["url"], set())),
+            }
+            for p in top_pagerank
+        ]
+
+        # 3. orphan_page_urls: Frontend previously tried to render
+        #    orphan_pages items as plain strings but they are rich dicts.
+        #    The frontend has been updated to read orphan.url, but we
+        #    also provide a flat string list for any other consumers
+        #    (email templates, etc.) that expect simple URL lists.
+        result["orphan_page_urls"] = [o["url"] for o in orphans]
+
         logger.info("Site architecture analysis complete: %s", summary)
         return result
 
