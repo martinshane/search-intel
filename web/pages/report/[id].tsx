@@ -2323,58 +2323,303 @@ function ContentIntelligenceContent({ data }: { data: any }) {
 function GameplanContent({ data }: { data: any }) {
   if (!data) return <div className="text-slate-400">No data available</div>;
 
+  // Collect all actions with their category for the Impact vs Effort chart
+  const CATEGORY_CONFIG: Record<string, { label: string; color: string; bgClass: string; borderClass: string; dotColor: string }> = {
+    critical:   { label: 'Critical Fixes',          color: '#ef4444', bgClass: 'bg-red-900/30',    borderClass: 'border-red-200',         dotColor: '#f87171' },
+    quick_wins: { label: 'Quick Wins',              color: '#f59e0b', bgClass: 'bg-amber-900/30',  borderClass: 'border-yellow-200',      dotColor: '#fbbf24' },
+    strategic:  { label: 'Strategic Plays',         color: '#3b82f6', bgClass: 'bg-blue-900/30',   borderClass: 'border-blue-200',        dotColor: '#60a5fa' },
+    structural: { label: 'Structural Improvements', color: '#6b7280', bgClass: 'bg-slate-800/30',  borderClass: 'border-slate-700/50',    dotColor: '#9ca3af' },
+  };
+
+  const EFFORT_MAP: Record<string, number> = { low: 1, medium: 2, high: 3 };
+  const EFFORT_LABELS: Record<number, string> = { 1: 'Low', 2: 'Medium', 3: 'High' };
+
+  // Build scatter data for Impact vs Effort chart
+  const allActions: Array<{ action: string; impact: number; effort: string; effortNum: number; category: string; page?: string; dependency?: string }> = [];
+  for (const cat of ['critical', 'quick_wins', 'strategic', 'structural']) {
+    const items = data[cat] || [];
+    for (const item of items) {
+      allActions.push({
+        action: item.action || '',
+        impact: item.impact || 0,
+        effort: item.effort || 'medium',
+        effortNum: EFFORT_MAP[item.effort?.toLowerCase()] || 2,
+        category: cat,
+        page: item.page,
+        dependency: item.dependency,
+      });
+    }
+  }
+
+  const hasScatterData = allActions.length >= 2;
+
+  // Build scatter data grouped by category for colored dots
+  const scatterDataByCategory: Record<string, Array<{ x: number; y: number; action: string; effort: string; category: string; page?: string }>> = {};
+  for (const a of allActions) {
+    const cat = a.category;
+    if (!scatterDataByCategory[cat]) scatterDataByCategory[cat] = [];
+    // Add small jitter to effort axis to avoid overlapping dots
+    const jitter = (Math.random() - 0.5) * 0.3;
+    scatterDataByCategory[cat].push({
+      x: a.effortNum + jitter,
+      y: a.impact,
+      action: a.action,
+      effort: a.effort,
+      category: cat,
+      page: a.page,
+    });
+  }
+
+  // Effort distribution for bar chart
+  const effortCounts = { low: 0, medium: 0, high: 0 };
+  let totalImpactByEffort = { low: 0, medium: 0, high: 0 };
+  for (const a of allActions) {
+    const eff = a.effort?.toLowerCase() as keyof typeof effortCounts;
+    if (eff in effortCounts) {
+      effortCounts[eff]++;
+      totalImpactByEffort[eff] += a.impact;
+    }
+  }
+  const effortChartData = [
+    { effort: 'Low Effort', count: effortCounts.low, impact: totalImpactByEffort.low, fill: '#10b981' },
+    { effort: 'Medium Effort', count: effortCounts.medium, impact: totalImpactByEffort.medium, fill: '#f59e0b' },
+    { effort: 'High Effort', count: effortCounts.high, impact: totalImpactByEffort.high, fill: '#ef4444' },
+  ];
+
+  // Category counts for summary
+  const categoryCounts = {
+    critical: (data.critical || []).length,
+    quick_wins: (data.quick_wins || []).length,
+    strategic: (data.strategic || []).length,
+    structural: (data.structural || []).length,
+  };
+  const totalActions = categoryCounts.critical + categoryCounts.quick_wins + categoryCounts.strategic + categoryCounts.structural;
+
+  // Custom tooltip for scatter chart
+  const ScatterTooltip = ({ active, payload }: any) => {
+    if (!active || !payload?.[0]?.payload) return null;
+    const d = payload[0].payload;
+    const catConfig = CATEGORY_CONFIG[d.category];
+    return (
+      <div className="bg-slate-900 border border-slate-600 rounded-lg p-3 shadow-xl max-w-xs">
+        <div className="font-medium text-white text-xs mb-1">{d.action}</div>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+          <span className="text-slate-400">Category:</span>
+          <span style={{ color: catConfig?.color || '#fff' }}>{catConfig?.label || d.category}</span>
+          <span className="text-slate-400">Impact:</span>
+          <span className="text-emerald-400">+{d.y?.toLocaleString()} clicks/mo</span>
+          <span className="text-slate-400">Effort:</span>
+          <span className="text-slate-300 capitalize">{d.effort}</span>
+          {d.page && (
+            <>
+              <span className="text-slate-400">Page:</span>
+              <span className="text-slate-300 truncate" title={d.page}>{d.page.replace(/^https?:\/\/[^/]+/, '')}</span>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
-      {/* Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Summary Cards — 4-grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <MetricCard
           label="Recovery Potential"
-          value={`${data.total_estimated_monthly_click_recovery?.toLocaleString() || 0} clicks/mo`}
+          value={`${data.total_estimated_monthly_click_recovery?.toLocaleString() || 0}`}
           className="text-emerald-400"
         />
         <MetricCard
           label="Growth Opportunity"
-          value={`${data.total_estimated_monthly_click_growth?.toLocaleString() || 0} clicks/mo`}
+          value={`${data.total_estimated_monthly_click_growth?.toLocaleString() || 0}`}
           className="text-blue-400"
         />
+        <MetricCard
+          label="Total Actions"
+          value={`${totalActions}`}
+          className="text-white"
+        />
+        <MetricCard
+          label="Critical Fixes"
+          value={`${categoryCounts.critical}`}
+          className={categoryCounts.critical > 0 ? 'text-red-400' : 'text-emerald-400'}
+        />
+      </div>
+
+      {/* Impact vs Effort Scatter Chart — the consulting money-shot */}
+      {hasScatterData && (
+        <div className="bg-slate-800/40 rounded-lg border border-slate-700/50 p-4">
+          <h3 className="text-sm font-semibold text-white mb-1">Impact vs Effort Matrix</h3>
+          <p className="text-xs text-slate-400 mb-3">
+            Top-left quadrant = high-impact, low-effort actions. Start here for maximum ROI.
+          </p>
+          <ResponsiveContainer width="100%" height={380}>
+            <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis
+                type="number"
+                dataKey="x"
+                domain={[0.5, 3.5]}
+                ticks={[1, 2, 3]}
+                tickFormatter={(v: number) => EFFORT_LABELS[v] || ''}
+                stroke="#64748b"
+                tick={{ fontSize: 11, fill: '#94a3b8' }}
+                label={{ value: 'Effort Level', position: 'bottom', offset: 15, fill: '#94a3b8', fontSize: 11 }}
+              />
+              <YAxis
+                type="number"
+                dataKey="y"
+                stroke="#64748b"
+                tick={{ fontSize: 11, fill: '#94a3b8' }}
+                label={{ value: 'Impact (clicks/mo)', angle: -90, position: 'insideLeft', offset: -5, fill: '#94a3b8', fontSize: 11 }}
+              />
+              {/* Quadrant reference lines */}
+              <ReferenceLine x={1.75} stroke="#475569" strokeDasharray="6 4" />
+              <ReferenceLine y={(() => {
+                const impacts = allActions.map(a => a.impact).filter(Boolean);
+                return impacts.length > 0 ? impacts.reduce((s, v) => s + v, 0) / impacts.length : 50;
+              })()} stroke="#475569" strokeDasharray="6 4" />
+              <Tooltip content={<ScatterTooltip />} />
+              {/* Render each category as a separate Scatter for color coding */}
+              {Object.entries(scatterDataByCategory).map(([cat, points]) => (
+                <Scatter
+                  key={cat}
+                  name={CATEGORY_CONFIG[cat]?.label || cat}
+                  data={points}
+                  fill={CATEGORY_CONFIG[cat]?.dotColor || '#94a3b8'}
+                  fillOpacity={0.85}
+                  r={7}
+                />
+              ))}
+              <Legend
+                wrapperStyle={{ fontSize: 11 }}
+                iconType="circle"
+                iconSize={8}
+              />
+            </ScatterChart>
+          </ResponsiveContainer>
+          {/* Quadrant labels */}
+          <div className="grid grid-cols-2 gap-2 mt-2 text-xs">
+            <div className="bg-emerald-900/20 border border-emerald-800/30 rounded p-2 text-center">
+              <span className="text-emerald-400 font-medium">High Impact, Low Effort</span>
+              <br /><span className="text-slate-400">Start here — quick ROI</span>
+            </div>
+            <div className="bg-blue-900/20 border border-blue-800/30 rounded p-2 text-center">
+              <span className="text-blue-400 font-medium">High Impact, High Effort</span>
+              <br /><span className="text-slate-400">Strategic investments</span>
+            </div>
+            <div className="bg-amber-900/20 border border-amber-800/30 rounded p-2 text-center">
+              <span className="text-amber-400 font-medium">Low Impact, Low Effort</span>
+              <br /><span className="text-slate-400">Fill-in tasks</span>
+            </div>
+            <div className="bg-slate-800/40 border border-slate-700/30 rounded p-2 text-center">
+              <span className="text-slate-400 font-medium">Low Impact, High Effort</span>
+              <br /><span className="text-slate-500">Deprioritize</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Effort Distribution + Category Breakdown — 2-column */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Impact by Effort Level */}
+        <div className="bg-slate-800/40 rounded-lg border border-slate-700/50 p-4">
+          <h3 className="text-sm font-semibold text-white mb-3">Impact by Effort Level</h3>
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={effortChartData} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="effort" stroke="#64748b" tick={{ fontSize: 10, fill: '#94a3b8' }} />
+              <YAxis stroke="#64748b" tick={{ fontSize: 10, fill: '#94a3b8' }} />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px', fontSize: 11, color: '#e2e8f0' }}
+                formatter={(value: any, name: string) => [
+                  name === 'impact' ? `+${Number(value).toLocaleString()} clicks/mo` : value,
+                  name === 'impact' ? 'Total Impact' : 'Actions',
+                ]}
+              />
+              <Bar dataKey="impact" radius={[4, 4, 0, 0]}>
+                {effortChartData.map((entry, idx) => (
+                  <Cell key={idx} fill={entry.fill} fillOpacity={0.8} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Category Breakdown */}
+        <div className="bg-slate-800/40 rounded-lg border border-slate-700/50 p-4">
+          <h3 className="text-sm font-semibold text-white mb-3">Action Breakdown by Priority</h3>
+          <div className="space-y-3">
+            {Object.entries(categoryCounts).map(([cat, count]) => {
+              const config = CATEGORY_CONFIG[cat];
+              if (!config || count === 0) return null;
+              const pct = totalActions > 0 ? Math.round((count / totalActions) * 100) : 0;
+              const catImpact = allActions.filter(a => a.category === cat).reduce((s, a) => s + a.impact, 0);
+              return (
+                <div key={cat}>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span style={{ color: config.color }}>{config.label}</span>
+                    <span className="text-slate-400">{count} actions &middot; +{catImpact.toLocaleString()} clicks/mo</span>
+                  </div>
+                  <div className="w-full bg-slate-700/50 rounded-full h-2">
+                    <div
+                      className="h-2 rounded-full transition-all"
+                      style={{ width: `${pct}%`, backgroundColor: config.color, opacity: 0.8 }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       {/* Narrative */}
       {data.narrative && (
         <div className="bg-blue-900/30 border border-blue-200 rounded-lg p-4">
+          <h3 className="text-sm font-semibold text-white mb-2">Executive Summary</h3>
           <p className="text-sm text-slate-100 leading-relaxed whitespace-pre-wrap">
             {data.narrative}
           </p>
         </div>
       )}
 
-      {/* Action Lists */}
+      {/* Action Lists — Enhanced */}
       {data.critical && data.critical.length > 0 && (
         <ActionSection
           title="Critical Fixes (This Week)"
           actions={data.critical}
-          color="red"
+          category="critical"
+          config={CATEGORY_CONFIG}
+          effortMap={EFFORT_MAP}
         />
       )}
       {data.quick_wins && data.quick_wins.length > 0 && (
         <ActionSection
           title="Quick Wins (This Month)"
           actions={data.quick_wins}
-          color="yellow"
+          category="quick_wins"
+          config={CATEGORY_CONFIG}
+          effortMap={EFFORT_MAP}
         />
       )}
       {data.strategic && data.strategic.length > 0 && (
         <ActionSection
           title="Strategic Plays (This Quarter)"
           actions={data.strategic}
-          color="blue"
+          category="strategic"
+          config={CATEGORY_CONFIG}
+          effortMap={EFFORT_MAP}
         />
       )}
       {data.structural && data.structural.length > 0 && (
         <ActionSection
           title="Structural Improvements (Ongoing)"
           actions={data.structural}
-          color="gray"
+          category="structural"
+          config={CATEGORY_CONFIG}
+          effortMap={EFFORT_MAP}
         />
       )}
     </div>
@@ -2384,37 +2629,75 @@ function GameplanContent({ data }: { data: any }) {
 function ActionSection({
   title,
   actions,
-  color,
+  category,
+  config,
+  effortMap,
 }: {
   title: string;
   actions: any[];
-  color: string;
+  category: string;
+  config: Record<string, { label: string; color: string; bgClass: string; borderClass: string; dotColor: string }>;
+  effortMap: Record<string, number>;
 }) {
-  const colorClasses = {
-    red: 'bg-red-900/30 border-red-200',
-    yellow: 'bg-amber-900/30 border-yellow-200',
-    blue: 'bg-blue-900/30 border-blue-200',
-    gray: 'bg-slate-800/30 border-slate-700/50',
+  const catConfig = config[category] || config['structural'];
+  const EFFORT_COLORS: Record<string, string> = {
+    low: '#10b981',
+    medium: '#f59e0b',
+    high: '#ef4444',
+  };
+  const EFFORT_WIDTH: Record<string, string> = {
+    low: 'w-1/3',
+    medium: 'w-2/3',
+    high: 'w-full',
   };
 
   return (
-    <div className={`rounded-lg border p-4 ${colorClasses[color as keyof typeof colorClasses]}`}>
-      <h3 className="text-sm font-semibold text-white mb-3">{title}</h3>
+    <div className={`rounded-lg border p-4 ${catConfig.bgClass} ${catConfig.borderClass}`}>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-white">{title}</h3>
+        <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: catConfig.color + '30', color: catConfig.dotColor }}>
+          {actions.length} action{actions.length !== 1 ? 's' : ''}
+        </span>
+      </div>
       <div className="space-y-2">
-        {actions.map((action: any, idx: number) => (
-          <div key={idx} className="bg-slate-800/60 p-3 rounded border border-slate-700/50">
-            <div className="font-medium text-white">{action.action}</div>
-            <div className="grid grid-cols-3 gap-2 mt-2 text-xs text-slate-400">
-              <div>Impact: +{action.impact} clicks/mo</div>
-              <div>Effort: {action.effort}</div>
-              {action.page && (
-                <div className="truncate" title={action.page}>
-                  Page: {action.page}
+        {actions.map((action: any, idx: number) => {
+          const effortKey = (action.effort || 'medium').toLowerCase();
+          return (
+            <div key={idx} className="bg-slate-800/60 p-3 rounded border border-slate-700/50">
+              <div className="flex items-start justify-between gap-2">
+                <div className="font-medium text-white text-sm flex-1">{action.action}</div>
+                <span className="text-emerald-400 text-xs font-mono whitespace-nowrap">
+                  +{(action.impact || 0).toLocaleString()}
+                </span>
+              </div>
+              <div className="mt-2 flex items-center gap-3 text-xs">
+                {/* Effort bar */}
+                <div className="flex items-center gap-1.5 min-w-[100px]">
+                  <span className="text-slate-500 w-10">Effort:</span>
+                  <div className="flex-1 bg-slate-700/50 rounded-full h-1.5 max-w-[60px]">
+                    <div
+                      className={`h-1.5 rounded-full ${EFFORT_WIDTH[effortKey] || 'w-2/3'}`}
+                      style={{ backgroundColor: EFFORT_COLORS[effortKey] || '#f59e0b' }}
+                    />
+                  </div>
+                  <span className="text-slate-400 capitalize">{effortKey}</span>
                 </div>
-              )}
+                {/* Page link */}
+                {action.page && (
+                  <div className="text-slate-500 truncate max-w-[200px]" title={action.page}>
+                    {action.page.replace(/^https?:\/\/[^/]+/, '')}
+                  </div>
+                )}
+                {/* Dependency */}
+                {action.dependency && (
+                  <div className="text-purple-400 truncate max-w-[180px]" title={action.dependency}>
+                    Dep: {action.dependency}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
