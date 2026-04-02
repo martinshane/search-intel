@@ -212,6 +212,18 @@ try:
 except ImportError as e:
     logger.warning("Could not load analysis router: %s", str(e))
 
+try:
+    from .routers import modules
+    app.include_router(modules.router, prefix="/api/modules", tags=["Modules"])
+except ImportError as e:
+    logger.warning("Could not load modules router: %s", str(e))
+
+try:
+    from .routers import schedules
+    app.include_router(schedules.router, prefix="/api/schedules", tags=["Schedules"])
+except ImportError as e:
+    logger.warning("Could not load schedules router: %s", str(e))
+
 
 # ---------------------------------------------------------------------------
 # Root endpoint
