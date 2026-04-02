@@ -52,14 +52,12 @@ MODULE_NAMES = {
 
 
 def _get_supabase():
-    """Get Supabase client."""
-    from supabase import create_client
-
-    url = os.getenv("SUPABASE_URL", "")
-    key = os.getenv("SUPABASE_KEY", os.getenv("SUPABASE_SERVICE_KEY", ""))
-    if not url or not key:
-        raise HTTPException(status_code=500, detail="Supabase not configured")
-    return create_client(url, key)
+    """Get Supabase client via centralized database module."""
+    try:
+        from api.database import get_supabase_client
+        return get_supabase_client()
+    except (ValueError, Exception) as e:
+        raise HTTPException(status_code=500, detail=f"Supabase not configured: {e}")
 
 
 def _user_id(user: dict) -> str:
