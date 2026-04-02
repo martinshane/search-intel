@@ -541,14 +541,28 @@ async def email_report(
         logger.exception("Email delivery failed")
         raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
 
+    supabase = _get_supabase()
+
     if not email_result.get("success"):
+        # Log the failed delivery for audit trail
+        try:
+            supabase.table("email_log").insert({
+                "report_id": report_id,
+                "to_email": req.to_email,
+                "provider": email_result.get("provider", "unknown"),
+                "status": "failed",
+                "error_message": email_result.get("error", "Unknown error")[:500],
+                "sent_at": datetime.utcnow().isoformat(),
+            }).execute()
+        except Exception as log_err:
+            logger.warning("Failed to log email failure: %s", log_err)
+
         raise HTTPException(
             status_code=502,
             detail=f"Email delivery failed: {email_result.get('error', 'Unknown error')}",
         )
 
-    # Log delivery (non-fatal)
-    supabase = _get_supabase()
+    # Log successful delivery
     try:
         supabase.table("email_log").insert({
             "report_id": report_id,
@@ -572,14 +586,89 @@ async def email_report(
 async def email_status(
     user: dict = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    """Check whether email delivery is configured and which provider is active."""
+    """
+    Check whether email delivery is configured and return recent stats.
+
+    Returns the active provider configuration plus aggregate stats from
+    the email_log table (total sent, recent failures).
+    """
+    result: Dict[str, Any] = {}
+
+    # Provider config
     try:
         from api.services.email_delivery import check_email_config
-        return await check_email_config()
+        result = await check_email_config()
     except ImportError:
-        return {"configured": False, "error": "Email delivery module not available"}
+        result = {"configured": False, "error": "Email delivery module not available"}
     except Exception as e:
-        return {"configured": False, "error": str(e)}
+        result = {"configured": False, "error": str(e)}
+
+    # Email stats from email_log
+    try:
+        supabase = _get_supabase()
+        uid = _user_id(user)
+
+        # Count emails for this user's reports in the last 30 days
+        thirty_days_ago = (datetime.utcnow() - __import__("datetime").timedelta(days=30)).isoformat()
+        log_rows = (
+            supabase.table("email_log")
+            .select("status")
+            .gte("sent_at", thirty_days_ago)
+            .in_("report_id",
+                 [r["id"] for r in (
+                     supabase.table("reports")
+                     .select("id")
+                     .eq("user_id", uid)
+                     .execute()
+                 ).data or []]
+            )
+            .execute()
+        )
+        logs = log_rows.data or []
+        result["stats"] = {
+            "emails_last_30d": len(logs),
+            "sent": sum(1 for r in logs if r.get("status") == "sent"),
+            "failed": sum(1 for r in logs if r.get("status") == "failed"),
+        }
+    except Exception as e:
+        logger.warning("Could not fetch email stats: %s", e)
+        result["stats"] = {"emails_last_30d": 0, "sent": 0, "failed": 0}
+
+    return result
+
+
+@router.get("/{report_id}/email/history")
+async def email_history(
+    report_id: str,
+    user: dict = Depends(get_current_user),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> Dict[str, Any]:
+    """
+    Return email delivery history for a specific report.
+
+    Shows all emails sent for this report, including status, provider,
+    recipient, and any error messages.
+    """
+    await _get_owned_report(report_id, user)
+
+    supabase = _get_supabase()
+    try:
+        rows = (
+            supabase.table("email_log")
+            .select("id, to_email, provider, status, error_message, sent_at")
+            .eq("report_id", report_id)
+            .order("sent_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch email history: {str(e)}")
+
+    return {
+        "report_id": report_id,
+        "emails": rows.data or [],
+        "total": len(rows.data or []),
+    }
 
 
 # ---------------------------------------------------------------------------
