@@ -733,6 +733,9 @@ def analyze_competitive_threats(
             "summary": summary,
         }
 
+        # Normalise field names so the frontend renders correctly
+        _add_frontend_keys(result)
+
         logger.info(
             "Competitive threats analysis complete: %d keywords, %d competitors, "
             "%d vulnerable keywords, %d emerging threats",
@@ -744,6 +747,70 @@ def analyze_competitive_threats(
     except Exception as exc:
         logger.error("Error in competitive threats analysis: %s", exc, exc_info=True)
         return _empty_result()
+
+
+def _add_frontend_keys(result: Dict[str, Any]) -> None:
+    """
+    Add frontend-compatible alias keys to the result dict so the React
+    CompetitiveThreatsContent component renders all sections correctly.
+
+    Canonical keys are preserved for PDF export, Gameplan consumption, and
+    any downstream modules. This only ADDS aliases — never removes originals.
+
+    Fixes 8 known data-shape mismatches between backend and frontend:
+      1. vulnerable_keywords[].risk_level → severity / threat_level
+      2. emerging_threats[].keywords_present → new_keywords
+      3. emerging_threats[].avg_position → avg_entry_position
+      4. emerging_threats[].unique_urls → unique_urls_seen
+      5. emerging_threats[] missing threat_level → derived from score
+      6. competitive_pressure[].keyword_count → keywords_in_cluster
+      7. competitive_pressure[] missing avg_competitor_gap → computed
+      8. content_velocity.competitor_velocity[].unique_ranking_pages → unique_pages
+    """
+    # 1. Vulnerable keywords: add severity / threat_level aliases for risk_level
+    vuln = result.get("keyword_vulnerability", {})
+    for v in vuln.get("vulnerable_keywords", []):
+        rl = v.get("risk_level", "medium")
+        v.setdefault("severity", rl)
+        v.setdefault("threat_level", rl)
+
+    # 2-5. Emerging threats: add frontend-expected field aliases
+    for et in result.get("emerging_threats", []):
+        # keywords_present → new_keywords
+        et.setdefault("new_keywords", et.get("keywords_present", 0))
+        # avg_position → avg_entry_position AND current_avg_position
+        avg_pos = et.get("avg_position")
+        if avg_pos is not None:
+            et.setdefault("avg_entry_position", avg_pos)
+            et.setdefault("current_avg_position", avg_pos)
+        # unique_urls → unique_urls_seen
+        et.setdefault("unique_urls_seen", et.get("unique_urls", 0))
+        # Derive threat_level from emerging_threat_score
+        score = et.get("emerging_threat_score", 0)
+        if "threat_level" not in et:
+            if score >= 60:
+                et["threat_level"] = "critical"
+            elif score >= 40:
+                et["threat_level"] = "high"
+            elif score >= 25:
+                et["threat_level"] = "medium"
+            else:
+                et["threat_level"] = "low"
+
+    # 6-7. Competitive pressure: add keywords_in_cluster and avg_competitor_gap
+    for p in result.get("competitive_pressure", []):
+        # keyword_count → keywords_in_cluster
+        p.setdefault("keywords_in_cluster", p.get("keyword_count", 0))
+        # Compute avg_competitor_gap = avg_user_position - avg_competitor_position
+        avg_user = p.get("avg_user_position")
+        avg_comp = p.get("avg_competitor_position")
+        if "avg_competitor_gap" not in p and avg_user is not None and avg_comp is not None:
+            p["avg_competitor_gap"] = round(avg_user - avg_comp, 1)
+
+    # 8. Content velocity: unique_ranking_pages → unique_pages
+    cv = result.get("content_velocity", {})
+    for comp in cv.get("competitor_velocity", []):
+        comp.setdefault("unique_pages", comp.get("unique_ranking_pages", 0))
 
 
 def _empty_result() -> Dict[str, Any]:
