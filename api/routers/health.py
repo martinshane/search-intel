@@ -28,11 +28,9 @@ async def detailed_health() -> Dict[str, Any]:
     # Check Supabase
     try:
         import os
-        from supabase import create_client
-        url = os.getenv("SUPABASE_URL", "")
-        key = os.getenv("SUPABASE_KEY", "")
-        if url and key:
-            client = create_client(url, key)
+        from api.database import get_supabase_client
+        client = get_supabase_client()
+        if client:
             # Simple query to verify connection
             client.table("users").select("id").limit(1).execute()
             deps["supabase"] = {"healthy": True}
