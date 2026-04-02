@@ -123,9 +123,9 @@ export default function ReportPage() {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.detail || 'Failed to retry report');
       }
-      // Report re-queued — switch back to loading state and start polling
+      // Report re-queued (status=pending) — switch back to loading state and start polling
       setLoading(true);
-      setReport((prev) => prev ? { ...prev, status: 'queued' } : prev);
+      setReport((prev) => prev ? { ...prev, status: 'pending' } : prev);
       fetchReport();
     } catch (err: any) {
       setRetryError(err.message || 'Retry failed');
