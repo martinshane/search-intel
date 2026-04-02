@@ -248,6 +248,70 @@ async def get_report(
     return await _get_owned_report(report_id, user)
 
 
+@router.get("/{report_id}/progress")
+async def get_report_progress(
+    report_id: str,
+    user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Lightweight progress endpoint for the real-time progress UI.
+
+    Returns only the fields the frontend progress page needs — no
+    report_data blob, keeping the payload tiny during polling.
+
+    The progress dict stored in the reports table uses pipeline status
+    values ("success", "failed", "skipped").  This endpoint maps them
+    to the UI-friendly values the frontend expects:
+
+        "success"  → "complete"
+        "failed"   → "failed"
+        "skipped"  → "failed"
+        (absent)   → "pending"
+
+    If the report is still "analyzing" and current_module is set, the
+    module at current_module is marked "running" (unless it already
+    finished) so the UI shows a spinner on the active module.
+    """
+    report = await _get_owned_report(report_id, user)
+
+    raw_progress = report.get("progress") or {}
+    status = report.get("status", "queued")
+    current_module = report.get("current_module")
+
+    # Map pipeline statuses to frontend-expected values
+    STATUS_MAP = {
+        "success": "complete",
+        "completed": "complete",
+        "failed": "failed",
+        "skipped": "failed",
+        "running": "running",
+        "pending": "pending",
+    }
+
+    mapped_progress: Dict[str, str] = {}
+    for key, val in raw_progress.items():
+        mapped_progress[key] = STATUS_MAP.get(val, val)
+
+    # If the report is still being analyzed, mark the current module
+    # as "running" so the frontend shows a spinner.
+    if status == "analyzing" and current_module is not None:
+        current_key = f"module_{current_module}"
+        if mapped_progress.get(current_key) not in ("complete", "failed"):
+            mapped_progress[current_key] = "running"
+
+    return {
+        "report": {
+            "id": report.get("id", report_id),
+            "gscProperty": report.get("gsc_property", ""),
+            "ga4Property": report.get("ga4_property", ""),
+            "status": status,
+            "progress": mapped_progress,
+            "createdAt": report.get("created_at", ""),
+            "completedAt": report.get("completed_at"),
+        }
+    }
+
+
 @router.get("/user/me")
 async def list_my_reports(
     user: dict = Depends(get_current_user),
