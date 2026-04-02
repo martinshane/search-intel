@@ -578,7 +578,7 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
 
         # Build data context from ingestion
         brand_terms = [domain.replace(".", ""), domain.split(".")[0]]
-        data_context: Dict[str, Any] = {"brand_terms": brand_terms}
+        data_context: Dict[str, Any] = {"brand_terms": brand_terms, "domain": domain}
 
         # GSC ingestion
         if gsc_token:
