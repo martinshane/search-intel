@@ -99,7 +99,7 @@ export default function SchedulesPage() {
 
   const fetchSchedules = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/schedules/mine`, { credentials: 'include' });
+      const res = await fetch(`${API_BASE}/api/schedules/mine`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to load schedules');
       const data = await res.json();
       setSchedules(data.schedules || []);
@@ -133,7 +133,7 @@ export default function SchedulesPage() {
     setError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/schedules/create`, {
+      const res = await fetch(`${API_BASE}/api/schedules/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -168,7 +168,7 @@ export default function SchedulesPage() {
 
   const handlePause = async (id: string) => {
     try {
-      await fetch(`${API_BASE}/schedules/${id}`, {
+      await fetch(`${API_BASE}/api/schedules/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -182,7 +182,7 @@ export default function SchedulesPage() {
 
   const handleResume = async (id: string) => {
     try {
-      await fetch(`${API_BASE}/schedules/${id}`, {
+      await fetch(`${API_BASE}/api/schedules/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -197,7 +197,7 @@ export default function SchedulesPage() {
   const handleDelete = async (id: string) => {
     if (!confirm('Remove this schedule? This cannot be undone.')) return;
     try {
-      await fetch(`${API_BASE}/schedules/${id}`, {
+      await fetch(`${API_BASE}/api/schedules/${id}`, {
         method: 'DELETE',
         credentials: 'include',
       });
@@ -218,7 +218,7 @@ export default function SchedulesPage() {
 
   const handleSaveEdit = async (id: string) => {
     try {
-      await fetch(`${API_BASE}/schedules/${id}`, {
+      await fetch(`${API_BASE}/api/schedules/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
