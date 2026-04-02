@@ -1202,24 +1202,248 @@ function HealthTrajectoryContent({ data }: { data: any }) {
 }
 
 // Module 2: Page-Level Triage
+// Module 2: Page-Level Triage
 function PageTriageContent({ data }: { data: any }) {
   if (!data) return <div className="text-slate-400">No data available</div>;
 
   const pages = data.pages || [];
-  const summary = data.summary || {};
+  const totalAnalyzed = data.total_pages_analyzed || pages.length;
+  const categoryCounts = data.category_counts || {};
+  const trendSummary = data.trend_summary || {};
+  const ctrSummary = data.ctr_anomaly_summary || {};
+  const priorityActions = data.priority_actions || [];
+
+  // --- Scatter plot data: clicks vs trend slope, colored by category ---
+  const CATEGORY_COLORS: Record<string, string> = {
+    critical: '#ef4444',
+    high: '#f59e0b',
+    medium: '#a3a3a3',
+    low: '#34d399',
+  };
+
+  const scatterData = pages
+    .filter((p: any) => p.total_clicks > 0 && p.trend)
+    .slice(0, 80)
+    .map((p: any) => ({
+      x: p.total_clicks || 0,
+      y: p.trend?.pct_change_30d ?? p.trend?.slope ?? 0,
+      name: (p.page || '').replace(/^https?:\/\/[^/]+/, ''),
+      category: p.category || 'medium',
+      fill: CATEGORY_COLORS[p.category] || '#a3a3a3',
+      clicks: p.total_clicks,
+      position: p.avg_position,
+      ctr: p.avg_ctr,
+      priority: p.priority_score,
+    }));
+
+  const hasScatter = scatterData.length >= 3;
+
+  // --- Category distribution bar chart data ---
+  const categoryOrder = ['critical', 'high', 'medium', 'low'];
+  const categoryChartData = categoryOrder
+    .filter((cat) => (categoryCounts[cat] || 0) > 0)
+    .map((cat) => ({
+      name: cat.charAt(0).toUpperCase() + cat.slice(1),
+      count: categoryCounts[cat] || 0,
+      fill: CATEGORY_COLORS[cat],
+    }));
+  const hasCategoryChart = categoryChartData.length > 0;
+
+  // --- Trend distribution for summary ---
+  const rising = trendSummary.rising || 0;
+  const declining = trendSummary.declining || 0;
+  const flat = trendSummary.flat || 0;
+  const ctrUnder = ctrSummary.underperforming || 0;
 
   return (
     <div className="space-y-6">
-      {/* Summary */}
+      {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <MetricCard label="Growing" value={summary.growing || 0} className="text-emerald-400" />
-        <MetricCard label="Stable" value={summary.stable || 0} className="text-slate-400" />
-        <MetricCard label="Decaying" value={summary.decaying || 0} className="text-amber-400" />
-        <MetricCard label="Critical" value={summary.critical || 0} className="text-red-400" />
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50 text-center">
+          <div className="text-2xl font-bold text-white">{totalAnalyzed}</div>
+          <div className="text-xs text-slate-400 mt-1">Pages Analyzed</div>
+        </div>
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50 text-center">
+          <div className="text-2xl font-bold text-emerald-400">{rising}</div>
+          <div className="text-xs text-slate-400 mt-1">Rising</div>
+        </div>
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50 text-center">
+          <div className="text-2xl font-bold text-red-400">{declining}</div>
+          <div className="text-xs text-slate-400 mt-1">Declining</div>
+        </div>
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50 text-center">
+          <div className="text-2xl font-bold text-amber-400">{ctrUnder}</div>
+          <div className="text-xs text-slate-400 mt-1">CTR Below Expected</div>
+        </div>
       </div>
 
-      {/* Pages Table */}
+      {/* Scatter Plot: Clicks vs Trend (spec: "Scatter plot (current clicks vs decay rate), color-coded by bucket") */}
+      {hasScatter && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
+            Page Performance Scatter
+          </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            Each dot is a page — X = total clicks, Y = 30-day trend (%), color = priority category
+          </p>
+          <ResponsiveContainer width="100%" height={360}>
+            <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis
+                dataKey="x"
+                type="number"
+                name="Total Clicks"
+                tick={{ fill: '#94a3b8', fontSize: 11 }}
+                label={{ value: 'Total Clicks', position: 'bottom', fill: '#94a3b8', fontSize: 11, offset: 15 }}
+                scale="log"
+                domain={['auto', 'auto']}
+                allowDataOverflow
+              />
+              <YAxis
+                dataKey="y"
+                type="number"
+                name="30d Trend %"
+                tick={{ fill: '#94a3b8', fontSize: 11 }}
+                label={{ value: '30-Day Trend %', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }}
+              />
+              <ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 4" />
+              <Tooltip
+                cursor={{ strokeDasharray: '3 3' }}
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: 8 }}
+                labelStyle={{ color: '#e2e8f0' }}
+                formatter={(_: any, name: string, props: any) => {
+                  const d = props.payload;
+                  return [
+                    null,
+                    <div key="tip" style={{ fontSize: 12 }}>
+                      <div style={{ fontWeight: 600, marginBottom: 4, color: '#f8fafc' }}>{d.name}</div>
+                      <div>Clicks: {d.clicks?.toLocaleString()}</div>
+                      <div>Trend: {d.y >= 0 ? '+' : ''}{d.y?.toFixed(1)}%</div>
+                      <div>Avg Position: {d.position?.toFixed(1)}</div>
+                      <div>CTR: {(d.ctr * 100)?.toFixed(2)}%</div>
+                      <div>Priority: {d.priority?.toFixed(0)}</div>
+                      <div style={{ color: d.fill, fontWeight: 600, marginTop: 2 }}>
+                        {d.category?.toUpperCase()}
+                      </div>
+                    </div>,
+                  ];
+                }}
+              />
+              <Scatter data={scatterData} isAnimationActive={false}>
+                {scatterData.map((entry: any, idx: number) => (
+                  <Cell key={idx} fill={entry.fill} fillOpacity={0.75} r={5} />
+                ))}
+              </Scatter>
+            </ScatterChart>
+          </ResponsiveContainer>
+          {/* Legend */}
+          <div className="flex items-center justify-center gap-6 mt-2">
+            {categoryOrder.map((cat) => (
+              <div key={cat} className="flex items-center gap-1.5 text-xs text-slate-400">
+                <span
+                  className="inline-block w-3 h-3 rounded-full"
+                  style={{ backgroundColor: CATEGORY_COLORS[cat] }}
+                />
+                {cat.charAt(0).toUpperCase() + cat.slice(1)}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Two-column: Category Distribution + CTR Anomalies */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Category Distribution Bar Chart */}
+        {hasCategoryChart && (
+          <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+            <h3 className="text-sm font-semibold text-slate-300 mb-3">
+              Priority Distribution
+            </h3>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={categoryChartData} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} allowDecimals={false} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: 8 }}
+                  labelStyle={{ color: '#e2e8f0' }}
+                />
+                <Bar dataKey="count" name="Pages" radius={[4, 4, 0, 0]}>
+                  {categoryChartData.map((entry: any, idx: number) => (
+                    <Cell key={idx} fill={entry.fill} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {/* CTR Anomaly Summary */}
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-3">
+            CTR Performance vs Expected
+          </h3>
+          <div className="space-y-3">
+            {[
+              { label: 'Underperforming', count: ctrSummary.underperforming || 0, color: 'text-red-400', bg: 'bg-red-900/30' },
+              { label: 'Normal', count: ctrSummary.normal || 0, color: 'text-slate-300', bg: 'bg-slate-700/30' },
+              { label: 'Overperforming', count: ctrSummary.overperforming || 0, color: 'text-emerald-400', bg: 'bg-emerald-900/30' },
+            ].map((item) => {
+              const total = (ctrSummary.underperforming || 0) + (ctrSummary.normal || 0) + (ctrSummary.overperforming || 0);
+              const pct = total > 0 ? (item.count / total) * 100 : 0;
+              return (
+                <div key={item.label}>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className={item.color}>{item.label}</span>
+                    <span className="text-slate-400">{item.count} ({pct.toFixed(0)}%)</span>
+                  </div>
+                  <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${item.bg}`}
+                      style={{ width: `${pct}%`, backgroundColor: item.label === 'Underperforming' ? '#ef4444' : item.label === 'Overperforming' ? '#34d399' : '#64748b' }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Priority Actions */}
+      {priorityActions.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-red-900/30">
+          <h3 className="text-sm font-semibold text-red-400 mb-3">
+            Priority Actions ({priorityActions.length})
+          </h3>
+          <div className="space-y-2">
+            {priorityActions.map((action: any, idx: number) => (
+              <div key={idx} className="flex items-start gap-3 p-3 bg-slate-800/80 rounded border border-slate-700/50">
+                <span className="flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
+                  style={{ backgroundColor: action.category === 'critical' ? '#991b1b' : '#92400e', color: '#fff' }}>
+                  {idx + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-blue-400 truncate" title={action.page}>{action.page?.replace(/^https?:\/\/[^/]+/, '') || 'Unknown'}</div>
+                  <div className="text-xs text-slate-300 mt-1">{action.action}</div>
+                </div>
+                <div className="flex-shrink-0 text-right">
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded ${action.category === 'critical' ? 'bg-red-900/50 text-red-300' : 'bg-amber-900/50 text-amber-300'}`}>
+                    {action.category}
+                  </span>
+                  <div className="text-xs text-slate-500 mt-1">Score: {action.score?.toFixed(0)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Pages Table — updated field names to match backend */}
       <div className="bg-slate-800/60 rounded-lg border border-slate-700/50 overflow-hidden">
+        <h3 className="text-sm font-semibold text-slate-300 px-4 py-3 border-b border-slate-700/50">
+          All Pages ({pages.length})
+        </h3>
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-slate-800/30 border-b border-slate-700/50">
@@ -1228,10 +1452,13 @@ function PageTriageContent({ data }: { data: any }) {
                   Page
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
-                  Status
+                  Category
                 </th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
-                  Monthly Clicks
+                  Clicks
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
+                  Avg Position
                 </th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
                   Trend
@@ -1245,43 +1472,48 @@ function PageTriageContent({ data }: { data: any }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700/50">
-              {pages.slice(0, 20).map((page: any, idx: number) => (
-                <tr key={idx} className="hover:bg-slate-800/80">
-                  <td className="px-4 py-3">
-                    <a
-                      href={page.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm text-blue-400 hover:underline flex items-center"
-                    >
-                      <span className="truncate max-w-xs">{page.url}</span>
-                      <ExternalLink className="w-3 h-3 ml-1 flex-shrink-0" />
-                    </a>
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={page.bucket} />
-                  </td>
-                  <td className="px-4 py-3 text-right text-sm text-white">
-                    {page.current_monthly_clicks?.toLocaleString() || 0}
-                  </td>
-                  <td className="px-4 py-3 text-right text-sm">
-                    <span
-                      className={
-                        page.trend_slope >= 0 ? 'text-emerald-400' : 'text-red-400'
-                      }
-                    >
-                      {page.trend_slope >= 0 ? '+' : ''}
-                      {page.trend_slope?.toFixed(2) || 0}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <PriorityBadge score={page.priority_score} />
-                  </td>
-                  <td className="px-4 py-3 text-sm text-slate-300">
-                    {page.recommended_action || 'Monitor'}
-                  </td>
-                </tr>
-              ))}
+              {pages.slice(0, 25).map((page: any, idx: number) => {
+                const trendDir = page.trend?.direction || 'flat';
+                const trendPct = page.trend?.pct_change_30d ?? 0;
+                const catColor = CATEGORY_COLORS[page.category] || '#a3a3a3';
+                return (
+                  <tr key={idx} className="hover:bg-slate-800/80">
+                    <td className="px-4 py-3">
+                      <a
+                        href={page.page}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-blue-400 hover:underline flex items-center"
+                      >
+                        <span className="truncate max-w-xs">{(page.page || '').replace(/^https?:\/\/[^/]+/, '')}</span>
+                        <ExternalLink className="w-3 h-3 ml-1 flex-shrink-0" />
+                      </a>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded" style={{ backgroundColor: catColor + '22', color: catColor }}>
+                        {page.category || 'medium'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm text-white">
+                      {page.total_clicks?.toLocaleString() || 0}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm text-white">
+                      {page.avg_position?.toFixed(1) || '-'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm">
+                      <span className={trendDir === 'rising' ? 'text-emerald-400' : trendDir === 'declining' ? 'text-red-400' : 'text-slate-400'}>
+                        {trendPct >= 0 ? '+' : ''}{trendPct?.toFixed(1)}%
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <PriorityBadge score={page.priority_score} />
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-300">
+                      {page.recommended_action || 'Monitor'}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1289,6 +1521,7 @@ function PageTriageContent({ data }: { data: any }) {
     </div>
   );
 }
+
 
 // Module 3: SERP Landscape
 function SerpLandscapeContent({ data }: { data: any }) {
