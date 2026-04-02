@@ -89,10 +89,22 @@ class TriggerResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _get_supabase():
-    """Lazy Supabase client."""
+    """Lazy Supabase client.
+
+    Tries multiple env-var names for the Supabase key to handle
+    deployment configurations that may use any of the common names:
+      1. SUPABASE_SERVICE_ROLE_KEY  — canonical name in database.py & .env.example
+      2. SUPABASE_SERVICE_KEY       — used by cron services / program.md
+      3. SUPABASE_KEY               — anon key fallback (still sufficient for
+                                      user-owned-row operations with RLS)
+    """
     from supabase import create_client
     url = os.getenv("SUPABASE_URL", "")
-    key = os.getenv("SUPABASE_SERVICE_KEY", "")
+    key = (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        or os.getenv("SUPABASE_SERVICE_KEY", "")
+        or os.getenv("SUPABASE_KEY", "")
+    )
     if not url or not key:
         raise HTTPException(500, "Supabase not configured")
     return create_client(url, key)
