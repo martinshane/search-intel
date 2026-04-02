@@ -21,7 +21,7 @@ import {
   Activity,
 } from 'lucide-react';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 /* ── Types ── */
 
@@ -193,7 +193,7 @@ export default function MyReportsPage() {
 
   const fetchAuthStatus = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_URL}/api/auth/status`, { credentials: 'include' });
+      const resp = await fetch(`${API_BASE}/api/auth/status`, { credentials: 'include' });
       if (resp.ok) {
         const data = await resp.json();
         setUser(data);
@@ -205,7 +205,7 @@ export default function MyReportsPage() {
 
   const fetchReports = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_URL}/api/v1/reports/user/me`, { credentials: 'include' });
+      const resp = await fetch(`${API_BASE}/api/reports/user/me`, { credentials: 'include' });
       if (resp.status === 401) {
         // Not authenticated — redirect to connect page
         router.push('/');
@@ -397,7 +397,7 @@ export default function MyReportsPage() {
                           onClick={(e) => {
                             e.stopPropagation();
                             window.open(
-                              `${API_URL}/api/v1/reports/${report.id}/pdf`,
+                              `${API_BASE}/api/reports/${report.id}/pdf`,
                               '_blank'
                             );
                           }}
