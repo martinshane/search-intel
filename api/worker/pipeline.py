@@ -591,7 +591,7 @@ class AnalysisPipeline:
         
         if module_name == "health_trajectory":
             inputs = {
-                "daily_data": _ensure_dataframe(
+                "df": _ensure_dataframe(
                     data_context.get("gsc_daily_data"), "gsc_daily_data"
                 ),
             }
@@ -665,7 +665,7 @@ class AnalysisPipeline:
         
         elif module_name == "intent_migration":
             inputs = {
-                "gsc_query_date_data": _ensure_dataframe(
+                "query_timeseries": _ensure_dataframe(
                     data_context.get("gsc_query_date_data"), "gsc_query_date_data"
                 ),
             }
