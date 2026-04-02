@@ -21,7 +21,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; 
   complete:  { label: 'Completed', color: 'text-green-700', bg: 'bg-green-50 border-green-200', icon: CheckCircle },
   partial:   { label: 'Partial',   color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200', icon: AlertTriangle },
   failed:    { label: 'Failed',    color: 'text-red-700',   bg: 'bg-red-50 border-red-200',     icon: AlertTriangle },
-  queued:    { label: 'Queued',    color: 'text-blue-700',  bg: 'bg-blue-50 border-blue-200',   icon: Clock },
+  pending:   { label: 'Pending',    color: 'text-blue-700',  bg: 'bg-blue-50 border-blue-200',   icon: Clock },
   ingesting: { label: 'Ingesting', color: 'text-blue-700',  bg: 'bg-blue-50 border-blue-200',   icon: Loader },
   analyzing: { label: 'Analyzing', color: 'text-blue-700',  bg: 'bg-blue-50 border-blue-200',   icon: Loader },
   running:   { label: 'Running',   color: 'text-blue-700',  bg: 'bg-blue-50 border-blue-200',   icon: Loader },
@@ -30,7 +30,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; 
 function StatusBadge({ status }: { status: string }) {
   const cfg = STATUS_CONFIG[status] || { label: status, color: 'text-gray-700', bg: 'bg-gray-50 border-gray-200', icon: Clock };
   const Icon = cfg.icon;
-  const isRunning = ['queued', 'ingesting', 'analyzing', 'running'].includes(status);
+  const isRunning = ['pending', 'ingesting', 'analyzing', 'running'].includes(status);
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${cfg.bg} ${cfg.color}`}>
       <Icon className={`w-3.5 h-3.5 ${isRunning ? 'animate-spin' : ''}`} />
@@ -140,7 +140,7 @@ export default function ReportsPage() {
     }
   };
 
-  const hasRunning = reports.some(r => ['queued', 'ingesting', 'analyzing', 'running'].includes(r.status));
+  const hasRunning = reports.some(r => ['pending', 'ingesting', 'analyzing', 'running'].includes(r.status));
 
   return (
     <>
@@ -209,7 +209,7 @@ export default function ReportsPage() {
           {!loading && reports.length > 0 && (
             <div className="space-y-3">
               {reports.map(report => {
-                const isRunning = ['queued', 'ingesting', 'analyzing', 'running'].includes(report.status);
+                const isRunning = ['pending', 'ingesting', 'analyzing', 'running'].includes(report.status);
                 const isFailed = report.status === 'failed';
                 const isComplete = ['completed', 'complete', 'partial'].includes(report.status);
 
