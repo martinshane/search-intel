@@ -176,6 +176,9 @@ class AlgorithmImpactAnalyzer:
             # Build update timeline
             update_timeline = self._build_update_timeline(daily_data)
 
+            # Build weekly traffic series for frontend charting
+            traffic_series = self._build_traffic_series(daily_data)
+
             return {
                 "summary": self._build_summary(matched_impacts, vulnerability_score),
                 "updates_impacting_site": [
@@ -188,6 +191,7 @@ class AlgorithmImpactAnalyzer:
                 "total_updates_in_period": len(update_timeline),
                 "updates_with_site_impact": len(matched_impacts),
                 "update_timeline": update_timeline,
+                "traffic_series": traffic_series,
             }
 
         except Exception as e:
@@ -600,6 +604,41 @@ class AlgorithmImpactAnalyzer:
             else "Continue monitoring algorithm updates and maintain content quality standards."
         )
 
+    def _build_traffic_series(
+        self, daily_data: pd.DataFrame
+    ) -> List[Dict[str, Any]]:
+        """Build a weekly-aggregated traffic series for frontend charting.
+
+        Returns a list of {date, clicks, impressions} dicts aggregated by
+        ISO week to keep the payload compact (~70 entries for 16 months).
+        """
+        if len(daily_data) == 0:
+            return []
+
+        try:
+            df = daily_data.copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date")
+
+            # Aggregate by ISO week (Monday-based)
+            df["week"] = df["date"].dt.to_period("W").apply(lambda p: p.start_time)
+            weekly = df.groupby("week").agg(
+                clicks=("clicks", "sum"),
+                impressions=("impressions", "sum"),
+            ).reset_index()
+
+            series = []
+            for _, row in weekly.iterrows():
+                series.append({
+                    "date": row["week"].strftime("%Y-%m-%d"),
+                    "clicks": int(row["clicks"]),
+                    "impressions": int(row["impressions"]),
+                })
+            return series
+        except Exception as e:
+            logger.warning(f"Failed to build traffic series: {e}")
+            return []
+
     def _build_update_timeline(
         self, daily_data: pd.DataFrame
     ) -> List[Dict[str, Any]]:
@@ -736,6 +775,7 @@ def analyze_algorithm_impacts(
             "total_updates_in_period": 0,
             "updates_with_site_impact": 0,
             "update_timeline": [],
+            "traffic_series": [],
         }
 
     change_points = change_points_from_module1 or []
