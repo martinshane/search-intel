@@ -27,7 +27,7 @@ const nextConfig = {
     if (process.env.NODE_ENV === 'development') {
       rewrites.push({
         source: '/api/:path*',
-        destination: `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/:path*`,
+        destination: `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/:path*`,
       });
     }
 
