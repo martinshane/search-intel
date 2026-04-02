@@ -516,6 +516,28 @@ export default function ReportPage() {
             </ModuleSection>
           )}
 
+          {/* Consulting CTA — after Gameplan (spec requirement) */}
+          <div className="my-8 rounded-xl border border-blue-500/30 bg-gradient-to-r from-blue-900/40 via-indigo-900/30 to-blue-900/40 p-6 sm:p-8 text-center">
+            <h3 className="text-xl font-semibold text-white mb-2">
+              Want help executing this plan?
+            </h3>
+            <p className="text-slate-300 mb-5 max-w-xl mx-auto">
+              Our search strategists turn these recommendations into measurable results.
+              Book a free strategy call to discuss your gameplan.
+            </p>
+            <a
+              href="https://clankermarketing.com/book"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg transition shadow-lg shadow-blue-600/20"
+            >
+              Book a Strategy Call
+            </a>
+            <p className="text-slate-500 text-xs mt-4">
+              Clanker Marketing — Search Intelligence Consulting
+            </p>
+          </div>
+
           {/* Module 6: Algorithm Impact */}
           {modules.algorithm_impact && (
             <ModuleSection
@@ -592,6 +614,35 @@ export default function ReportPage() {
               <RevenueAttributionContent data={modules.revenue_attribution} />
             </ModuleSection>
           )}
+
+          {/* Consulting CTA — after Revenue Attribution (spec requirement) */}
+          {modules.revenue_attribution && (
+            <div className="my-8 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-900/40 via-teal-900/30 to-emerald-900/40 p-6 sm:p-8 text-center">
+              <h3 className="text-xl font-semibold text-white mb-2">
+                These opportunities total{' '}
+                <span className="text-emerald-400">
+                  {modules.revenue_attribution?.total_potential_value
+                    ? `$${Math.round(modules.revenue_attribution.total_potential_value).toLocaleString()}/month`
+                    : 'significant revenue'}
+                </span>
+              </h3>
+              <p className="text-slate-300 mb-5 max-w-xl mx-auto">
+                Let&apos;s capture them together. Our team specialises in turning search
+                intelligence into revenue growth.
+              </p>
+              <a
+                href="https://clankermarketing.com/book"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg transition shadow-lg shadow-emerald-600/20"
+              >
+                Let&apos;s Capture This Revenue
+              </a>
+              <p className="text-slate-500 text-xs mt-4">
+                Clanker Marketing — Search Intelligence Consulting
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Footer CTA */}
@@ -607,12 +658,17 @@ export default function ReportPage() {
               </span>{' '}
               clicks per month. Let's make it happen.
             </p>
-            <button
-              onClick={() => router.push('/contact')}
-              className="px-8 py-4 bg-slate-800/60 text-blue-400 rounded-lg font-semibold hover:bg-blue-900/30 transition text-lg shadow-lg"
+            <a
+              href="https://clankermarketing.com/book"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block px-8 py-4 bg-white/20 hover:bg-white/30 text-white rounded-lg font-semibold transition text-lg shadow-lg"
             >
               Work With Us
-            </button>
+            </a>
+            <p className="text-blue-200/60 text-sm mt-6">
+              Powered by <a href="https://clankermarketing.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-white transition">Clanker Marketing</a> — Search Intelligence Consulting
+            </p>
           </div>
         </div>
 
