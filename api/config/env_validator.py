@@ -16,6 +16,11 @@ CRITICAL vs OPTIONAL classification:
 Previous versions marked Google OAuth and DataForSEO credentials as REQUIRED,
 which caused the API to crash on startup if any were missing — preventing even
 the /health endpoint from responding and blocking Railway deployment.
+
+ALIAS SUPPORT: Some env vars have alternative names used by different parts
+of the codebase (e.g. SUPABASE_KEY vs SUPABASE_ANON_KEY).  The validator
+checks all aliases before flagging a var as missing, matching the fallback
+behaviour in api/database.py.
 """
 
 import os
@@ -34,17 +39,26 @@ class EnvValidator:
     
     # Only truly critical vars — without these the app cannot function at all.
     # Missing any of these triggers a RuntimeError in main.py, preventing startup.
+    #
+    # The 'aliases' field lists alternative env var names.  The validator
+    # considers the requirement satisfied if ANY of the names is set.  This
+    # mirrors the fallback chains in api/database.py so the validator and
+    # the runtime agree on what constitutes a valid configuration.
     REQUIRED_VARS = {
         'SUPABASE_URL': {
             'description': 'Supabase project URL',
             'validator': 'url',
-            'example': 'https://xxxxx.supabase.co'
+            'example': 'https://xxxxx.supabase.co',
+            'aliases': [],
         },
         'SUPABASE_KEY': {
             'description': 'Supabase anon/service role key',
             'validator': 'non_empty',
             'min_length': 20,
-            'example': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+            'example': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+            # database.py._resolve_anon_key() tries:
+            #   SUPABASE_KEY → SUPABASE_ANON_KEY
+            'aliases': ['SUPABASE_ANON_KEY'],
         },
     }
     
@@ -227,6 +241,27 @@ class EnvValidator:
             cls.validate_non_empty(value, var_name)
 
 
+def _resolve_with_aliases(var_name: str, config: Dict) -> Optional[str]:
+    """Resolve an env var, trying the primary name and then any aliases.
+
+    Returns the first non-empty value found, or None if no name is set.
+    This mirrors the fallback chain in api/database.py so the validator
+    agrees with the runtime about which configurations are valid.
+    """
+    # Try primary name first
+    value = os.getenv(var_name, "").strip()
+    if value:
+        return value
+
+    # Try aliases
+    for alias in config.get("aliases", []):
+        value = os.getenv(alias, "").strip()
+        if value:
+            return value
+
+    return None
+
+
 def validate_environment(raise_on_optional: bool = False) -> Dict:
     """
     Validate environment variables at application startup.
@@ -256,10 +291,23 @@ def validate_environment(raise_on_optional: bool = False) -> Dict:
     
     # ── Required variables (Supabase only) ─────────────────────────
     # Missing any of these makes the API completely non-functional.
+    #
+    # Each required var may have 'aliases' — alternative env var names
+    # that the runtime also accepts (e.g. database.py tries both
+    # SUPABASE_KEY and SUPABASE_ANON_KEY).  The requirement is
+    # satisfied if ANY of the names is set.
     for var_name, config in EnvValidator.REQUIRED_VARS.items():
-        value = os.getenv(var_name)
+        value = _resolve_with_aliases(var_name, config)
         if value is None:
-            msg = f"{var_name} is required but not set ({config['description']})"
+            aliases = config.get("aliases", [])
+            if aliases:
+                names = " / ".join([var_name] + aliases)
+                msg = (
+                    f"None of {names} is set — {config['description']}. "
+                    f"Set at least one of: {names}"
+                )
+            else:
+                msg = f"{var_name} is required but not set ({config['description']})"
             result["errors"].append(msg)
             result["critical_errors"].append(msg)
             result["valid"] = False
@@ -319,6 +367,9 @@ def print_env_template() -> None:
     for var_name, config in EnvValidator.REQUIRED_VARS.items():
         print(f"\n# {config['description']}")
         print(f"# Example: {config['example']}")
+        aliases = config.get("aliases", [])
+        if aliases:
+            print(f"# Also accepted as: {', '.join(aliases)}")
         print(f"{var_name}=")
     
     print("\n\n# Important Variables (OAuth won't work without these)")
