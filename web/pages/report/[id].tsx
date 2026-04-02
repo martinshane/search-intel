@@ -1291,11 +1291,72 @@ function SerpLandscapeContent({ data }: { data: any }) {
 
   const competitors = data.competitors || [];
   const displacements = data.serp_feature_displacement || [];
+  const featurePrevalence = data.serp_feature_summary?.feature_prevalence || {};
+  const intentDist = data.intent_analysis?.intent_distribution || {};
+  const intentMismatches = data.intent_analysis?.intent_mismatches || [];
+  const clickBreakdown = data.click_share?.keyword_breakdown || [];
+
+  // --- SERP Feature Prevalence chart data ---
+  const FEATURE_COLORS: Record<string, string> = {
+    featured_snippet: '#f59e0b',
+    people_also_ask: '#8b5cf6',
+    ai_overview: '#ec4899',
+    video_carousel: '#ef4444',
+    local_pack: '#10b981',
+    knowledge_panel: '#06b6d4',
+    image_pack: '#f97316',
+    shopping_results: '#84cc16',
+    top_stories: '#6366f1',
+    reddit_threads: '#fb923c',
+    site_links: '#14b8a6',
+  };
+
+  const featureChartData = Object.entries(featurePrevalence)
+    .map(([feature, val]: [string, any]) => ({
+      feature: feature.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+      featureKey: feature,
+      pct: val?.pct || 0,
+      count: val?.count || 0,
+    }))
+    .sort((a, b) => b.pct - a.pct)
+    .slice(0, 12);
+
+  const hasFeatureChart = featureChartData.length >= 2;
+
+  // --- Intent distribution chart data ---
+  const INTENT_COLORS: Record<string, string> = {
+    informational: '#60a5fa',
+    commercial: '#f59e0b',
+    transactional: '#34d399',
+    navigational: '#a78bfa',
+  };
+
+  const intentChartData = Object.entries(intentDist)
+    .filter(([_, v]) => (v as number) > 0)
+    .map(([intent, val]) => ({
+      intent: intent.charAt(0).toUpperCase() + intent.slice(1),
+      intentKey: intent,
+      share: Math.round((val as number) * 100),
+    }))
+    .sort((a, b) => b.share - a.share);
+
+  const hasIntentChart = intentChartData.length >= 2;
+
+  // --- Click share top keywords chart data ---
+  const clickChartData = clickBreakdown.slice(0, 15).map((kw: any) => ({
+    keyword: kw.keyword?.length > 25 ? kw.keyword.slice(0, 22) + '...' : kw.keyword,
+    fullKeyword: kw.keyword,
+    clicks: kw.clicks || 0,
+    potential: kw.potential_clicks || 0,
+    share: Math.round((kw.click_share || 0) * 100),
+  }));
+
+  const hasClickChart = clickChartData.length >= 3;
 
   return (
     <div className="space-y-6">
-      {/* Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* Summary metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <MetricCard
           label="Keywords Analyzed"
           value={data.keywords_analyzed || 0}
@@ -1305,9 +1366,105 @@ function SerpLandscapeContent({ data }: { data: any }) {
           value={`${((data.click_share?.total_click_share || 0) * 100).toFixed(1)}%`}
         />
         <MetricCard
-          label="Opportunity"
-          value={`${((data.click_share?.click_opportunity || 0) * 100).toFixed(1)}%`}
+          label="Monthly Clicks"
+          value={(data.click_share?.current_monthly_clicks || 0).toLocaleString()}
         />
+        <MetricCard
+          label="Click Opportunity"
+          value={`+${(data.click_share?.click_opportunity || 0).toLocaleString()}`}
+        />
+      </div>
+
+      {/* SERP Feature Prevalence Bar Chart */}
+      {hasFeatureChart && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+            SERP Feature Prevalence
+          </h3>
+          <p className="text-xs text-slate-400 mb-4">
+            Percentage of your keywords where each SERP feature appears — features that push your organic listing further down the page.
+          </p>
+          <div style={{ width: '100%', height: Math.max(280, featureChartData.length * 36) }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={featureChartData} layout="vertical" margin={{ left: 20, right: 30, top: 5, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" horizontal={false} />
+                <XAxis type="number" domain={[0, 100]} tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(v: number) => `${v}%`} />
+                <YAxis type="category" dataKey="feature" tick={{ fill: '#cbd5e1', fontSize: 11 }} width={140} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                  labelStyle={{ color: '#f1f5f9' }}
+                  formatter={(value: number, _name: string, props: any) => [`${value}% (${props.payload.count} keywords)`, 'Prevalence']}
+                />
+                <Bar dataKey="pct" radius={[0, 4, 4, 0]} maxBarSize={24}>
+                  {featureChartData.map((entry, index) => (
+                    <Cell key={index} fill={FEATURE_COLORS[entry.featureKey] || '#64748b'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Intent Distribution + Click Share side by side */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Intent Distribution */}
+        {hasIntentChart && (
+          <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+            <h3 className="text-sm font-semibold text-slate-300 mb-4">
+              Keyword Intent Distribution
+            </h3>
+            <div style={{ width: '100%', height: 220 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={intentChartData} margin={{ left: 10, right: 10, top: 5, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                  <XAxis dataKey="intent" tick={{ fill: '#cbd5e1', fontSize: 12 }} />
+                  <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(v: number) => `${v}%`} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                    labelStyle={{ color: '#f1f5f9' }}
+                    formatter={(value: number) => [`${value}%`, 'Share']}
+                  />
+                  <Bar dataKey="share" radius={[4, 4, 0, 0]} maxBarSize={60}>
+                    {intentChartData.map((entry, index) => (
+                      <Cell key={index} fill={INTENT_COLORS[entry.intentKey] || '#64748b'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Click Share - Current vs Potential */}
+        {hasClickChart && (
+          <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+            <h3 className="text-sm font-semibold text-slate-300 mb-4">
+              Click Share by Keyword (Current vs Potential)
+            </h3>
+            <div style={{ width: '100%', height: 220 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={clickChartData.slice(0, 8)} margin={{ left: 10, right: 10, top: 5, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                  <XAxis dataKey="keyword" tick={{ fill: '#94a3b8', fontSize: 10 }} interval={0} angle={-25} textAnchor="end" height={60} />
+                  <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                    labelStyle={{ color: '#f1f5f9' }}
+                    formatter={(value: number, name: string) => [value.toLocaleString(), name === 'clicks' ? 'Current Clicks' : 'Potential Clicks']}
+                    labelFormatter={(label: string) => {
+                      const item = clickChartData.find((d: any) => d.keyword === label);
+                      return item?.fullKeyword || label;
+                    }}
+                  />
+                  <Legend formatter={(value: string) => value === 'clicks' ? 'Current' : 'Potential'} />
+                  <Bar dataKey="potential" fill="#334155" radius={[4, 4, 0, 0]} maxBarSize={30} />
+                  <Bar dataKey="clicks" fill="#60a5fa" radius={[4, 4, 0, 0]} maxBarSize={30} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* SERP Feature Displacement */}
@@ -1316,6 +1473,9 @@ function SerpLandscapeContent({ data }: { data: any }) {
           <h3 className="text-sm font-semibold text-slate-300 mb-4">
             SERP Feature Displacement
           </h3>
+          <p className="text-xs text-slate-400 mb-3">
+            Keywords where SERP features push your organic listing below its true ranking position.
+          </p>
           <div className="space-y-3">
             {displacements.slice(0, 10).map((disp: any, idx: number) => (
               <div
@@ -1336,6 +1496,41 @@ function SerpLandscapeContent({ data }: { data: any }) {
                     {((disp.estimated_ctr_impact || 0) * 100).toFixed(1)}%
                   </div>
                   <div className="text-xs text-slate-400">CTR impact</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Intent Mismatches */}
+      {intentMismatches.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+            Intent Mismatches
+          </h3>
+          <p className="text-xs text-slate-400 mb-3">
+            Keywords where your page type doesn\u2019t match the dominant SERP intent — potential content strategy misalignment.
+          </p>
+          <div className="space-y-2">
+            {intentMismatches.slice(0, 10).map((mm: any, idx: number) => (
+              <div
+                key={idx}
+                className="flex items-start justify-between p-3 bg-slate-800/30 rounded"
+              >
+                <div className="flex-1">
+                  <div className="font-medium text-white">{mm.keyword}</div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    Page: <span className="text-slate-300">{mm.page_url || mm.page_type || 'unknown'}</span>
+                  </div>
+                </div>
+                <div className="text-right ml-4">
+                  <div className="text-xs">
+                    <span className="text-amber-400">{mm.serp_intent}</span>
+                    <span className="text-slate-500 mx-1">≠</span>
+                    <span className="text-blue-400">{mm.page_type}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">SERP vs Page</div>
                 </div>
               </div>
             ))}
