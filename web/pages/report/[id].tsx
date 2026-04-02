@@ -3557,7 +3557,7 @@ function SiteArchitectureContent({ data }: { data: any }) {
           <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Internal Link Network
           </h3>
-          <NetworkGraph data={data.network_graph} />
+          <NetworkGraph nodes={data.network_graph?.nodes || []} links={data.network_graph?.links || []} />
         </div>
       )}
 
@@ -3603,18 +3603,27 @@ function SiteArchitectureContent({ data }: { data: any }) {
             Orphan Pages (No Internal Links)
           </h3>
           <div className="space-y-2">
-            {orphans.slice(0, 10).map((orphan: any, idx: number) => (
+            {orphans.slice(0, 10).map((orphan: any, idx: number) => {
+              const orphanUrl = typeof orphan === 'string' ? orphan : orphan?.url || '';
+              return (
               <div key={idx} className="p-3 bg-amber-900/30 border border-yellow-200 rounded">
                 <a
-                  href={orphan}
+                  href={orphanUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-sm text-blue-400 hover:underline flex items-center"
                 >
-                  <span className="truncate">{orphan}</span>
+                  <span className="truncate">{orphanUrl}</span>
                   <ExternalLink className="w-3 h-3 ml-1 flex-shrink-0" />
                 </a>
+                {typeof orphan !== 'string' && orphan?.impressions > 0 && (
+                  <div className="text-xs text-slate-400 mt-1">
+                    {orphan.impressions.toLocaleString()} impressions · {orphan.clicks || 0} clicks
+                    {orphan.impact === 'high' && <span className="ml-2 text-amber-400 font-medium">High Impact</span>}
+                  </div>
+                )}
               </div>
+              );
             ))}
           </div>
         </div>
