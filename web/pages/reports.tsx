@@ -88,7 +88,7 @@ export default function ReportsPage() {
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const res = await fetch(`${API_BASE}/api/v1/reports/user/me`, {
+      const res = await fetch(`${API_BASE}/api/reports/user/me`, {
         headers,
         credentials: 'include',
       });
@@ -123,7 +123,7 @@ export default function ReportsPage() {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const res = await fetch(`${API_BASE}/api/v1/reports/${reportId}/retry`, {
+      const res = await fetch(`${API_BASE}/api/reports/${reportId}/retry`, {
         method: 'POST',
         headers,
         credentials: 'include',
