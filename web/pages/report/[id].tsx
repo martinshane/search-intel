@@ -1766,75 +1766,320 @@ function AlgorithmImpactContent({ data }: { data: any }) {
   if (!data) return <div className="text-slate-400">No data available</div>;
 
   const updates = data.updates_impacting_site || [];
+  const trafficSeries = data.traffic_series || [];
+  const updateTimeline = data.update_timeline || [];
+  const vulnerabilityFactors = data.vulnerability_factors || [];
+  const unexplainedChanges = data.unexplained_changes || [];
+
+  // --- Traffic timeline chart data ---
+  const hasTimelineChart = trafficSeries.length >= 2;
+
+  // Build chart data from weekly traffic series
+  const chartData = trafficSeries.map((pt: any) => ({
+    date: pt.date?.substring(5) || '', // MM-DD format for X axis
+    fullDate: pt.date || '',
+    clicks: pt.clicks || 0,
+    impressions: pt.impressions || 0,
+  }));
+
+  // Map update dates to nearest week in chart data for reference line placement
+  const updateMarkers = updateTimeline.map((u: any) => {
+    const uDate = u.date?.substring(0, 10) || '';
+    // Find the closest chart data point
+    let closestIdx = 0;
+    let closestDist = Infinity;
+    chartData.forEach((d: any, idx: number) => {
+      const dist = Math.abs(new Date(d.fullDate).getTime() - new Date(uDate).getTime());
+      if (dist < closestDist) {
+        closestDist = dist;
+        closestIdx = idx;
+      }
+    });
+    // Also check impacting updates for impact data
+    const impacting = updates.find((imp: any) => imp.update_name === u.name);
+    return {
+      date: chartData[closestIdx]?.date || uDate.substring(5),
+      name: u.name?.replace(/\d{4}\s*/g, '').trim() || u.name,
+      fullName: u.name,
+      type: u.type,
+      impact: impacting?.site_impact || 'none',
+      clickChangePct: impacting?.click_change_pct || null,
+    };
+  });
+
+  // Update type colors
+  const UPDATE_TYPE_COLORS: Record<string, string> = {
+    core: '#ef4444',
+    spam: '#f59e0b',
+    helpful_content: '#8b5cf6',
+    product_reviews: '#ec4899',
+    link: '#06b6d4',
+  };
+
+  // Recovery status labels
+  const RECOVERY_LABELS: Record<string, { label: string; color: string }> = {
+    recovered: { label: 'Recovered', color: 'text-emerald-400' },
+    partial_recovery: { label: 'Partial Recovery', color: 'text-amber-400' },
+    not_recovered: { label: 'Not Recovered', color: 'text-red-400' },
+    ongoing: { label: 'Ongoing', color: 'text-blue-400' },
+    unknown: { label: 'Unknown', color: 'text-slate-400' },
+  };
 
   return (
     <div className="space-y-6">
-      <MetricCard
-        label="Vulnerability Score"
-        value={`${((data.vulnerability_score || 0) * 100).toFixed(0)}%`}
-        className={
-          (data.vulnerability_score || 0) > 0.7
-            ? 'text-red-400'
-            : (data.vulnerability_score || 0) > 0.4
-            ? 'text-amber-400'
-            : 'text-emerald-400'
-        }
-      />
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <MetricCard
+          label="Vulnerability Score"
+          value={`${((data.vulnerability_score || 0) * 100).toFixed(0)}%`}
+          className={
+            (data.vulnerability_score || 0) > 0.7
+              ? 'text-red-400'
+              : (data.vulnerability_score || 0) > 0.4
+              ? 'text-amber-400'
+              : 'text-emerald-400'
+          }
+        />
+        <MetricCard
+          label="Updates in Period"
+          value={data.total_updates_in_period || 0}
+        />
+        <MetricCard
+          label="Impactful Updates"
+          value={data.updates_with_site_impact || 0}
+          className={
+            (data.updates_with_site_impact || 0) > 3 ? 'text-red-400' :
+            (data.updates_with_site_impact || 0) > 1 ? 'text-amber-400' : 'text-emerald-400'
+          }
+        />
+        <MetricCard
+          label="Unexplained Changes"
+          value={unexplainedChanges.length}
+          className={unexplainedChanges.length > 0 ? 'text-amber-400' : 'text-slate-400'}
+        />
+      </div>
 
+      {/* Algorithm Timeline Chart — Traffic with Update Markers */}
+      {hasTimelineChart && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
+            Traffic Timeline with Algorithm Updates
+          </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            Weekly clicks with algorithm update markers overlaid. Red lines = core updates, amber = spam, purple = helpful content.
+          </p>
+          <ResponsiveContainer width="100%" height={320}>
+            <AreaChart data={chartData} margin={{ top: 10, right: 20, bottom: 20, left: 20 }}>
+              <defs>
+                <linearGradient id="algoClicksGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis
+                dataKey="date"
+                stroke="#94a3b8"
+                tick={{ fontSize: 11 }}
+                interval={Math.max(0, Math.floor(chartData.length / 12) - 1)}
+                angle={-30}
+                textAnchor="end"
+                height={50}
+              />
+              <YAxis
+                stroke="#94a3b8"
+                tick={{ fontSize: 11 }}
+                tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
+              />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: 8 }}
+                labelStyle={{ color: '#e2e8f0' }}
+                formatter={(value: any, name: string) => [
+                  Number(value).toLocaleString(),
+                  name === 'clicks' ? 'Weekly Clicks' : 'Weekly Impressions'
+                ]}
+              />
+              <Area
+                type="monotone"
+                dataKey="clicks"
+                stroke="#3b82f6"
+                strokeWidth={2}
+                fill="url(#algoClicksGrad)"
+                dot={false}
+              />
+              {/* Algorithm update reference lines */}
+              {updateMarkers.map((marker: any, idx: number) => (
+                <ReferenceLine
+                  key={`algo-${idx}`}
+                  x={marker.date}
+                  stroke={UPDATE_TYPE_COLORS[marker.type] || '#94a3b8'}
+                  strokeDasharray={marker.impact === 'none' ? '4 4' : '0'}
+                  strokeWidth={marker.impact === 'none' ? 1 : 2}
+                  strokeOpacity={marker.impact === 'none' ? 0.5 : 0.8}
+                  label={{
+                    value: marker.type === 'core' ? 'C' : marker.type === 'spam' ? 'S' : marker.type === 'helpful_content' ? 'H' : 'U',
+                    position: 'top',
+                    fill: UPDATE_TYPE_COLORS[marker.type] || '#94a3b8',
+                    fontSize: 10,
+                    fontWeight: 'bold',
+                  }}
+                />
+              ))}
+            </AreaChart>
+          </ResponsiveContainer>
+          {/* Legend for update types */}
+          <div className="flex flex-wrap gap-4 mt-3 px-2">
+            {[
+              { label: 'C = Core Update', color: '#ef4444' },
+              { label: 'S = Spam Update', color: '#f59e0b' },
+              { label: 'H = Helpful Content', color: '#8b5cf6' },
+              { label: 'Traffic (clicks)', color: '#3b82f6' },
+            ].map((item, idx) => (
+              <div key={idx} className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: item.color }} />
+                <span className="text-xs text-slate-400">{item.label}</span>
+              </div>
+            ))}
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-0 border-t-2 border-dashed border-slate-500" />
+              <span className="text-xs text-slate-400">No site impact</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Algorithm Update Impact Cards */}
       {updates.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
           <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Algorithm Updates Impact
+            Algorithm Updates Impact ({updates.length})
           </h3>
           <div className="space-y-3">
-            {updates.map((update: any, idx: number) => (
-              <div
-                key={idx}
-                className={`p-3 rounded border ${
-                  update.site_impact === 'negative'
-                    ? 'bg-red-900/30 border-red-200'
-                    : update.site_impact === 'positive'
-                    ? 'bg-emerald-900/30 border-green-200'
-                    : 'bg-slate-800/30 border-slate-700/50'
-                }`}
-              >
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="font-medium text-white">
-                      {update.update_name}
-                    </div>
-                    <div className="text-sm text-slate-400 mt-1">{update.date}</div>
-                    {update.common_characteristics && (
-                      <div className="text-xs text-slate-400 mt-2">
-                        Affected: {update.common_characteristics.join(', ')}
+            {updates.map((update: any, idx: number) => {
+              const recovery = RECOVERY_LABELS[update.recovery_status] || RECOVERY_LABELS.unknown;
+              return (
+                <div
+                  key={idx}
+                  className={`p-3 rounded border ${
+                    update.site_impact === 'negative'
+                      ? 'bg-red-900/20 border-red-700/40'
+                      : update.site_impact === 'positive'
+                      ? 'bg-emerald-900/20 border-emerald-700/40'
+                      : 'bg-slate-800/30 border-slate-700/50'
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <div className="font-medium text-white">
+                          {update.update_name}
+                        </div>
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded font-medium uppercase"
+                          style={{
+                            backgroundColor: `${UPDATE_TYPE_COLORS[update.update_type] || '#64748b'}20`,
+                            color: UPDATE_TYPE_COLORS[update.update_type] || '#94a3b8',
+                          }}
+                        >
+                          {update.update_type?.replace(/_/g, ' ') || 'update'}
+                        </span>
                       </div>
-                    )}
-                  </div>
-                  <div className="text-right ml-4">
-                    <div
-                      className={`text-sm font-medium ${
-                        update.click_change_pct >= 0
-                          ? 'text-emerald-400'
-                          : 'text-red-400'
-                      }`}
-                    >
-                      {update.click_change_pct >= 0 ? '+' : ''}
-                      {update.click_change_pct?.toFixed(1)}%
+                      <div className="text-sm text-slate-400 mt-1">
+                        {update.date?.substring(0, 10)} • {update.days_since_update || '?'} days ago
+                      </div>
+                      {update.common_characteristics?.length > 0 && (
+                        <div className="text-xs text-slate-400 mt-2 flex flex-wrap gap-1">
+                          {update.common_characteristics.map((c: string, ci: number) => (
+                            <span key={ci} className="px-1.5 py-0.5 bg-slate-700/50 rounded text-slate-300">
+                              {c.replace(/_/g, ' ')}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {update.pages_most_affected?.length > 0 && (
+                        <div className="text-xs text-slate-500 mt-2">
+                          Top affected: {update.pages_most_affected.slice(0, 3).map((p: any) => {
+                            const url = p.page || '';
+                            return url.length > 40 ? '...' + url.slice(-37) : url;
+                          }).join(', ')}
+                        </div>
+                      )}
                     </div>
-                    <div className="text-xs text-slate-400 mt-1">
-                      {update.recovery_status || 'monitoring'}
+                    <div className="text-right ml-4 flex-shrink-0">
+                      <div
+                        className={`text-lg font-bold ${
+                          update.click_change_pct >= 0
+                            ? 'text-emerald-400'
+                            : 'text-red-400'
+                        }`}
+                      >
+                        {update.click_change_pct >= 0 ? '+' : ''}
+                        {update.click_change_pct?.toFixed(1)}%
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5">clicks</div>
+                      <div className={`text-xs mt-1 ${recovery.color}`}>
+                        {recovery.label}
+                      </div>
                     </div>
                   </div>
                 </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Vulnerability Factors */}
+      {vulnerabilityFactors.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-3">Vulnerability Factors</h3>
+          <div className="flex flex-wrap gap-2">
+            {vulnerabilityFactors.map((factor: string, idx: number) => (
+              <span
+                key={idx}
+                className="px-2.5 py-1 bg-red-900/20 border border-red-700/30 rounded text-xs text-red-300"
+              >
+                {factor.replace(/_/g, ' ')}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Unexplained Changes */}
+      {unexplainedChanges.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-3">
+            Unexplained Traffic Changes ({unexplainedChanges.length})
+          </h3>
+          <p className="text-xs text-slate-500 mb-3">
+            Change points not correlated with any known algorithm update — may be technical issues, competitor movements, or manual actions.
+          </p>
+          <div className="space-y-2">
+            {unexplainedChanges.slice(0, 8).map((cp: any, idx: number) => (
+              <div key={idx} className="flex items-center justify-between p-2 bg-amber-900/10 border border-amber-700/20 rounded">
+                <span className="text-sm text-white">
+                  {cp.date?.substring(0, 10) || 'Unknown date'}
+                </span>
+                <span className={`text-sm font-medium ${
+                  (cp.magnitude || cp.direction === 'drop' || (cp.click_change_pct && cp.click_change_pct < 0))
+                    ? 'text-red-400'
+                    : 'text-emerald-400'
+                }`}>
+                  {cp.direction === 'drop' ? '↓' : cp.direction === 'rise' ? '↑' : '~'}
+                  {cp.magnitude ? ` ${(cp.magnitude * 100).toFixed(0)}%` : ''}
+                </span>
               </div>
             ))}
           </div>
         </div>
       )}
 
+      {/* Recommendation */}
       {data.recommendation && (
-        <div className="bg-blue-900/30 border border-blue-200 rounded-lg p-4">
-          <p className="text-sm text-slate-100">{data.recommendation}</p>
+        <div className="bg-blue-900/20 border border-blue-700/30 rounded-lg p-4">
+          <h3 className="text-sm font-semibold text-blue-300 mb-2">Strategic Recommendation</h3>
+          <p className="text-sm text-slate-200 leading-relaxed">{data.recommendation}</p>
         </div>
       )}
     </div>
