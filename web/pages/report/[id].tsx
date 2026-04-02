@@ -96,6 +96,10 @@ export default function ReportPage() {
   const [emailSending, setEmailSending] = useState(false);
   const [emailResult, setEmailResult] = useState<{ success: boolean; message: string } | null>(null);
 
+  // Progressive rendering: show completed modules during generation
+  const [progressiveModules, setProgressiveModules] = useState<Record<string, any>>({});
+  const progressivePollRef = useRef<NodeJS.Timeout | null>(null);
+
   const sendReportEmail = async () => {
     if (!emailAddress || !id) return;
     setEmailSending(true);
@@ -124,6 +128,37 @@ export default function ReportPage() {
       setEmailSending(false);
     }
   };
+
+  // ---------------------------------------------------------------------------
+  // Progressive module fetching — shows sections as they complete
+  // ---------------------------------------------------------------------------
+  const fetchProgressiveModules = useCallback(async () => {
+    if (!id) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/reports/${id}/modules`, {
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.modules) {
+          const completed: Record<string, any> = {};
+          for (const [key, mod] of Object.entries(data.modules)) {
+            const m = mod as any;
+            if (m.status === 'success' && m.data) {
+              completed[key] = m.data;
+            }
+          }
+          setProgressiveModules(completed);
+        }
+        // Keep polling while report is generating
+        if (data.status && !['completed', 'complete', 'done', 'failed', 'partial'].includes(data.status)) {
+          progressivePollRef.current = setTimeout(fetchProgressiveModules, 5000);
+        }
+      }
+    } catch {
+      // Silent fail — main fetchReport handles errors
+    }
+  }, [id]);
 
   // ---------------------------------------------------------------------------
   // Fetch report data from API
@@ -207,6 +242,18 @@ export default function ReportPage() {
     };
   }, [fetchReport]);
 
+  // Start progressive module polling during generation
+  useEffect(() => {
+    if (loading && id) {
+      fetchProgressiveModules();
+    }
+    return () => {
+      if (progressivePollRef.current) {
+        clearTimeout(progressivePollRef.current);
+      }
+    };
+  }, [loading, id, fetchProgressiveModules]);
+
   // ---------------------------------------------------------------------------
   // Section toggle handler
   // ---------------------------------------------------------------------------
@@ -226,7 +273,6 @@ export default function ReportPage() {
   // Loading State
   // ---------------------------------------------------------------------------
   if (loading) {
-    // Calculate progress from module status
     const progress = report?.progress || {};
     const completedModules = Object.values(progress).filter(
       (s) => s === 'success' || s === 'completed' || s === 'failed' || s === 'skipped'
@@ -238,6 +284,29 @@ export default function ReportPage() {
       ([, meta]) => meta.number === currentModuleNum
     )?.[1]?.title;
 
+    const progressiveKeys = Object.keys(progressiveModules);
+    const hasProgressiveData = progressiveKeys.length > 0;
+
+    // Map module keys to their content components for progressive rendering
+    const renderProgressiveModule = (key: string, data: any) => {
+      const components: Record<string, (props: { data: any; domain?: string }) => JSX.Element | null> = {
+        health_trajectory: HealthTrajectoryContent,
+        page_triage: PageTriageContent,
+        serp_landscape: SerpLandscapeContent,
+        content_intelligence: ContentIntelligenceContent,
+        gameplan: GameplanContent,
+        algorithm_impact: AlgorithmImpactContent,
+        intent_migration: IntentMigrationContent,
+        technical_health: TechnicalHealthContent,
+        site_architecture: SiteArchitectureContent,
+        branded_split: BrandedSplitContent,
+        competitive_threats: CompetitiveThreatsContent,
+        revenue_attribution: RevenueAttributionContent,
+      };
+      const Comp = components[key];
+      return Comp ? <Comp data={data} domain={report?.domain || ''} /> : null;
+    };
+
     return (
       <>
         <Head>
@@ -245,13 +314,14 @@ export default function ReportPage() {
         </Head>
         <NavHeader />
         <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 py-12 px-4">
-          <div className="max-w-4xl mx-auto text-center">
-            <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-12">
-              <RefreshCw className="w-16 h-16 text-blue-400 mx-auto mb-6 animate-spin" />
-              <h1 className="text-2xl font-bold text-white mb-3">
-                Generating Your Report
-              </h1>
-              <p className="text-slate-300 mb-6">
+          <div className={hasProgressiveData ? "max-w-7xl mx-auto" : "max-w-4xl mx-auto text-center"}>
+            {/* Progress header */}
+            <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-8 mb-8">
+              <div className="flex items-center justify-center gap-4 mb-4">
+                <RefreshCw className="w-8 h-8 text-blue-400 animate-spin" />
+                <h1 className="text-2xl font-bold text-white">Generating Your Report</h1>
+              </div>
+              <p className="text-slate-300 mb-4 text-center">
                 {report?.status === 'analyzing' && currentModuleName
                   ? `Running: ${currentModuleName} (${completedModules}/${totalModules} modules)`
                   : report?.status === 'ingesting'
@@ -259,22 +329,61 @@ export default function ReportPage() {
                   : 'Initializing report generation...'}
               </p>
               {completedModules > 0 && (
-                <div className="max-w-md mx-auto mb-4">
+                <div className="max-w-md mx-auto mb-2">
                   <div className="w-full bg-slate-700 rounded-full h-3">
                     <div
                       className="bg-gradient-to-r from-blue-500 to-purple-500 h-3 rounded-full transition-all duration-500"
                       style={{ width: `${progressPct}%` }}
                     />
                   </div>
-                  <p className="text-sm text-slate-400 mt-2">{progressPct}% complete</p>
+                  <p className="text-sm text-slate-400 mt-2 text-center">{progressPct}% complete</p>
                 </div>
               )}
               {report?.domain && (
-                <p className="text-sm text-slate-400">
+                <p className="text-sm text-slate-400 text-center">
                   Domain: <span className="font-mono text-slate-300">{report.domain}</span>
                 </p>
               )}
             </div>
+
+            {/* Progressive module results — completed sections appear as they finish */}
+            {hasProgressiveData && (
+              <div className="space-y-6">
+                <p className="text-sm text-slate-400 text-center mb-4">
+                  Completed sections appear below as they finish analyzing:
+                </p>
+                {Object.entries(MODULE_META).map(([key, meta]) => {
+                  const moduleData = progressiveModules[key];
+                  if (!moduleData) return null;
+                  return (
+                    <div key={key} className="bg-slate-800/40 border border-slate-700/50 rounded-lg overflow-hidden">
+                      <button
+                        onClick={() => toggleSection(key)}
+                        className="w-full flex items-center justify-between p-5 text-left hover:bg-slate-700/30 transition"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-emerald-900/40 flex items-center justify-center">
+                            <CheckCircle className="w-4 h-4 text-emerald-400" />
+                          </div>
+                          <div>
+                            <span className="text-white font-medium">{meta.title}</span>
+                            <span className="text-xs text-slate-500 ml-2">Module {meta.number}</span>
+                          </div>
+                        </div>
+                        {expandedSections.has(key)
+                          ? <ChevronUp className="w-5 h-5 text-slate-400" />
+                          : <ChevronDown className="w-5 h-5 text-slate-400" />}
+                      </button>
+                      {expandedSections.has(key) && (
+                        <div className="px-5 pb-5">
+                          {renderProgressiveModule(key, moduleData)}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </main>
       </>
