@@ -84,6 +84,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Failed to check integration health on startup: %s", str(e))
 
+    # Recover stale reports left over from previous crashes/deploys
+    try:
+        from .worker.report_runner import recover_stale_reports
+        logger.info("Running stale report recovery...")
+        recovery_result = recover_stale_reports(stale_threshold_minutes=30)
+        if recovery_result["recovered"] > 0:
+            logger.warning(
+                "Recovered %d stale report(s): %s",
+                recovery_result["recovered"],
+                ", ".join(recovery_result["report_ids"][:5]),
+            )
+        else:
+            logger.info("No stale reports found — all clean.")
+        if recovery_result["errors"]:
+            for err in recovery_result["errors"]:
+                logger.warning("Recovery error: %s", err)
+    except Exception as e:
+        logger.error("Stale report recovery failed (non-fatal): %s", str(e))
+
     yield
 
     # Shutdown
