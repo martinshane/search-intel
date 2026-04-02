@@ -28,7 +28,7 @@ WORKDIR /app
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
+COPY --from=builder /app/public ./public 2>/dev/null || true
 COPY --from=builder /app/next.config.js ./
 
 # Railway injects PORT at runtime (default 3000 for Next.js)
@@ -36,4 +36,5 @@ ENV PORT=3000
 ENV NODE_ENV=production
 EXPOSE ${PORT}
 
-CMD ["npx", "next", "start", "-p", "${PORT}"]
+# Shell form so $PORT is expanded at runtime
+CMD npx next start -p $PORT
