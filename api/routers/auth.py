@@ -254,14 +254,37 @@ async def auth_status(
     if gsc_connected and uid:
         try:
             gsc_data = await verify_gsc_access(uid)
-            gsc_properties = gsc_data.get("properties", [])
+            raw_gsc = gsc_data.get("properties", [])
+            # Normalize to frontend Property interface: {id, name, type}
+            # Backend returns: {url, permission_level}
+            # Frontend reads:  prop.id (value for <option>), prop.name (display text)
+            for prop in raw_gsc:
+                site_url = prop.get("url") or prop.get("siteUrl") or ""
+                gsc_properties.append({
+                    "id": site_url,
+                    "name": site_url,
+                    "type": "gsc",
+                    "permission_level": prop.get("permission_level", ""),
+                })
         except Exception:
             pass  # properties unavailable but still report connected
 
     if ga4_connected and uid:
         try:
             ga4_data = await verify_ga4_access(uid)
-            ga4_properties = ga4_data.get("properties", [])
+            raw_ga4 = ga4_data.get("properties", [])
+            # Normalize to frontend Property interface: {id, name, type}
+            # Backend returns: {property_id, display_name, parent}
+            # Frontend reads:  prop.id (value for <option>), prop.name (display text)
+            for prop in raw_ga4:
+                prop_id = prop.get("property_id") or prop.get("property") or ""
+                display = prop.get("display_name") or prop.get("displayName") or prop_id
+                ga4_properties.append({
+                    "id": prop_id,
+                    "name": display,
+                    "type": "ga4",
+                    "parent": prop.get("parent", ""),
+                })
         except Exception:
             pass
 
