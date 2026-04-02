@@ -744,11 +744,15 @@ class AnalysisPipeline:
         elif module_name == "competitive_threats":
             # Module 11 expects a LIST of SERP dicts — normalize the
             # DataForSEO wrapper dict into the flat list format.
+            # user_domain is critical: without it, Module 11 returns empty
+            # results because it cannot distinguish the user's site from
+            # competitors in the SERP data.
             inputs = {
                 "serp_data": _normalize_serp_data(data_context.get("serp_data")),
                 "gsc_data": _ensure_dataframe(
                     data_context.get("gsc_keyword_data"), "gsc_keyword_data"
                 ),
+                "user_domain": data_context.get("domain"),
             }
         
         elif module_name == "revenue_attribution":
