@@ -11,7 +11,7 @@ from httpx import HTTPError, TimeoutException
 from .config import settings, APP_VERSION
 from .routers import health
 from .middleware.rate_limiter import RateLimitMiddleware
-from .utils.env_validator import validate_environment
+from .config.env_validator import validate_environment
 
 # Configure logging
 logging.basicConfig(
@@ -185,7 +185,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 # Routers
 # ---------------------------------------------------------------------------
 
-app.include_router(health.router, tags=["Health"])
+app.include_router(health.router, prefix="/health", tags=["Health"])
 
 # Lazy load other routers to avoid import errors if dependencies are missing
 try:
