@@ -149,7 +149,7 @@ async def create_report(
             "gsc_property": req.gsc_property,
             "ga4_property": req.ga4_property,
             "domain": req.domain,
-            "status": "queued",
+            "status": "pending",
             "created_at": datetime.utcnow().isoformat(),
         }).execute()
     except Exception as e:
@@ -166,7 +166,7 @@ async def create_report(
             ga4_property=req.ga4_property,
             domain=req.domain,
         )
-        logger.info("Background pipeline queued for report %s", report_id)
+        logger.info("Background pipeline started for report %s (status=pending)", report_id)
     except Exception as e:
         logger.error("Failed to queue pipeline for report %s: %s", report_id, e)
         # Report is created — pipeline can be retried via /reports/{id}/retry
@@ -176,7 +176,7 @@ async def create_report(
 
     return {
         "report_id": report_id,
-        "status": "queued",
+        "status": "pending",
         "message": "Report created. Analysis pipeline will start shortly. Poll GET /reports/{id} for progress.",
     }
 
@@ -213,7 +213,7 @@ async def retry_report(
     # Reset status
     supabase = _get_supabase()
     supabase.table("reports").update({
-        "status": "queued",
+        "status": "pending",
         "error_message": None,
         "updated_at": datetime.utcnow().isoformat(),
     }).eq("id", report_id).execute()
@@ -233,7 +233,7 @@ async def retry_report(
 
     return {
         "report_id": report_id,
-        "status": "queued",
+        "status": "pending",
         "message": "Report re-queued. Pipeline will restart shortly.",
     }
 
@@ -274,7 +274,7 @@ async def get_report_progress(
     report = await _get_owned_report(report_id, user)
 
     raw_progress = report.get("progress") or {}
-    status = report.get("status", "queued")
+    status = report.get("status", "pending")
     current_module = report.get("current_module")
 
     # Map pipeline statuses to frontend-expected values
