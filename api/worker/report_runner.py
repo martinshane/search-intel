@@ -25,7 +25,9 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from supabase import create_client, Client
+from supabase import Client
+
+from api.database import get_service_role_client
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +49,18 @@ MODULE_NUMBERS = {
 
 
 def _get_supabase() -> Client:
-    """Get a Supabase client using the service role key for background work."""
-    url = os.getenv("SUPABASE_URL", "")
-    # Prefer service role key for background tasks (bypasses RLS)
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_KEY", "")
-    if not url or not key:
-        raise RuntimeError("Supabase not configured — set SUPABASE_URL and SUPABASE_KEY")
-    return create_client(url, key)
+    """Get a Supabase client using the service role key for background work.
+
+    Delegates to the centralized api.database.get_service_role_client()
+    which tries all env-var naming conventions (SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_SERVICE_KEY, SUPABASE_KEY, SUPABASE_ANON_KEY) and caches the
+    client instance via @lru_cache.
+
+    This ensures the report runner uses the same client configuration as
+    all API routers — eliminating env-var mismatch bugs that could silently
+    break report generation.
+    """
+    return get_service_role_client()
 
 
 def _update_report_status(
