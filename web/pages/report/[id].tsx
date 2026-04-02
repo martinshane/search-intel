@@ -1128,11 +1128,11 @@ function SerpLandscapeContent({ data }: { data: any }) {
         />
         <MetricCard
           label="Click Share"
-          value={`${((data.total_click_share || 0) * 100).toFixed(1)}%`}
+          value={`${((data.click_share?.total_click_share || 0) * 100).toFixed(1)}%`}
         />
         <MetricCard
           label="Opportunity"
-          value={`${((data.click_share_opportunity || 0) * 100).toFixed(1)}%`}
+          value={`${((data.click_share?.click_opportunity || 0) * 100).toFixed(1)}%`}
         />
       </div>
 
@@ -1476,36 +1476,87 @@ function AlgorithmImpactContent({ data }: { data: any }) {
 function IntentMigrationContent({ data }: { data: any }) {
   if (!data) return <div className="text-slate-400">No data available</div>;
 
-  const migrations = data.migrations || [];
+  const shifts = data.intent_shifts || [];
+  const emerging = data.emerging_intents || [];
+  const portfolio = data.portfolio_distribution || {};
 
   return (
     <div className="space-y-6">
-      {migrations.length > 0 && (
+      {/* Portfolio Distribution */}
+      {portfolio && Object.keys(portfolio).length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {Object.entries(portfolio).map(([intent, pct]: [string, any]) => (
+            <div key={intent} className="bg-slate-800/60 p-3 rounded-lg border border-slate-700/50 text-center">
+              <div className="text-xs text-slate-400 capitalize">{intent}</div>
+              <div className="text-xl font-bold text-white mt-1">
+                {typeof pct === 'number' ? `${(pct * 100).toFixed(0)}%` : String(pct)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Intent Shifts */}
+      {shifts.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
           <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Detected Intent Shifts
+            Detected Intent Shifts ({shifts.length})
           </h3>
           <div className="space-y-3">
-            {migrations.map((migration: any, idx: number) => (
+            {shifts.slice(0, 15).map((shift: any, idx: number) => (
               <div
                 key={idx}
-                className="p-3 bg-purple-900/30 border border-purple-200 rounded"
+                className="p-3 bg-purple-900/30 border border-purple-700/40 rounded"
               >
-                <div className="font-medium text-white">{migration.query}</div>
+                <div className="font-medium text-white">{shift.query || shift.keyword}</div>
                 <div className="text-sm text-slate-300 mt-2">
-                  {migration.previous_intent} → {migration.current_intent}
+                  {shift.previous_intent || shift.from_intent} → {shift.current_intent || shift.to_intent}
                 </div>
-                <div className="text-xs text-slate-400 mt-1">
-                  Confidence: {((migration.confidence || 0) * 100).toFixed(0)}%
-                </div>
-                {migration.recommendation && (
-                  <div className="text-sm text-purple-800 mt-2 font-medium">
-                    → {migration.recommendation}
+                {shift.confidence != null && (
+                  <div className="text-xs text-slate-400 mt-1">
+                    Confidence: {((shift.confidence || 0) * 100).toFixed(0)}%
+                  </div>
+                )}
+                {shift.recommendation && (
+                  <div className="text-sm text-purple-300 mt-2 font-medium">
+                    → {shift.recommendation}
                   </div>
                 )}
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Emerging Intents */}
+      {emerging.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+            Emerging Intents ({emerging.length})
+          </h3>
+          <div className="space-y-2">
+            {emerging.slice(0, 10).map((item: any, idx: number) => (
+              <div key={idx} className="flex justify-between p-2 bg-slate-800/30 rounded">
+                <span className="text-white text-sm">{item.query || item.keyword}</span>
+                <span className="text-emerald-400 text-sm font-medium">{item.intent || item.emerging_intent}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recommendations */}
+      {data.recommendations?.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-3">Recommendations</h3>
+          <ul className="space-y-2">
+            {data.recommendations.slice(0, 5).map((rec: any, idx: number) => (
+              <li key={idx} className="text-sm text-slate-300 flex items-start gap-2">
+                <span className="text-blue-400 mt-0.5">•</span>
+                <span>{typeof rec === 'string' ? rec : rec.text || rec.recommendation || JSON.stringify(rec)}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>
@@ -1517,7 +1568,7 @@ function TechnicalHealthContent({ data }: { data: any }) {
   if (!data) return <div className="text-slate-400">No data available</div>;
 
   const keywordAnalysis = data.keyword_ctr_analysis || [];
-  const opportunities = data.serp_feature_opportunities || [];
+  const opportunities = data.feature_opportunities || data.serp_feature_opportunities || [];
 
   // Prepare scatter data: expected vs actual CTR
   const scatterData = keywordAnalysis.slice(0, 50).map((kw: any) => ({
@@ -1772,15 +1823,27 @@ function SiteArchitectureContent({ data }: { data: any }) {
 function BrandedSplitContent({ data }: { data: any }) {
   if (!data) return <div className="text-slate-400">No data available</div>;
 
+  // Module 10 returns: segments.branded, segments.non_branded (aggregates),
+  // branded_pct (float 0-100), brand_dependency (object), trends, etc.
+  const branded = data.segments?.branded || {};
+  const nonBranded = data.segments?.non_branded || {};
+  const dependency = data.brand_dependency || {};
+  const brandedPct = data.branded_pct ?? dependency.branded_click_share_pct ?? 0;
+  const nbGrowth = data.non_branded_growth;
+  const topBranded = data.top_branded_queries || [];
+  const topNonBranded = data.top_non_branded_queries || [];
+  const opportunities = data.non_branded_opportunities || [];
+
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Summary Metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
           <h3 className="text-sm font-semibold text-slate-300 mb-2">
             Branded Traffic
           </h3>
           <div className="text-3xl font-bold text-white">
-            {data.branded_clicks?.toLocaleString() || 0}
+            {(branded.clicks || branded.total_clicks || 0).toLocaleString()}
           </div>
           <div className="text-sm text-slate-400 mt-1">clicks/month</div>
         </div>
@@ -1789,27 +1852,87 @@ function BrandedSplitContent({ data }: { data: any }) {
             Non-Branded Traffic
           </h3>
           <div className="text-3xl font-bold text-white">
-            {data.non_branded_clicks?.toLocaleString() || 0}
+            {(nonBranded.clicks || nonBranded.total_clicks || 0).toLocaleString()}
           </div>
           <div className="text-sm text-slate-400 mt-1">clicks/month</div>
         </div>
-      </div>
-
-      {data.brand_dependency_score !== undefined && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
           <h3 className="text-sm font-semibold text-slate-300 mb-2">
             Brand Dependency
           </h3>
           <div className="text-2xl font-bold text-white">
-            {(data.brand_dependency_score * 100).toFixed(1)}%
+            {brandedPct > 1 ? brandedPct.toFixed(1) : (brandedPct * 100).toFixed(1)}%
           </div>
-          <p className="text-sm text-slate-400 mt-2">
-            {data.brand_dependency_score > 0.7
-              ? 'High dependency on branded traffic — diversify with non-branded content'
-              : data.brand_dependency_score > 0.4
-              ? 'Moderate brand dependency — healthy balance'
+          <p className="text-xs text-slate-400 mt-2">
+            {(brandedPct > 1 ? brandedPct : brandedPct * 100) > 70
+              ? 'High dependency — diversify with non-branded content'
+              : (brandedPct > 1 ? brandedPct : brandedPct * 100) > 40
+              ? 'Moderate dependency — healthy balance'
               : 'Strong non-branded presence — good diversification'}
           </p>
+        </div>
+      </div>
+
+      {/* Non-Branded Growth */}
+      {nbGrowth != null && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-2">
+            Non-Branded Growth Trend
+          </h3>
+          <div className={`text-2xl font-bold ${nbGrowth > 0 ? 'text-emerald-400' : nbGrowth < 0 ? 'text-red-400' : 'text-white'}`}>
+            {nbGrowth > 0 ? '+' : ''}{typeof nbGrowth === 'number' ? nbGrowth.toFixed(1) : nbGrowth}%
+          </div>
+        </div>
+      )}
+
+      {/* Top Non-Branded Queries */}
+      {topNonBranded.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-3">
+            Top Non-Branded Queries
+          </h3>
+          <div className="space-y-2">
+            {topNonBranded.slice(0, 10).map((q: any, idx: number) => (
+              <div key={idx} className="flex justify-between p-2 bg-slate-800/30 rounded text-sm">
+                <span className="text-white truncate mr-4">{q.query || q.keyword}</span>
+                <span className="text-slate-400 whitespace-nowrap">{(q.clicks || 0).toLocaleString()} clicks</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Opportunities */}
+      {opportunities.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-3">
+            Non-Branded Opportunities ({opportunities.length})
+          </h3>
+          <div className="space-y-2">
+            {opportunities.slice(0, 8).map((opp: any, idx: number) => (
+              <div key={idx} className="p-2 bg-emerald-900/20 border border-emerald-700/30 rounded text-sm">
+                <div className="text-white font-medium">{opp.query || opp.keyword}</div>
+                {opp.potential_clicks && (
+                  <div className="text-xs text-emerald-400 mt-1">+{opp.potential_clicks.toLocaleString()} potential clicks</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recommendations */}
+      {data.recommendations?.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-3">Recommendations</h3>
+          <ul className="space-y-2">
+            {data.recommendations.slice(0, 5).map((rec: any, idx: number) => (
+              <li key={idx} className="text-sm text-slate-300 flex items-start gap-2">
+                <span className="text-blue-400 mt-0.5">•</span>
+                <span>{typeof rec === 'string' ? rec : rec.text || rec.recommendation || JSON.stringify(rec)}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>
@@ -1820,38 +1943,115 @@ function BrandedSplitContent({ data }: { data: any }) {
 function CompetitiveThreatsContent({ data }: { data: any }) {
   if (!data) return <div className="text-slate-400">No data available</div>;
 
-  const threats = data.threats || [];
+  // Module 11 returns: competitor_profiles, keyword_vulnerability,
+  // emerging_threats, content_velocity, competitive_pressure, recommendations
+  const competitors = data.competitor_profiles || [];
+  const vulnerability = data.keyword_vulnerability || {};
+  const emerging = data.emerging_threats || [];
+  const pressure = data.competitive_pressure || [];
 
   return (
     <div className="space-y-6">
-      {threats.length > 0 && (
+      {/* Summary */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <MetricCard
+          label="Keywords Analyzed"
+          value={data.keywords_analyzed || 0}
+        />
+        <MetricCard
+          label="Vulnerable Keywords"
+          value={vulnerability.total_vulnerable || 0}
+          className="text-red-400"
+        />
+        <MetricCard
+          label="Competitors Found"
+          value={competitors.length}
+        />
+      </div>
+
+      {/* Competitor Profiles */}
+      {competitors.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
           <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Competitive Threats
+            Top Competitors ({competitors.length})
           </h3>
           <div className="space-y-3">
-            {threats.map((threat: any, idx: number) => (
+            {competitors.slice(0, 10).map((comp: any, idx: number) => (
               <div
                 key={idx}
-                className="p-3 bg-red-900/30 border border-red-200 rounded"
+                className="p-3 bg-slate-800/30 border border-slate-700/40 rounded"
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="font-medium text-white">
-                      {threat.competitor}
+                      {comp.domain || comp.competitor}
                     </div>
                     <div className="text-sm text-slate-300 mt-1">
-                      {threat.keywords_at_risk} keywords at risk
+                      {comp.keyword_overlap || comp.shared_keywords || 0} shared keywords
+                      {comp.avg_position && (
+                        <span className="text-slate-400 ml-2">• Avg pos: #{comp.avg_position.toFixed(1)}</span>
+                      )}
                     </div>
-                    <div className="text-xs text-slate-400 mt-1">
-                      Estimated loss: {threat.estimated_click_loss?.toLocaleString()} clicks/mo
-                    </div>
+                    {comp.threat_score != null && (
+                      <div className="text-xs text-slate-400 mt-1">
+                        Threat score: {(comp.threat_score * 100).toFixed(0)}%
+                      </div>
+                    )}
                   </div>
-                  <ThreatBadge level={threat.threat_level} />
+                  <ThreatBadge level={comp.threat_level || (comp.threat_score > 0.7 ? 'high' : comp.threat_score > 0.4 ? 'medium' : 'low')} />
                 </div>
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Competitive Pressure by Keyword Cluster */}
+      {pressure.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+            Competitive Pressure
+          </h3>
+          <div className="space-y-2">
+            {pressure.slice(0, 8).map((p: any, idx: number) => (
+              <div key={idx} className="flex items-center justify-between p-2 bg-slate-800/30 rounded">
+                <span className="text-white text-sm truncate mr-4">{p.cluster || p.keyword || p.query}</span>
+                <ThreatBadge level={p.pressure_level || p.threat_level || 'medium'} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Emerging Threats */}
+      {emerging.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+            Emerging Threats ({emerging.length})
+          </h3>
+          <div className="space-y-2">
+            {emerging.slice(0, 6).map((et: any, idx: number) => (
+              <div key={idx} className="p-2 bg-red-900/20 border border-red-700/30 rounded text-sm">
+                <div className="text-white font-medium">{et.domain || et.competitor}</div>
+                <div className="text-xs text-slate-400 mt-1">{et.reason || et.description || `${et.new_keywords || 0} new keyword appearances`}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recommendations */}
+      {data.recommendations?.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-3">Recommendations</h3>
+          <ul className="space-y-2">
+            {data.recommendations.slice(0, 5).map((rec: any, idx: number) => (
+              <li key={idx} className="text-sm text-slate-300 flex items-start gap-2">
+                <span className="text-blue-400 mt-0.5">•</span>
+                <span>{typeof rec === 'string' ? rec : rec.text || rec.recommendation || JSON.stringify(rec)}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>
@@ -1862,39 +2062,101 @@ function CompetitiveThreatsContent({ data }: { data: any }) {
 function RevenueAttributionContent({ data }: { data: any }) {
   if (!data) return <div className="text-slate-400">No data available</div>;
 
+  // Module 12 returns: summary, revenue_by_page, top_converting_queries,
+  // revenue_at_risk, position_improvement_roi, conversion_funnel,
+  // revenue_concentration, recommendations, data_quality
+  const funnel = data.conversion_funnel || {};
+  const revenueByPage = data.revenue_by_page || [];
+  const atRisk = data.revenue_at_risk || [];
+  const roiOpps = data.position_improvement_roi || [];
+  const topQueries = data.top_converting_queries || [];
+  const concentration = data.revenue_concentration || {};
+  const quality = data.data_quality || {};
+
+  const totalRevenue = funnel.total_revenue || revenueByPage.reduce((sum: number, p: any) => sum + (p.estimated_revenue || p.revenue || 0), 0);
+  const topPage = revenueByPage.length > 0 ? (revenueByPage[0].page || revenueByPage[0].url || 'N/A') : 'N/A';
+
   return (
     <div className="space-y-6">
+      {/* Summary Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <MetricCard
-          label="Attributed Revenue"
-          value={`$${data.total_attributed_revenue?.toLocaleString() || 0}`}
+          label="Estimated Revenue"
+          value={`$${Math.round(totalRevenue).toLocaleString()}`}
           className="text-emerald-400"
         />
         <MetricCard
-          label="Revenue per Session"
-          value={`$${data.revenue_per_session?.toFixed(2) || 0}`}
+          label="Pages Analyzed"
+          value={quality.pages_analyzed || revenueByPage.length || 0}
         />
         <MetricCard
-          label="Top Converting Page"
-          value={data.top_converting_page || 'N/A'}
-          className="text-sm truncate"
+          label="At-Risk Revenue"
+          value={`$${Math.round(atRisk.reduce((s: number, r: any) => s + (r.revenue_at_risk || r.estimated_revenue || 0), 0)).toLocaleString()}`}
+          className="text-red-400"
         />
       </div>
 
-      {data.revenue_by_channel && (
+      {/* Revenue by Page (Top pages bar chart) */}
+      {revenueByPage.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
           <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Revenue by Channel
+            Top Revenue Pages
           </h3>
           <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={data.revenue_by_channel}>
+            <BarChart data={revenueByPage.slice(0, 15).map((p: any) => ({
+              page: (p.page || p.url || '').replace(/^https?:\/\/[^/]+/, '').substring(0, 40),
+              revenue: Math.round(p.estimated_revenue || p.revenue || 0),
+            }))}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="channel" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip />
-              <Bar dataKey="revenue" fill="#3b82f6" />
+              <XAxis dataKey="page" tick={{ fontSize: 10, angle: -30 }} height={60} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip formatter={(value: any) => [`$${value.toLocaleString()}`, 'Revenue']} />
+              <Bar dataKey="revenue" fill="#10b981" />
             </BarChart>
           </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Position Improvement ROI */}
+      {roiOpps.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+            Position Improvement ROI
+          </h3>
+          <div className="space-y-2">
+            {roiOpps.slice(0, 8).map((opp: any, idx: number) => (
+              <div key={idx} className="flex items-center justify-between p-2 bg-slate-800/30 rounded text-sm">
+                <div className="flex-1 truncate mr-4">
+                  <span className="text-white">{opp.query || opp.keyword}</span>
+                  {opp.current_position && (
+                    <span className="text-slate-400 ml-2">pos #{opp.current_position.toFixed(1)}</span>
+                  )}
+                </div>
+                <span className="text-emerald-400 whitespace-nowrap font-medium">
+                  +${Math.round(opp.additional_revenue || opp.potential_revenue || 0).toLocaleString()}/mo
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Revenue at Risk */}
+      {atRisk.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">
+            Revenue at Risk
+          </h3>
+          <div className="space-y-2">
+            {atRisk.slice(0, 8).map((item: any, idx: number) => (
+              <div key={idx} className="flex items-center justify-between p-2 bg-red-900/20 border border-red-700/30 rounded text-sm">
+                <span className="text-white truncate mr-4">{(item.page || item.url || '').replace(/^https?:\/\/[^/]+/, '')}</span>
+                <span className="text-red-400 whitespace-nowrap font-medium">
+                  ${Math.round(item.revenue_at_risk || item.estimated_revenue || 0).toLocaleString()}/mo
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
