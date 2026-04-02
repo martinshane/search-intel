@@ -1,3 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Custom styles — loaded AFTER Tailwind directives so they can
+ * override Preflight defaults (element resets) and component
+ * classes where needed.  Tailwind utility classes always win
+ * in specificity because they are generated into @tailwind
+ * utilities which is processed before this layer in the build.
+ */
+
 :root {
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
@@ -504,8 +516,3 @@ html {
     padding-bottom: max(0px, env(safe-area-inset-bottom));
   }
 }
-
-/* Tailwind base layer imports */
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
