@@ -29,6 +29,11 @@ import {
   ResponsiveContainer,
   ReferenceLine,
   Cell,
+  RadarChart,
+  Radar as RechartsRadar,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
 } from 'recharts';
 import { Menu, X, ChevronDown, ChevronUp, ExternalLink, Download, Calendar, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Target, Zap, RefreshCw, Clock, BarChart2, Shield, Globe, DollarSign, Search, FileText, Activity, Layers, Users, Mail, Loader2, Check } from 'lucide-react';
 import NavHeader from '../../components/NavHeader';
@@ -2909,66 +2914,255 @@ function BrandedSplitContent({ data }: { data: any }) {
   );
 }
 
-// Module 12: Competitive Threats
+// Module 11: Competitive Threats — Radar Chart + Enhanced Visualizations
 function CompetitiveThreatsContent({ data }: { data: any }) {
   if (!data) return <div className="text-slate-400">No data available</div>;
 
-  // Module 11 returns: competitor_profiles, keyword_vulnerability,
-  // emerging_threats, content_velocity, competitive_pressure, recommendations
   const competitors = data.competitor_profiles || [];
   const vulnerability = data.keyword_vulnerability || {};
   const emerging = data.emerging_threats || [];
   const pressure = data.competitive_pressure || [];
+  const contentVelocity = data.content_velocity || {};
+  const vulnerableKeywords = vulnerability.vulnerable_keywords || [];
+
+  // --- Radar chart data ---
+  const RADAR_COLORS = [
+    '#60a5fa', '#f87171', '#34d399', '#fbbf24', '#a78bfa',
+    '#f472b6', '#38bdf8', '#fb923c', '#4ade80', '#e879f9',
+  ];
+
+  const topCompetitors = competitors.slice(0, 6);
+  const maxOverlap = Math.max(...topCompetitors.map((c: any) => c.overlap_percentage || 0), 1);
+  const maxTop3 = Math.max(...topCompetitors.map((c: any) => c.position_distribution?.top_3 || 0), 1);
+  const maxUrls = Math.max(...topCompetitors.map((c: any) => c.unique_urls_seen || 0), 1);
+  const maxShared = Math.max(...topCompetitors.map((c: any) => c.keywords_shared || 0), 1);
+
+  const radarDimensions = [
+    'Keyword Overlap',
+    'Avg Position',
+    'Top-3 Rankings',
+    'Win Rate',
+    'Content Breadth',
+    'Shared Keywords',
+  ];
+
+  const radarData = radarDimensions.map((dim) => {
+    const point: any = { dimension: dim };
+    topCompetitors.forEach((comp: any, idx: number) => {
+      const key = `comp_${idx}`;
+      switch (dim) {
+        case 'Keyword Overlap':
+          point[key] = Math.round((comp.overlap_percentage || 0) / maxOverlap * 100);
+          break;
+        case 'Avg Position':
+          point[key] = Math.round(Math.max(0, (20 - (comp.avg_position || 20)) / 20 * 100));
+          break;
+        case 'Top-3 Rankings':
+          point[key] = Math.round((comp.position_distribution?.top_3 || 0) / maxTop3 * 100);
+          break;
+        case 'Win Rate':
+          point[key] = Math.round((comp.head_to_head_win_rate || 0) * 100);
+          break;
+        case 'Content Breadth':
+          point[key] = Math.round((comp.unique_urls_seen || 0) / maxUrls * 100);
+          break;
+        case 'Shared Keywords':
+          point[key] = Math.round((comp.keywords_shared || 0) / maxShared * 100);
+          break;
+      }
+    });
+    return point;
+  });
+
+  const hasRadarData = topCompetitors.length >= 2;
+
+  // --- Vulnerability bar chart data ---
+  const vulnChartData = vulnerableKeywords.slice(0, 12).map((v: any) => ({
+    keyword: (v.keyword || v.query || '').length > 25
+      ? (v.keyword || v.query || '').substring(0, 22) + '...'
+      : (v.keyword || v.query || ''),
+    fullKeyword: v.keyword || v.query || '',
+    gap: Math.abs(v.position_gap || v.gap || 0),
+    competitors_ahead: v.competitors_ahead || v.comps_ahead || 0,
+    severity: v.severity || v.threat_level || 'medium',
+    your_position: v.user_position || v.your_position || 0,
+  }));
+
+  const hasVulnChart = vulnChartData.length >= 2;
+
+  const THREAT_COLORS: Record<string, string> = {
+    critical: '#ef4444',
+    high: '#f97316',
+    medium: '#eab308',
+    low: '#22c55e',
+  };
 
   return (
     <div className="space-y-6">
-      {/* Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <MetricCard
-          label="Keywords Analyzed"
-          value={data.keywords_analyzed || 0}
-        />
-        <MetricCard
-          label="Vulnerable Keywords"
-          value={vulnerability.total_vulnerable || 0}
-          className="text-red-400"
-        />
-        <MetricCard
-          label="Competitors Found"
-          value={competitors.length}
-        />
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <MetricCard label="Keywords Analyzed" value={data.keywords_analyzed || 0} />
+        <MetricCard label="Competitors Found" value={competitors.length} />
+        <MetricCard label="Vulnerable Keywords" value={vulnerability.total_vulnerable || 0} className="text-red-400" />
+        <MetricCard label="Critical Threats" value={vulnerability.critical_count || 0} className={vulnerability.critical_count > 0 ? 'text-red-500' : 'text-green-400'} />
       </div>
 
-      {/* Competitor Profiles */}
+      {/* ========== RADAR CHART ========== */}
+      {hasRadarData && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
+            Competitive Radar — Top {topCompetitors.length} Competitors
+          </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            Each axis represents a normalized competitive dimension (0–100 scale). Higher = stronger competitor.
+          </p>
+          <ResponsiveContainer width="100%" height={380}>
+            <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="75%">
+              <PolarGrid stroke="#334155" />
+              <PolarAngleAxis dataKey="dimension" tick={{ fill: '#94a3b8', fontSize: 11 }} />
+              <PolarRadiusAxis angle={30} domain={[0, 100]} tick={{ fill: '#64748b', fontSize: 10 }} axisLine={false} />
+              {topCompetitors.map((_: any, idx: number) => (
+                <RechartsRadar
+                  key={`comp_${idx}`}
+                  name={topCompetitors[idx].domain}
+                  dataKey={`comp_${idx}`}
+                  stroke={RADAR_COLORS[idx % RADAR_COLORS.length]}
+                  fill={RADAR_COLORS[idx % RADAR_COLORS.length]}
+                  fillOpacity={0.08}
+                  strokeWidth={2}
+                />
+              ))}
+              <Legend wrapperStyle={{ fontSize: '11px', color: '#94a3b8' }} />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', fontSize: '12px' }}
+                labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
+                itemStyle={{ color: '#cbd5e1' }}
+              />
+            </RadarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* ========== Keyword Vulnerability Bar Chart ========== */}
+      {hasVulnChart && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
+            Keyword Vulnerability — Position Gaps
+          </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            Keywords where competitors rank above you. Bar length = position gap.
+          </p>
+          <ResponsiveContainer width="100%" height={Math.max(280, vulnChartData.length * 32)}>
+            <BarChart data={vulnChartData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+              <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 11 }} label={{ value: 'Position Gap', position: 'insideBottom', offset: -2, fill: '#64748b', fontSize: 11 }} />
+              <YAxis dataKey="keyword" type="category" width={140} tick={{ fill: '#e2e8f0', fontSize: 11 }} />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', fontSize: '12px' }}
+                formatter={(value: any, _name: string, props: any) => {
+                  const item = props.payload;
+                  return [`Gap: ${value} positions (${item.competitors_ahead} ahead) — Your pos: #${item.your_position}`, item.fullKeyword];
+                }}
+                labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
+              />
+              <Bar dataKey="gap" radius={[0, 4, 4, 0]}>
+                {vulnChartData.map((entry: any, idx: number) => (
+                  <Cell key={idx} fill={THREAT_COLORS[entry.severity] || '#eab308'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* ========== Content Velocity Comparison ========== */}
+      {contentVelocity.competitor_velocity && contentVelocity.competitor_velocity.length > 0 && (
+        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">
+            Content Velocity — Publishing Pace
+          </h3>
+          <p className="text-xs text-slate-500 mb-4">
+            Estimated unique pages per competitor in your keyword set.
+            {contentVelocity.user_unique_pages > 0 && (
+              <span className="text-blue-400 ml-1">Your pages: {contentVelocity.user_unique_pages}</span>
+            )}
+          </p>
+          <div className="space-y-2">
+            {contentVelocity.competitor_velocity.slice(0, 8).map((cv: any, idx: number) => {
+              const maxPages = Math.max(
+                ...contentVelocity.competitor_velocity.map((c: any) => c.unique_pages || c.estimated_pages || 0),
+                contentVelocity.user_unique_pages || 1
+              );
+              const pages = cv.unique_pages || cv.estimated_pages || 0;
+              const pct = Math.min(100, (pages / maxPages) * 100);
+              return (
+                <div key={idx} className="flex items-center gap-3">
+                  <div className="w-32 text-sm text-slate-300 truncate" title={cv.domain}>{cv.domain}</div>
+                  <div className="flex-1 bg-slate-900/50 rounded-full h-5 relative overflow-hidden">
+                    <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: RADAR_COLORS[idx % RADAR_COLORS.length] }} />
+                    <span className="absolute inset-y-0 right-2 flex items-center text-xs text-slate-300 font-medium">{pages} pages</span>
+                  </div>
+                </div>
+              );
+            })}
+            {contentVelocity.user_unique_pages > 0 && (
+              <div className="flex items-center gap-3 border-t border-slate-700/40 pt-2 mt-2">
+                <div className="w-32 text-sm text-blue-400 font-semibold truncate">You</div>
+                <div className="flex-1 bg-slate-900/50 rounded-full h-5 relative overflow-hidden">
+                  <div className="h-full rounded-full bg-blue-500" style={{ width: `${Math.min(100, (contentVelocity.user_unique_pages / Math.max(...contentVelocity.competitor_velocity.map((c: any) => c.unique_pages || c.estimated_pages || 0), 1)) * 100)}%` }} />
+                  <span className="absolute inset-y-0 right-2 flex items-center text-xs text-blue-300 font-medium">{contentVelocity.user_unique_pages} pages</span>
+                </div>
+              </div>
+            )}
+          </div>
+          {contentVelocity.user_content_gap > 0 && (
+            <div className="mt-3 text-xs text-amber-400">
+              Content gap: competitors average {contentVelocity.user_content_gap} more pages than you.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========== Competitor Profile Cards ========== */}
       {competitors.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Top Competitors ({competitors.length})
-          </h3>
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">Top Competitors ({competitors.length})</h3>
           <div className="space-y-3">
             {competitors.slice(0, 10).map((comp: any, idx: number) => (
-              <div
-                key={idx}
-                className="p-3 bg-slate-800/30 border border-slate-700/40 rounded"
-              >
+              <div key={idx} className="p-3 bg-slate-800/30 border border-slate-700/40 rounded">
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
-                    <div className="font-medium text-white">
+                    <div className="font-medium text-white flex items-center gap-2">
                       {comp.domain || comp.competitor}
+                      <ThreatBadge level={comp.threat_level || 'medium'} />
                     </div>
-                    <div className="text-sm text-slate-300 mt-1">
-                      {comp.keyword_overlap || comp.shared_keywords || 0} shared keywords
-                      {comp.avg_position && (
-                        <span className="text-slate-400 ml-2">• Avg pos: #{comp.avg_position.toFixed(1)}</span>
-                      )}
+                    <div className="text-sm text-slate-300 mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                      <span>{comp.keywords_shared || comp.keyword_overlap || 0} shared keywords ({comp.overlap_percentage || 0}%)</span>
+                      {comp.avg_position && <span className="text-slate-400">Avg pos: #{comp.avg_position.toFixed(1)}</span>}
+                      {comp.head_to_head_win_rate != null && <span className="text-slate-400">Win rate: {(comp.head_to_head_win_rate * 100).toFixed(0)}%</span>}
                     </div>
-                    {comp.threat_score != null && (
-                      <div className="text-xs text-slate-400 mt-1">
-                        Threat score: {(comp.threat_score * 100).toFixed(0)}%
+                    {comp.position_distribution && (
+                      <div className="flex gap-2 mt-2">
+                        {comp.position_distribution.top_3 > 0 && (
+                          <span className="text-xs px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-700/30">Top 3: {comp.position_distribution.top_3}</span>
+                        )}
+                        {comp.position_distribution.pos_4_10 > 0 && (
+                          <span className="text-xs px-2 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-700/30">4–10: {comp.position_distribution.pos_4_10}</span>
+                        )}
+                        {comp.position_distribution.pos_11_plus > 0 && (
+                          <span className="text-xs px-2 py-0.5 rounded bg-slate-700/40 text-slate-400 border border-slate-600/30">11+: {comp.position_distribution.pos_11_plus}</span>
+                        )}
+                      </div>
+                    )}
+                    {comp.rank_1_keywords && comp.rank_1_keywords.length > 0 && (
+                      <div className="mt-2 text-xs text-slate-400">
+                        #1 for: {comp.rank_1_keywords.slice(0, 3).map((kw: string, ki: number) => (
+                          <span key={ki} className="text-amber-400 mr-2">{kw}</span>
+                        ))}
+                        {comp.rank_1_keywords.length > 3 && <span>+{comp.rank_1_keywords.length - 3} more</span>}
                       </div>
                     )}
                   </div>
-                  <ThreatBadge level={comp.threat_level || (comp.threat_score > 0.7 ? 'high' : comp.threat_score > 0.4 ? 'medium' : 'low')} />
                 </div>
               </div>
             ))}
@@ -2976,52 +3170,85 @@ function CompetitiveThreatsContent({ data }: { data: any }) {
         </div>
       )}
 
-      {/* Competitive Pressure by Keyword Cluster */}
+      {/* ========== Competitive Pressure ========== */}
       {pressure.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Competitive Pressure
-          </h3>
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">Competitive Pressure by Cluster</h3>
           <div className="space-y-2">
-            {pressure.slice(0, 8).map((p: any, idx: number) => (
+            {pressure.slice(0, 10).map((p: any, idx: number) => (
               <div key={idx} className="flex items-center justify-between p-2 bg-slate-800/30 rounded">
-                <span className="text-white text-sm truncate mr-4">{p.cluster || p.keyword || p.query}</span>
-                <ThreatBadge level={p.pressure_level || p.threat_level || 'medium'} />
+                <div className="flex-1">
+                  <span className="text-white text-sm">{p.cluster || p.keyword || p.query}</span>
+                  {p.keywords_in_cluster && <span className="text-xs text-slate-500 ml-2">({p.keywords_in_cluster} keywords)</span>}
+                </div>
+                <div className="flex items-center gap-3">
+                  {p.avg_competitor_gap != null && <span className="text-xs text-slate-400">Gap: {typeof p.avg_competitor_gap === 'number' ? p.avg_competitor_gap.toFixed(1) : p.avg_competitor_gap}</span>}
+                  <ThreatBadge level={p.pressure_level || p.threat_level || 'medium'} />
+                </div>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Emerging Threats */}
+      {/* ========== Emerging Threats ========== */}
       {emerging.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Emerging Threats ({emerging.length})
-          </h3>
-          <div className="space-y-2">
-            {emerging.slice(0, 6).map((et: any, idx: number) => (
-              <div key={idx} className="p-2 bg-red-900/20 border border-red-700/30 rounded text-sm">
-                <div className="text-white font-medium">{et.domain || et.competitor}</div>
-                <div className="text-xs text-slate-400 mt-1">{et.reason || et.description || `${et.new_keywords || 0} new keyword appearances`}</div>
+          <h3 className="text-sm font-semibold text-slate-300 mb-1">Emerging Threats ({emerging.length})</h3>
+          <p className="text-xs text-slate-500 mb-4">Competitors with rapidly growing presence in your keyword set.</p>
+          <div className="space-y-3">
+            {emerging.slice(0, 8).map((et: any, idx: number) => (
+              <div key={idx} className="p-3 bg-red-900/15 border border-red-700/30 rounded">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-white font-medium flex items-center gap-2">
+                      {et.domain || et.competitor}
+                      {et.signal && <span className="text-xs px-2 py-0.5 rounded bg-red-900/40 text-red-300 border border-red-700/30">{et.signal.replace(/_/g, ' ')}</span>}
+                    </div>
+                    <div className="text-xs text-slate-400 mt-1 flex flex-wrap gap-x-3">
+                      {et.new_keywords > 0 && <span>{et.new_keywords} new keyword appearances</span>}
+                      {et.avg_entry_position && <span>Avg entry: #{typeof et.avg_entry_position === 'number' ? et.avg_entry_position.toFixed(1) : et.avg_entry_position}</span>}
+                      {et.current_avg_position && <span>Current avg: #{typeof et.current_avg_position === 'number' ? et.current_avg_position.toFixed(1) : et.current_avg_position}</span>}
+                      {et.unique_urls_seen && <span>{et.unique_urls_seen} URLs seen</span>}
+                    </div>
+                    {et.reason && <div className="text-xs text-red-300/70 mt-1">{et.reason}</div>}
+                    {et.description && <div className="text-xs text-red-300/70 mt-1">{et.description}</div>}
+                  </div>
+                  <ThreatBadge level={et.threat_level || 'high'} />
+                </div>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Recommendations */}
+      {/* ========== Recommendations ========== */}
       {data.recommendations?.length > 0 && (
         <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-3">Recommendations</h3>
-          <ul className="space-y-2">
-            {data.recommendations.slice(0, 5).map((rec: any, idx: number) => (
-              <li key={idx} className="text-sm text-slate-300 flex items-start gap-2">
-                <span className="text-blue-400 mt-0.5">•</span>
-                <span>{typeof rec === 'string' ? rec : rec.text || rec.recommendation || JSON.stringify(rec)}</span>
-              </li>
-            ))}
-          </ul>
+          <h3 className="text-sm font-semibold text-slate-300 mb-3">Strategic Recommendations</h3>
+          <div className="space-y-2">
+            {data.recommendations.slice(0, 8).map((rec: any, idx: number) => {
+              const recText = typeof rec === 'string' ? rec : rec.text || rec.recommendation || rec.action || JSON.stringify(rec);
+              const priority = typeof rec === 'object' ? (rec.priority || rec.urgency || '') : '';
+              const impact = typeof rec === 'object' ? (rec.impact || rec.estimated_impact || '') : '';
+              return (
+                <div key={idx} className="flex items-start gap-3 p-2 bg-slate-800/30 rounded">
+                  <span className="text-blue-400 font-mono text-xs mt-0.5 w-5 text-center flex-shrink-0">{idx + 1}</span>
+                  <div className="flex-1">
+                    <span className="text-sm text-slate-300">{recText}</span>
+                    {(priority || impact) && (
+                      <div className="flex gap-2 mt-1">
+                        {priority && (
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${priority === 'critical' || priority === 'high' ? 'bg-red-900/30 text-red-300' : priority === 'medium' ? 'bg-amber-900/30 text-amber-300' : 'bg-slate-700/30 text-slate-400'}`}>{priority}</span>
+                        )}
+                        {impact && <span className="text-xs px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-300">{impact}</span>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
