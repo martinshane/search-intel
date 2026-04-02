@@ -293,18 +293,26 @@ def _ingest_ga4_data(credentials: Dict[str, Any], ga4_property: str) -> Dict[str
         # calculation, client construction, and all 8 report sections.
         result = ingest_ga4_data(creds, ga4_property, months_back=16)
 
-        # Map ingestion output keys → pipeline data_context keys
-        ga4_data["ga4_landing_pages"] = result.get(
-            "landing_pages", {"rows": [], "metadata": {}}
-        )
-        ga4_data["ga4_conversions"] = result.get(
-            "conversions", {"rows": [], "metadata": {}}
-        )
-        ga4_data["ga4_engagement_data"] = result.get(
-            "traffic_overview", {"rows": [], "metadata": {}}
-        )
+        # Map ingestion output keys → pipeline data_context keys.
+        # ingest_ga4_data returns 8 sections.  Previously only 3 were
+        # mapped, discarding ecommerce, channel, source/medium, device,
+        # and page-date-series data.  Module 12 (Revenue Attribution)
+        # accepts ga4_ecommerce but it was always None.
+        _empty = {"rows": [], "metadata": {}}
+        ga4_data["ga4_landing_pages"] = result.get("landing_pages", _empty)
+        ga4_data["ga4_conversions"] = result.get("conversions", _empty)
+        ga4_data["ga4_engagement_data"] = result.get("traffic_overview", _empty)
+        ga4_data["ga4_ecommerce"] = result.get("ecommerce", _empty)
+        ga4_data["ga4_channel_data"] = result.get("channel_performance", _empty)
+        ga4_data["ga4_source_medium"] = result.get("source_medium", _empty)
+        ga4_data["ga4_device_data"] = result.get("device_breakdown", _empty)
+        ga4_data["ga4_page_date_series"] = result.get("page_date_series", _empty)
 
-        logger.info("GA4 ingestion complete for %s", ga4_property)
+        logger.info(
+            "GA4 ingestion complete for %s — %d sections with data",
+            ga4_property,
+            len([k for k, v in ga4_data.items() if v.get("rows")]),
+        )
     except Exception as exc:
         logger.error("GA4 ingestion failed for %s: %s", ga4_property, exc)
     return ga4_data
