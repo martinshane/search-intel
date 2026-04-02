@@ -654,6 +654,13 @@ class AnalysisPipeline:
             }
         
         elif module_name == "algorithm_impact":
+            # Module 6 accepts optional page_daily_data (for per-page
+            # algorithm impact — which pages were most affected by each
+            # update) and optional page_metadata (for characterising WHY
+            # affected pages were hit — content length, schema, age, etc.).
+            # Without page_daily_data, the "pages_most_affected" list in
+            # each ImpactAssessment is empty.  Without page_metadata, the
+            # "common_characteristics" analysis returns empty.
             inputs = {
                 "daily_data": _ensure_dataframe(
                     data_context.get("gsc_daily_data"), "gsc_daily_data"
@@ -661,6 +668,12 @@ class AnalysisPipeline:
                 "change_points_from_module1": (
                     (completed_modules.get("health_trajectory") or ModuleResult(module_name="", status="")).data or {}
                 ).get("change_points"),
+                "page_daily_data": _ensure_dataframe(
+                    data_context.get("gsc_page_daily_data"), "gsc_page_daily_data"
+                ),
+                "page_metadata": _crawl_dict_to_page_dataframe(
+                    data_context.get("crawl_data")
+                ),
             }
         
         elif module_name == "intent_migration":
