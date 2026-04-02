@@ -781,6 +781,9 @@ class AnalysisPipeline:
             }
         
         elif module_name == "revenue_attribution":
+            # Module 12 accepts ga4_ecommerce for real revenue data.
+            # Previously this was always None because report_runner did
+            # not map the "ecommerce" section from GA4 ingestion.
             inputs = {
                 "gsc_data": _ensure_dataframe(
                     data_context.get("gsc_page_summary"), "gsc_page_summary"
@@ -790,6 +793,9 @@ class AnalysisPipeline:
                 ),
                 "ga4_engagement": _ensure_dataframe(
                     data_context.get("ga4_landing_pages"), "ga4_landing_pages"
+                ),
+                "ga4_ecommerce": _ensure_dataframe(
+                    data_context.get("ga4_ecommerce"), "ga4_ecommerce"
                 ),
             }
         
