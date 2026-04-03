@@ -115,601 +115,445 @@ class LanguageCode:
     RUSSIAN = "ru"
     ARABIC = "ar"
     HINDI = "hi"
-    POLISH = "pl"
-    TURKISH = "tr"
-    SWEDISH = "sv"
-    NORWEGIAN = "no"
-    DANISH = "da"
-    FINNISH = "fi"
+
+
+class TaskPriority(Enum):
+    """Task priority levels for DataForSEO requests"""
+    STANDARD = 1
+    HIGH = 2
 
 
 @dataclass
-class DataForSEOCredentials:
-    """DataForSEO API credentials from environment variables"""
-    login: str = field(default_factory=lambda: os.getenv("DATAFORSEO_LOGIN", ""))
-    password: str = field(default_factory=lambda: os.getenv("DATAFORSEO_PASSWORD", ""))
-    environment: DataForSEOEnvironment = field(
-        default_factory=lambda: DataForSEOEnvironment(
-            os.getenv("DATAFORSEO_ENVIRONMENT", "production")
-        )
-    )
-
-    def __post_init__(self):
-        if not self.login or not self.password:
-            raise ValueError(
-                "DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD environment variables must be set. "
-                "Please set these in your .env file or environment."
-            )
-        
-        if len(self.login.strip()) == 0 or len(self.password.strip()) == 0:
-            raise ValueError(
-                "DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD cannot be empty strings"
-            )
-
-    @property
-    def is_sandbox(self) -> bool:
-        return self.environment == DataForSEOEnvironment.SANDBOX
-
-    def validate(self) -> bool:
-        """Validate credentials are properly configured"""
-        return bool(self.login and self.password)
+class RateLimitConfig:
+    """Rate limiting configuration for DataForSEO API"""
+    requests_per_second: float = 10.0  # 10 requests/second as per spec
+    burst_allowance: int = 20  # Allow burst of 20 requests
+    cooldown_seconds: float = 1.0  # Cooldown after hitting limit
+    retry_attempts: int = 3
+    retry_backoff_base: float = 2.0  # Exponential backoff multiplier
 
 
 @dataclass
-class APIEndpoints:
-    """DataForSEO API endpoint configurations"""
+class TimeoutConfig:
+    """Timeout configuration for API requests"""
+    connect_timeout: int = 10  # seconds
+    read_timeout: int = 60  # seconds
+    total_timeout: int = 120  # seconds
+
+
+@dataclass
+class EndpointConfig:
+    """Configuration for a specific API endpoint"""
+    path: str
+    method: str = "POST"
+    requires_authentication: bool = True
+    default_priority: TaskPriority = TaskPriority.STANDARD
+    estimated_cost: float = 0.0  # Cost in USD per request
+    timeout_override: Optional[int] = None
+
+
+class DataForSEOConfig:
+    """Main configuration class for DataForSEO API"""
     
     # Base URLs
-    BASE_URL: str = "https://api.dataforseo.com"
-    SANDBOX_URL: str = "https://sandbox.dataforseo.com"
+    BASE_URL_PRODUCTION = "https://api.dataforseo.com"
+    BASE_URL_SANDBOX = "https://sandbox.dataforseo.com"
     
-    # Version
-    VERSION: str = "v3"
+    # API Version
+    API_VERSION = "v3"
     
-    # SERP endpoints (Module 3: SERP Landscape Analysis)
-    SERP_GOOGLE_ORGANIC_LIVE: str = "/v3/serp/google/organic/live/advanced"
-    SERP_GOOGLE_ORGANIC_TASK_POST: str = "/v3/serp/google/organic/task_post"
-    SERP_GOOGLE_ORGANIC_TASK_GET: str = "/v3/serp/google/organic/task_get/advanced/{task_id}"
-    SERP_GOOGLE_ORGANIC_TASKS_READY: str = "/v3/serp/google/organic/tasks_ready"
+    # Authentication
+    _login: Optional[str] = None
+    _password: Optional[str] = None
+    _environment: DataForSEOEnvironment = DataForSEOEnvironment.PRODUCTION
     
-    # Domain analytics endpoints (Module 8: Domain Authority)
-    DOMAIN_OVERVIEW: str = "/v3/backlinks/summary/live"
-    DOMAIN_BACKLINKS: str = "/v3/backlinks/backlinks/live"
-    DOMAIN_REFERRING_DOMAINS: str = "/v3/backlinks/referring_domains/live"
-    DOMAIN_ANCHORS: str = "/v3/backlinks/anchors/live"
-    DOMAIN_PAGES: str = "/v3/backlinks/page_intersection/live"
+    # Rate limiting
+    rate_limit = RateLimitConfig()
     
-    # Competitor analysis endpoints (Module 11: Competitive Clustering)
-    COMPETITORS_DOMAIN: str = "/v3/dataforseo_labs/google/competitors_domain/live"
-    KEYWORDS_FOR_SITE: str = "/v3/dataforseo_labs/google/keywords_for_site/live"
-    RANKED_KEYWORDS: str = "/v3/dataforseo_labs/google/ranked_keywords/live"
-    DOMAIN_INTERSECTION: str = "/v3/dataforseo_labs/google/domain_intersection/live"
-    KEYWORD_SUGGESTIONS: str = "/v3/dataforseo_labs/google/keyword_suggestions/live"
+    # Timeouts
+    timeout = TimeoutConfig()
     
-    # Supporting endpoints
-    LOCATIONS: str = "/v3/serp/google/locations"
-    LANGUAGES: str = "/v3/serp/google/languages"
-    
-    def get_base_url(self, use_sandbox: bool = False) -> str:
-        """Get the appropriate base URL based on environment"""
-        return self.SANDBOX_URL if use_sandbox else self.BASE_URL
-    
-    def get_full_url(self, endpoint: str, use_sandbox: bool = False) -> str:
-        """Construct full URL for an endpoint"""
-        base = self.get_base_url(use_sandbox)
-        return f"{base}{endpoint}"
-
-
-@dataclass
-class RateLimits:
-    """DataForSEO API rate limits and quotas"""
-    
-    # Rate limits (requests per second)
-    MAX_REQUESTS_PER_SECOND: int = 2
-    MAX_CONCURRENT_REQUESTS: int = 10
-    
-    # Batch limits
-    MAX_TASKS_PER_BATCH: int = 100
-    MAX_KEYWORDS_PER_REQUEST: int = 1000
-    
-    # Retry configuration
-    MAX_RETRIES: int = 3
-    RETRY_BACKOFF_FACTOR: float = 2.0  # Exponential backoff
-    RETRY_STATUS_CODES: Set[int] = field(default_factory=lambda: {429, 500, 502, 503, 504})
-    
-    # Timeout configuration (seconds)
-    REQUEST_TIMEOUT: int = 30
-    LONG_RUNNING_TIMEOUT: int = 300
-    
-    # Cost controls (USD)
-    MAX_COST_PER_REQUEST: float = 1.00
-    WARN_COST_THRESHOLD: float = 0.50
-
-
-@dataclass
-class DefaultParameters:
-    """Default parameters for various DataForSEO requests"""
-    
-    # SERP request defaults (Module 3)
-    DEFAULT_LOCATION_CODE: int = LocationCode.US_NATIONWIDE
-    DEFAULT_LANGUAGE_CODE: str = LanguageCode.ENGLISH
-    DEFAULT_DEVICE: str = DeviceType.DESKTOP.value
-    DEFAULT_DEPTH: int = 100  # Number of results to return
-    DEFAULT_SE_TYPE: str = SearchEngineType.GOOGLE.value
-    
-    # Domain analytics defaults (Module 8)
-    DEFAULT_BACKLINK_LIMIT: int = 1000
-    DEFAULT_REFERRING_DOMAIN_LIMIT: int = 500
-    DEFAULT_BACKLINK_FILTERS: List[str] = field(default_factory=lambda: ["dofollow", "live"])
-    
-    # Competitor analysis defaults (Module 11)
-    DEFAULT_COMPETITOR_LIMIT: int = 100
-    DEFAULT_KEYWORD_INTERSECTION_LIMIT: int = 1000
-    DEFAULT_MIN_INTERSECTION: int = 5  # Minimum overlapping keywords
-    
-    # General settings
-    CALCULATE_RECTANGLES: bool = True  # For SERP layout analysis
-    LOAD_RESOURCES: bool = False  # Don't load images/CSS/JS
-    BROWSER_SCREEN_WIDTH: int = 1920
-    BROWSER_SCREEN_HEIGHT: int = 1080
-    BROWSER_SCREEN_SCALE_FACTOR: float = 1.0
-
-
-@dataclass
-class SERPFeatureWeights:
-    """Visual position weights for different SERP features (Module 3)"""
-    
-    # How many "organic position equivalents" each feature consumes
-    FEATURED_SNIPPET: float = 2.0
-    AI_OVERVIEW: float = 3.0
-    LOCAL_PACK: float = 1.5
-    KNOWLEDGE_PANEL: float = 1.0
-    IMAGE_PACK: float = 1.0
-    VIDEO_CAROUSEL: float = 1.5
-    TOP_STORIES: float = 1.0
-    SHOPPING_RESULTS: float = 1.0
-    PEOPLE_ALSO_ASK_ITEM: float = 0.5  # Per question
-    RELATED_SEARCHES: float = 0.0  # At bottom, doesn't displace
-    SITE_LINKS: float = 0.5  # Expands the result
-    TWITTER: float = 0.5
-    REDDIT_THREADS: float = 1.0
-    RECIPES: float = 1.5
-    CAROUSEL: float = 1.0
-    PAID_AD: float = 0.3  # Ads affect but differently
-
-
-class SERPFeatureMapping:
-    """Mapping between DataForSEO SERP feature types and our internal types"""
-    
-    FEATURE_MAP: Dict[str, str] = {
-        # Exact matches
-        "featured_snippet": SERPFeatureType.FEATURED_SNIPPET.value,
-        "people_also_ask": SERPFeatureType.PEOPLE_ALSO_ASK.value,
-        "local_pack": SERPFeatureType.LOCAL_PACK.value,
-        "knowledge_panel": SERPFeatureType.KNOWLEDGE_PANEL.value,
-        "images": SERPFeatureType.IMAGE_PACK.value,
-        "video": SERPFeatureType.VIDEO_CAROUSEL.value,
-        "top_stories": SERPFeatureType.TOP_STORIES.value,
-        "shopping": SERPFeatureType.SHOPPING_RESULTS.value,
-        "recipes": SERPFeatureType.RECIPES.value,
-        "twitter": SERPFeatureType.TWITTER.value,
-        "organic": SERPFeatureType.ORGANIC.value,
-        "paid": SERPFeatureType.PAID.value,
+    # Endpoints used in the project
+    ENDPOINTS = {
+        # Module 3: SERP Landscape Analysis
+        "serp_live": EndpointConfig(
+            path="/v3/serp/google/organic/live/advanced",
+            method="POST",
+            estimated_cost=0.002,
+            timeout_override=90
+        ),
+        "serp_task_post": EndpointConfig(
+            path="/v3/serp/google/organic/task_post",
+            method="POST",
+            estimated_cost=0.002
+        ),
+        "serp_task_get": EndpointConfig(
+            path="/v3/serp/google/organic/task_get/{task_id}",
+            method="GET",
+            estimated_cost=0.0
+        ),
         
-        # Variations and aliases
-        "answer_box": SERPFeatureType.FEATURED_SNIPPET.value,
-        "map": SERPFeatureType.LOCAL_PACK.value,
-        "local_services": SERPFeatureType.LOCAL_PACK.value,
-        "knowledge_graph": SERPFeatureType.KNOWLEDGE_PANEL.value,
-        "image_pack": SERPFeatureType.IMAGE_PACK.value,
-        "video_carousel": SERPFeatureType.VIDEO_CAROUSEL.value,
-        "news": SERPFeatureType.TOP_STORIES.value,
-        "shopping_carousel": SERPFeatureType.SHOPPING_RESULTS.value,
-        "recipe_carousel": SERPFeatureType.RECIPES.value,
+        # Module 8: Backlink Profile Analysis
+        "backlinks_summary": EndpointConfig(
+            path="/v3/backlinks/summary/live",
+            method="POST",
+            estimated_cost=0.001
+        ),
+        "backlinks_history": EndpointConfig(
+            path="/v3/backlinks/history/live",
+            method="POST",
+            estimated_cost=0.003
+        ),
+        "backlinks_referring_domains": EndpointConfig(
+            path="/v3/backlinks/referring_domains/live",
+            method="POST",
+            estimated_cost=0.004
+        ),
+        "backlinks_anchors": EndpointConfig(
+            path="/v3/backlinks/anchors/live",
+            method="POST",
+            estimated_cost=0.002
+        ),
+        "backlinks_page_intersection": EndpointConfig(
+            path="/v3/backlinks/page_intersection/live",
+            method="POST",
+            estimated_cost=0.006
+        ),
+        "backlinks_bulk_ranks": EndpointConfig(
+            path="/v3/backlinks/bulk_ranks/live",
+            method="POST",
+            estimated_cost=0.005
+        ),
         
-        # DataForSEO specific types
-        "carousel": SERPFeatureType.CAROUSEL.value,
-        "sitelinks": SERPFeatureType.SITE_LINKS.value,
-        "related_searches": SERPFeatureType.RELATED_SEARCHES.value,
-        "find_results_on": SERPFeatureType.RELATED_SEARCHES.value,
-        "discussions_and_forums": SERPFeatureType.REDDIT_THREADS.value,
-        "ai_overview": SERPFeatureType.AI_OVERVIEW.value,
-        "google_ai": SERPFeatureType.AI_OVERVIEW.value,
+        # Module 11: Competitive Gap Analysis
+        "keywords_for_site": EndpointConfig(
+            path="/v3/dataforseo_labs/google/keywords_for_site/live",
+            method="POST",
+            estimated_cost=0.01,
+            timeout_override=120
+        ),
+        "ranked_keywords": EndpointConfig(
+            path="/v3/dataforseo_labs/google/ranked_keywords/live",
+            method="POST",
+            estimated_cost=0.01,
+            timeout_override=120
+        ),
+        "keyword_intersection": EndpointConfig(
+            path="/v3/dataforseo_labs/google/keyword_intersection/live",
+            method="POST",
+            estimated_cost=0.015,
+            timeout_override=150
+        ),
+        "competitor_domains": EndpointConfig(
+            path="/v3/dataforseo_labs/google/competitors_domain/live",
+            method="POST",
+            estimated_cost=0.008
+        ),
+        
+        # Utility endpoints
+        "locations": EndpointConfig(
+            path="/v3/serp/google/locations",
+            method="GET",
+            requires_authentication=True,
+            estimated_cost=0.0
+        ),
+        "languages": EndpointConfig(
+            path="/v3/serp/google/languages",
+            method="GET",
+            requires_authentication=True,
+            estimated_cost=0.0
+        ),
+    }
+    
+    # Default request parameters
+    DEFAULT_PARAMS = {
+        "language_code": LanguageCode.ENGLISH,
+        "location_code": LocationCode.US_NATIONWIDE,
+        "device": DeviceType.DESKTOP.value,
+        "os": "windows",
+        "depth": 100,  # Number of results to return
+        "priority": TaskPriority.STANDARD.value,
+    }
+    
+    # SERP feature visual weights for Module 3
+    # Used to calculate "visual position" - how far down the SERP each element pushes organic results
+    SERP_FEATURE_VISUAL_WEIGHTS = {
+        SERPFeatureType.FEATURED_SNIPPET: 2.0,
+        SERPFeatureType.PEOPLE_ALSO_ASK: 0.5,  # Per question
+        SERPFeatureType.LOCAL_PACK: 1.5,
+        SERPFeatureType.KNOWLEDGE_PANEL: 0.0,  # Sidebar, doesn't push down
+        SERPFeatureType.IMAGE_PACK: 1.0,
+        SERPFeatureType.VIDEO_CAROUSEL: 1.5,
+        SERPFeatureType.TOP_STORIES: 1.0,
+        SERPFeatureType.SHOPPING_RESULTS: 1.5,
+        SERPFeatureType.RECIPES: 1.0,
+        SERPFeatureType.TWITTER: 0.5,
+        SERPFeatureType.AI_OVERVIEW: 2.5,
+        SERPFeatureType.REDDIT_THREADS: 1.0,
+        SERPFeatureType.SITE_LINKS: 0.0,  # Part of organic listing
+        SERPFeatureType.RELATED_SEARCHES: 0.0,  # Bottom of page
+        SERPFeatureType.CAROUSEL: 1.0,
+        SERPFeatureType.PAID: 0.3,  # Per ad
+    }
+    
+    # Backlink quality thresholds for Module 8
+    BACKLINK_QUALITY_THRESHOLDS = {
+        "high_quality_rank_min": 1,
+        "high_quality_rank_max": 1000000,
+        "medium_quality_rank_min": 1000001,
+        "medium_quality_rank_max": 10000000,
+        "low_quality_rank_min": 10000001,
+        "spam_score_threshold": 5,  # Out of 10
+        "min_referring_domains_threshold": 100,
+        "toxic_ratio_threshold": 0.15,  # 15% toxic links
+    }
+    
+    # Keyword opportunity thresholds for Module 11
+    KEYWORD_OPPORTUNITY_THRESHOLDS = {
+        "min_search_volume": 100,
+        "max_keyword_difficulty": 70,  # Out of 100
+        "min_cpc": 0.5,  # USD
+        "striking_distance_position_min": 11,
+        "striking_distance_position_max": 30,
+        "gap_priority_volume_min": 500,
+        "gap_priority_position_max": 50,
+    }
+    
+    # Error codes that should trigger retries
+    RETRYABLE_ERROR_CODES = {
+        40501,  # Rate limit exceeded
+        50000,  # Internal server error
+        50001,  # Service temporarily unavailable
+        50002,  # Gateway timeout
+    }
+    
+    # Error codes that should NOT trigger retries
+    NON_RETRYABLE_ERROR_CODES = {
+        40000,  # Bad request
+        40100,  # Unauthorized
+        40101,  # Authentication failed
+        40102,  # Insufficient funds
+        40103,  # Account suspended
+        40301,  # Forbidden
+        40400,  # Not found
     }
     
     @classmethod
-    def normalize_feature_type(cls, feature_type: str) -> Optional[str]:
-        """Normalize a DataForSEO feature type to our internal type"""
-        if not feature_type:
-            return None
+    def initialize(
+        cls,
+        login: Optional[str] = None,
+        password: Optional[str] = None,
+        environment: DataForSEOEnvironment = DataForSEOEnvironment.PRODUCTION
+    ) -> None:
+        """
+        Initialize DataForSEO configuration with credentials.
         
-        feature_lower = feature_type.lower().strip()
-        return cls.FEATURE_MAP.get(feature_lower)
+        Args:
+            login: DataForSEO API login (defaults to DATAFORSEO_LOGIN env var)
+            password: DataForSEO API password (defaults to DATAFORSEO_PASSWORD env var)
+            environment: API environment (production or sandbox)
+        
+        Raises:
+            ValueError: If credentials are not provided and not found in environment
+        """
+        cls._login = login or os.getenv("DATAFORSEO_LOGIN")
+        cls._password = password or os.getenv("DATAFORSEO_PASSWORD")
+        cls._environment = environment
+        
+        if not cls._login or not cls._password:
+            raise ValueError(
+                "DataForSEO credentials not provided. "
+                "Set DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD environment variables "
+                "or pass credentials to initialize() method."
+            )
     
     @classmethod
-    def get_feature_weight(cls, feature_type: str, count: int = 1) -> float:
-        """Get visual position weight for a SERP feature"""
-        normalized = cls.normalize_feature_type(feature_type)
+    def validate_credentials(cls) -> bool:
+        """
+        Validate that credentials are set.
         
-        if not normalized:
-            return 0.5  # Default for unknown features
+        Returns:
+            True if credentials are configured, False otherwise
+        """
+        return bool(cls._login and cls._password)
+    
+    @classmethod
+    def get_credentials(cls) -> tuple[str, str]:
+        """
+        Get configured credentials.
         
-        weights = SERPFeatureWeights()
+        Returns:
+            Tuple of (login, password)
         
-        weight_map = {
-            SERPFeatureType.FEATURED_SNIPPET.value: weights.FEATURED_SNIPPET,
-            SERPFeatureType.AI_OVERVIEW.value: weights.AI_OVERVIEW,
-            SERPFeatureType.LOCAL_PACK.value: weights.LOCAL_PACK,
-            SERPFeatureType.KNOWLEDGE_PANEL.value: weights.KNOWLEDGE_PANEL,
-            SERPFeatureType.IMAGE_PACK.value: weights.IMAGE_PACK,
-            SERPFeatureType.VIDEO_CAROUSEL.value: weights.VIDEO_CAROUSEL,
-            SERPFeatureType.TOP_STORIES.value: weights.TOP_STORIES,
-            SERPFeatureType.SHOPPING_RESULTS.value: weights.SHOPPING_RESULTS,
-            SERPFeatureType.PEOPLE_ALSO_ASK.value: weights.PEOPLE_ALSO_ASK_ITEM * count,
-            SERPFeatureType.RELATED_SEARCHES.value: weights.RELATED_SEARCHES,
-            SERPFeatureType.SITE_LINKS.value: weights.SITE_LINKS,
-            SERPFeatureType.TWITTER.value: weights.TWITTER,
-            SERPFeatureType.REDDIT_THREADS.value: weights.REDDIT_THREADS,
-            SERPFeatureType.RECIPES.value: weights.RECIPES,
-            SERPFeatureType.CAROUSEL.value: weights.CAROUSEL,
-            SERPFeatureType.PAID.value: weights.PAID_AD * count,
+        Raises:
+            RuntimeError: If credentials are not initialized
+        """
+        if not cls.validate_credentials():
+            raise RuntimeError(
+                "DataForSEO credentials not initialized. "
+                "Call DataForSEOConfig.initialize() first."
+            )
+        return cls._login, cls._password
+    
+    @classmethod
+    def get_base_url(cls) -> str:
+        """
+        Get the base URL for the configured environment.
+        
+        Returns:
+            Base URL string
+        """
+        if cls._environment == DataForSEOEnvironment.SANDBOX:
+            return cls.BASE_URL_SANDBOX
+        return cls.BASE_URL_PRODUCTION
+    
+    @classmethod
+    def get_endpoint_url(cls, endpoint_key: str, **path_params) -> str:
+        """
+        Get full URL for a specific endpoint.
+        
+        Args:
+            endpoint_key: Key from ENDPOINTS dict
+            **path_params: Path parameters to substitute (e.g., task_id)
+        
+        Returns:
+            Full endpoint URL
+        
+        Raises:
+            KeyError: If endpoint_key is not found
+        """
+        if endpoint_key not in cls.ENDPOINTS:
+            raise KeyError(f"Unknown endpoint: {endpoint_key}")
+        
+        endpoint = cls.ENDPOINTS[endpoint_key]
+        path = endpoint.path.format(**path_params) if path_params else endpoint.path
+        
+        return f"{cls.get_base_url()}{path}"
+    
+    @classmethod
+    def get_endpoint_config(cls, endpoint_key: str) -> EndpointConfig:
+        """
+        Get configuration for a specific endpoint.
+        
+        Args:
+            endpoint_key: Key from ENDPOINTS dict
+        
+        Returns:
+            EndpointConfig object
+        
+        Raises:
+            KeyError: If endpoint_key is not found
+        """
+        if endpoint_key not in cls.ENDPOINTS:
+            raise KeyError(f"Unknown endpoint: {endpoint_key}")
+        
+        return cls.ENDPOINTS[endpoint_key]
+    
+    @classmethod
+    def estimate_cost(cls, endpoint_key: str, num_requests: int = 1) -> float:
+        """
+        Estimate cost for a given number of requests to an endpoint.
+        
+        Args:
+            endpoint_key: Key from ENDPOINTS dict
+            num_requests: Number of requests to estimate
+        
+        Returns:
+            Estimated cost in USD
+        """
+        endpoint = cls.get_endpoint_config(endpoint_key)
+        return endpoint.estimated_cost * num_requests
+    
+    @classmethod
+    def is_retryable_error(cls, error_code: int) -> bool:
+        """
+        Check if an error code should trigger a retry.
+        
+        Args:
+            error_code: DataForSEO API error code
+        
+        Returns:
+            True if error is retryable, False otherwise
+        """
+        return error_code in cls.RETRYABLE_ERROR_CODES
+    
+    @classmethod
+    def get_location_code(cls, location_name: str) -> Optional[int]:
+        """
+        Get location code by name (helper method).
+        
+        Args:
+            location_name: Human-readable location name (e.g., "US", "UK", "New York")
+        
+        Returns:
+            Location code if found, None otherwise
+        """
+        location_map = {
+            "US": LocationCode.US_NATIONWIDE,
+            "USA": LocationCode.US_NATIONWIDE,
+            "United States": LocationCode.US_NATIONWIDE,
+            "UK": LocationCode.UK_NATIONWIDE,
+            "United Kingdom": LocationCode.UK_NATIONWIDE,
+            "Canada": LocationCode.CANADA_NATIONWIDE,
+            "Australia": LocationCode.AUSTRALIA_NATIONWIDE,
+            "Germany": LocationCode.GERMANY_NATIONWIDE,
+            "France": LocationCode.FRANCE_NATIONWIDE,
+            "India": LocationCode.INDIA_NATIONWIDE,
+            "Japan": LocationCode.JAPAN_NATIONWIDE,
+            "Brazil": LocationCode.BRAZIL_NATIONWIDE,
+            "Mexico": LocationCode.MEXICO_NATIONWIDE,
+            "Spain": LocationCode.SPAIN_NATIONWIDE,
+            "Italy": LocationCode.ITALY_NATIONWIDE,
+            "Netherlands": LocationCode.NETHERLANDS_NATIONWIDE,
+            "New York": LocationCode.US_NEW_YORK,
+            "Los Angeles": LocationCode.US_LOS_ANGELES,
+            "Chicago": LocationCode.US_CHICAGO,
+            "London": LocationCode.UK_LONDON,
+            "Toronto": LocationCode.CANADA_TORONTO,
+            "Sydney": LocationCode.AUSTRALIA_SYDNEY,
+            "Berlin": LocationCode.GERMANY_BERLIN,
+            "Paris": LocationCode.FRANCE_PARIS,
+            "Delhi": LocationCode.INDIA_DELHI,
+            "Tokyo": LocationCode.JAPAN_TOKYO,
         }
         
-        return weight_map.get(normalized, 0.5)
-
-
-class ErrorCodes:
-    """DataForSEO API error codes and their meanings"""
-    
-    ERROR_MESSAGES: Dict[int, str] = {
-        # 40xxx - Request errors
-        40001: "Incorrect login/password",
-        40002: "Account suspended",
-        40003: "Insufficient funds",
-        40004: "Invalid API version",
-        40101: "Required parameter missing",
-        40102: "Invalid parameter value",
-        40103: "Parameter combination not allowed",
-        40104: "Unsupported parameter",
-        40201: "Location not found",
-        40202: "Language not found",
-        40301: "Task not found",
-        40302: "Task already completed",
-        40401: "Rate limit exceeded",
-        
-        # 50xxx - Server errors
-        50001: "Internal server error",
-        50002: "Temporary service unavailable",
-        50003: "Database error",
-        50004: "Timeout error",
-    }
+        return location_map.get(location_name)
     
     @classmethod
-    def get_error_message(cls, code: int) -> str:
-        """Get human-readable error message for a code"""
-        return cls.ERROR_MESSAGES.get(code, f"Unknown error code: {code}")
-    
-    @classmethod
-    def is_retryable(cls, code: int) -> bool:
-        """Determine if an error code should trigger a retry"""
-        retryable_codes = {50001, 50002, 50003, 50004, 40401}
-        return code in retryable_codes
-
-
-def format_serp_request(
-    keyword: str,
-    location_code: Optional[int] = None,
-    language_code: Optional[str] = None,
-    device: Optional[str] = None,
-    depth: Optional[int] = None,
-    **kwargs
-) -> Dict[str, Any]:
-    """
-    Format a SERP request payload for DataForSEO
-    
-    Args:
-        keyword: Search keyword/query
-        location_code: Location code (default: US nationwide)
-        language_code: Language code (default: English)
-        device: Device type (default: desktop)
-        depth: Number of results (default: 100)
-        **kwargs: Additional parameters
-    
-    Returns:
-        Formatted request payload
-    """
-    defaults = DefaultParameters()
-    
-    payload = {
-        "keyword": keyword.strip(),
-        "location_code": location_code or defaults.DEFAULT_LOCATION_CODE,
-        "language_code": language_code or defaults.DEFAULT_LANGUAGE_CODE,
-        "device": device or defaults.DEFAULT_DEVICE,
-        "depth": depth or defaults.DEFAULT_DEPTH,
-        "se_type": defaults.DEFAULT_SE_TYPE,
-        "calculate_rectangles": defaults.CALCULATE_RECTANGLES,
-        "browser_screen_width": defaults.BROWSER_SCREEN_WIDTH,
-        "browser_screen_height": defaults.BROWSER_SCREEN_HEIGHT,
-    }
-    
-    # Merge additional parameters
-    payload.update(kwargs)
-    
-    return payload
-
-
-def format_domain_overview_request(
-    target: str,
-    backlink_filters: Optional[List[str]] = None,
-    limit: Optional[int] = None,
-    **kwargs
-) -> Dict[str, Any]:
-    """
-    Format a domain overview request for Module 8
-    
-    Args:
-        target: Target domain or URL
-        backlink_filters: Filters for backlinks (default: dofollow, live)
-        limit: Result limit
-        **kwargs: Additional parameters
-    
-    Returns:
-        Formatted request payload
-    """
-    defaults = DefaultParameters()
-    
-    payload = {
-        "target": target.strip(),
-        "filters": backlink_filters or defaults.DEFAULT_BACKLINK_FILTERS,
-        "limit": limit or defaults.DEFAULT_BACKLINK_LIMIT,
-    }
-    
-    payload.update(kwargs)
-    
-    return payload
-
-
-def format_competitor_request(
-    target: str,
-    location_code: Optional[int] = None,
-    language_code: Optional[str] = None,
-    limit: Optional[int] = None,
-    **kwargs
-) -> Dict[str, Any]:
-    """
-    Format a competitor analysis request for Module 11
-    
-    Args:
-        target: Target domain
-        location_code: Location code
-        language_code: Language code
-        limit: Number of competitors to return
-        **kwargs: Additional parameters
-    
-    Returns:
-        Formatted request payload
-    """
-    defaults = DefaultParameters()
-    
-    payload = {
-        "target": target.strip(),
-        "location_code": location_code or defaults.DEFAULT_LOCATION_CODE,
-        "language_code": language_code or defaults.DEFAULT_LANGUAGE_CODE,
-        "limit": limit or defaults.DEFAULT_COMPETITOR_LIMIT,
-    }
-    
-    payload.update(kwargs)
-    
-    return payload
-
-
-def parse_serp_response(response_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Parse and normalize a SERP API response
-    
-    Args:
-        response_data: Raw API response
-    
-    Returns:
-        Normalized SERP data structure
-    """
-    if not response_data or "tasks" not in response_data:
-        return {"error": "Invalid response structure", "items": []}
-    
-    tasks = response_data.get("tasks", [])
-    if not tasks:
-        return {"error": "No tasks in response", "items": []}
-    
-    task = tasks[0]
-    if task.get("status_code") != 20000:
-        error_msg = task.get("status_message", "Unknown error")
-        return {"error": error_msg, "items": []}
-    
-    result = task.get("result", [{}])[0] if task.get("result") else {}
-    
-    return {
-        "keyword": result.get("keyword"),
-        "location_code": result.get("location_code"),
-        "language_code": result.get("language_code"),
-        "device": result.get("se_type"),
-        "total_count": result.get("total_count", 0),
-        "items_count": result.get("items_count", 0),
-        "items": result.get("items", []),
-        "se_results_count": result.get("se_results_count"),
-    }
-
-
-def parse_domain_response(response_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Parse and normalize a domain analytics API response
-    
-    Args:
-        response_data: Raw API response
-    
-    Returns:
-        Normalized domain data structure
-    """
-    if not response_data or "tasks" not in response_data:
-        return {"error": "Invalid response structure", "metrics": {}}
-    
-    tasks = response_data.get("tasks", [])
-    if not tasks:
-        return {"error": "No tasks in response", "metrics": {}}
-    
-    task = tasks[0]
-    if task.get("status_code") != 20000:
-        error_msg = task.get("status_message", "Unknown error")
-        return {"error": error_msg, "metrics": {}}
-    
-    result = task.get("result", [{}])[0] if task.get("result") else {}
-    
-    return {
-        "target": result.get("target"),
-        "metrics": result,
-        "items": result.get("items", []),
-    }
-
-
-def parse_competitor_response(response_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Parse and normalize a competitor analysis API response
-    
-    Args:
-        response_data: Raw API response
-    
-    Returns:
-        Normalized competitor data structure
-    """
-    if not response_data or "tasks" not in response_data:
-        return {"error": "Invalid response structure", "competitors": []}
-    
-    tasks = response_data.get("tasks", [])
-    if not tasks:
-        return {"error": "No tasks in response", "competitors": []}
-    
-    task = tasks[0]
-    if task.get("status_code") != 20000:
-        error_msg = task.get("status_message", "Unknown error")
-        return {"error": error_msg, "competitors": []}
-    
-    result = task.get("result", [{}])[0] if task.get("result") else {}
-    
-    return {
-        "target": result.get("target"),
-        "location_code": result.get("location_code"),
-        "language_code": result.get("language_code"),
-        "total_count": result.get("total_count", 0),
-        "items_count": result.get("items_count", 0),
-        "competitors": result.get("items", []),
-    }
-
-
-def extract_serp_features(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Extract and classify SERP features from result items
-    
-    Args:
-        items: List of SERP result items
-    
-    Returns:
-        List of classified SERP features with positions
-    """
-    features = []
-    
-    for idx, item in enumerate(items):
-        item_type = item.get("type", "")
-        normalized_type = SERPFeatureMapping.normalize_feature_type(item_type)
+    def get_serp_feature_weight(cls, feature_type: SERPFeatureType, count: int = 1) -> float:
+        """
+        Get visual weight for a SERP feature.
         
-        if not normalized_type:
-            continue
+        Args:
+            feature_type: Type of SERP feature
+            count: Number of instances (e.g., number of PAA questions)
         
-        feature = {
-            "type": normalized_type,
-            "original_type": item_type,
-            "rank_group": item.get("rank_group"),
-            "rank_absolute": item.get("rank_absolute"),
-            "position": idx + 1,
-            "xpath": item.get("xpath"),
-        }
-        
-        # Extract type-specific data
-        if normalized_type == SERPFeatureType.PEOPLE_ALSO_ASK.value:
-            feature["items"] = item.get("items", [])
-            feature["count"] = len(item.get("items", []))
-        elif normalized_type == SERPFeatureType.ORGANIC.value:
-            feature["url"] = item.get("url")
-            feature["domain"] = item.get("domain")
-            feature["title"] = item.get("title")
-            feature["description"] = item.get("description")
-        elif normalized_type == SERPFeatureType.PAID.value:
-            feature["url"] = item.get("url")
-            feature["domain"] = item.get("domain")
-            feature["title"] = item.get("title")
-        
-        features.append(feature)
-    
-    return features
+        Returns:
+            Total visual weight (positions pushed down)
+        """
+        base_weight = cls.SERP_FEATURE_VISUAL_WEIGHTS.get(feature_type, 0.0)
+        return base_weight * count
 
 
-def calculate_visual_position(
-    organic_position: int,
-    features_above: List[Dict[str, Any]]
-) -> float:
+# Convenience function to initialize from environment variables
+def init_from_env() -> None:
+    """Initialize DataForSEO config from environment variables."""
+    DataForSEOConfig.initialize()
+
+
+# Validation helper
+def ensure_initialized() -> None:
     """
-    Calculate visual position accounting for SERP features
+    Ensure DataForSEO config is initialized before making API calls.
     
-    Args:
-        organic_position: Organic ranking position
-        features_above: List of SERP features appearing above this result
-    
-    Returns:
-        Adjusted visual position
+    Raises:
+        RuntimeError: If credentials are not configured
     """
-    displacement = 0.0
-    
-    for feature in features_above:
-        feature_type = feature.get("type", "")
-        count = feature.get("count", 1)
-        weight = SERPFeatureMapping.get_feature_weight(feature_type, count)
-        displacement += weight
-    
-    return organic_position + displacement
-
-
-# Global configuration instance
-CONFIG = {
-    "credentials": DataForSEOCredentials(),
-    "endpoints": APIEndpoints(),
-    "rate_limits": RateLimits(),
-    "defaults": DefaultParameters(),
-    "feature_weights": SERPFeatureWeights(),
-}
-
-
-def get_config() -> Dict[str, Any]:
-    """Get the global configuration object"""
-    return CONFIG
-
-
-def validate_configuration() -> bool:
-    """
-    Validate that all required configuration is present and valid
-    
-    Returns:
-        True if configuration is valid, raises ValueError otherwise
-    """
-    config = get_config()
-    
-    # Validate credentials
-    if not config["credentials"].validate():
-        raise ValueError("Invalid DataForSEO credentials")
-    
-    # Validate rate limits are sensible
-    rate_limits = config["rate_limits"]
-    if rate_limits.MAX_REQUESTS_PER_SECOND <= 0:
-        raise ValueError("MAX_REQUESTS_PER_SECOND must be positive")
-    
-    if rate_limits.REQUEST_TIMEOUT <= 0:
-        raise ValueError("REQUEST_TIMEOUT must be positive")
-    
-    return True
+    if not DataForSEOConfig.validate_credentials():
+        try:
+            init_from_env()
+        except ValueError as e:
+            raise RuntimeError(
+                "DataForSEO API credentials not configured. "
+                "Set DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD environment variables."
+            ) from e
