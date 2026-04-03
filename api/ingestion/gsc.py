@@ -587,6 +587,237 @@ class GSCClient:
             logger.error(f"Failed to list GSC sites: {str(e)}")
             raise GSCIngestionError(f"Failed to list sites: {str(e)}")
 
+    def list_sitemaps(self, site_url: str) -> List[Dict[str, Any]]:
+        """
+        List all sitemaps submitted for a GSC property.
+
+        Uses the Search Console API sitemaps resource to retrieve all
+        submitted sitemaps along with their status, type, error/warning
+        counts, and submission timestamps.
+
+        Spec reference (supabase/spec.md — GSC Data Pull, item #3):
+          "Sitemaps list"
+
+        This data feeds Module 9 (Site Architecture) for sitemap
+        coverage analysis and Module 2 (Page Triage) for identifying
+        pages missing from sitemaps.
+
+        Args:
+            site_url: GSC property URL (e.g., 'sc-domain:example.com')
+
+        Returns:
+            List of sitemap dicts, each containing:
+              - path: Sitemap URL
+              - type: Sitemap type (sitemap, sitemapIndex, atom, rss, etc.)
+              - lastSubmitted: ISO timestamp of last submission
+              - lastDownloaded: ISO timestamp of last Google download
+              - isPending: Whether the sitemap is pending processing
+              - errors: Number of errors found
+              - warnings: Number of warnings found
+              - contents: List of content type breakdowns (type, submitted, indexed)
+
+        Returns empty list on failure (graceful degradation).
+        """
+        try:
+            response = self._retry_with_backoff(
+                lambda: self.service.sitemaps().list(siteUrl=site_url).execute()
+            )
+
+            sitemaps_raw = response.get('sitemap', [])
+            sitemaps = []
+            for sm in sitemaps_raw:
+                sitemap_entry = {
+                    'path': sm.get('path', ''),
+                    'type': sm.get('type', 'unknown'),
+                    'lastSubmitted': sm.get('lastSubmitted'),
+                    'lastDownloaded': sm.get('lastDownloaded'),
+                    'isPending': sm.get('isPending', False),
+                    'errors': int(sm.get('errors', 0)),
+                    'warnings': int(sm.get('warnings', 0)),
+                }
+
+                # Content type breakdown (e.g., web pages, images, videos)
+                contents = []
+                for ct in sm.get('contents', []):
+                    contents.append({
+                        'type': ct.get('type', 'web'),
+                        'submitted': int(ct.get('submitted', 0)),
+                        'indexed': int(ct.get('indexed', 0)),
+                    })
+                sitemap_entry['contents'] = contents
+                sitemaps.append(sitemap_entry)
+
+            logger.info(
+                "Found %d sitemaps for %s (total errors: %d, warnings: %d)",
+                len(sitemaps), site_url,
+                sum(s['errors'] for s in sitemaps),
+                sum(s['warnings'] for s in sitemaps),
+            )
+            return sitemaps
+
+        except HttpError as e:
+            if e.resp.status in [401, 403]:
+                logger.warning("Sitemaps API access denied for %s: %s", site_url, e)
+            else:
+                logger.warning("Failed to list sitemaps for %s: %s", site_url, e)
+            return []
+        except Exception as e:
+            logger.warning("Failed to list sitemaps for %s: %s", site_url, e)
+            return []
+
+    def inspect_urls(
+        self,
+        site_url: str,
+        urls: List[str],
+        max_urls: int = 25,
+    ) -> List[Dict[str, Any]]:
+        """
+        Inspect indexing status of URLs via the GSC URL Inspection API.
+
+        Spec reference (supabase/spec.md — GSC Data Pull, item #2):
+          "URL inspection (for indexing status on key pages)"
+
+        The URL Inspection API provides per-URL details on:
+          - Index coverage verdict (PASS, NEUTRAL, FAIL, etc.)
+          - Crawl status (whether Googlebot can access the page)
+          - Mobile usability
+          - Rich results eligibility
+
+        This data enriches Module 2 (Page Triage) — pages with indexing
+        issues get higher triage priority — and Module 9 (Site
+        Architecture) for identifying crawlability gaps.
+
+        Rate limits: 600 inspections per property per day, 2000 total
+        per day.  We cap at max_urls (default 25) to stay well within
+        limits for a single report run.
+
+        Args:
+            site_url: GSC property URL (e.g., 'sc-domain:example.com')
+            urls: List of page URLs to inspect
+            max_urls: Maximum number of URLs to inspect (default 25)
+
+        Returns:
+            List of inspection result dicts, each containing:
+              - url: The inspected URL
+              - verdict: Overall index status verdict
+              - coverage_state: Detailed coverage state
+              - crawl_allowed: Whether robots.txt allows crawling
+              - indexing_allowed: Whether the page allows indexing
+              - page_fetch_state: HTTP status of Googlebot fetch
+              - robots_txt_state: robots.txt blocking status
+              - last_crawl_time: When Google last crawled the page
+              - mobile_usability: Mobile-friendly verdict (if available)
+              - rich_results: Rich result types detected (if available)
+              - error: Error message if inspection failed for this URL
+
+        Returns empty list on total failure (graceful degradation).
+        """
+        if not urls:
+            return []
+
+        # Cap to prevent quota exhaustion
+        inspect_urls_list = urls[:max_urls]
+        results = []
+
+        logger.info(
+            "Inspecting %d URLs for %s (of %d requested, max %d)",
+            len(inspect_urls_list), site_url, len(urls), max_urls,
+        )
+
+        for url in inspect_urls_list:
+            try:
+                response = self._retry_with_backoff(
+                    lambda u=url: self.service.urlInspection().index().inspect(
+                        body={
+                            'inspectionUrl': u,
+                            'siteUrl': site_url,
+                        }
+                    ).execute()
+                )
+
+                inspection = response.get('inspectionResult', {})
+
+                # Index status
+                index_status = inspection.get('indexStatusResult', {})
+                verdict = index_status.get('verdict', 'VERDICT_UNSPECIFIED')
+                coverage_state = index_status.get('coverageState', '')
+                robots_txt_state = index_status.get('robotsTxtState', '')
+                indexing_state = index_status.get('indexingState', '')
+                last_crawl_time = index_status.get('lastCrawlTime')
+                page_fetch_state = index_status.get('pageFetchState', '')
+                crawl_allowed = index_status.get('crawledAs', '') != ''
+
+                # Mobile usability (may not be present)
+                mobile_result = inspection.get('mobileUsabilityResult', {})
+                mobile_verdict = mobile_result.get('verdict', 'VERDICT_UNSPECIFIED')
+
+                # Rich results (may not be present)
+                rich_result = inspection.get('richResultsResult', {})
+                rich_types = []
+                for item in rich_result.get('detectedItems', []):
+                    rich_types.append(item.get('richResultType', 'unknown'))
+
+                result_entry = {
+                    'url': url,
+                    'verdict': verdict,
+                    'coverage_state': coverage_state,
+                    'crawl_allowed': crawl_allowed,
+                    'indexing_allowed': indexing_state != 'INDEXING_NOT_ALLOWED',
+                    'page_fetch_state': page_fetch_state,
+                    'robots_txt_state': robots_txt_state,
+                    'last_crawl_time': last_crawl_time,
+                    'mobile_usability': mobile_verdict,
+                    'rich_results': rich_types,
+                    'error': None,
+                }
+
+                results.append(result_entry)
+
+                # Small delay between inspection calls to respect rate limits
+                time.sleep(0.25)
+
+            except HttpError as e:
+                if e.resp.status in [401, 403]:
+                    logger.warning(
+                        "URL Inspection API access denied for %s — stopping inspection",
+                        site_url,
+                    )
+                    results.append({
+                        'url': url,
+                        'verdict': 'ERROR',
+                        'error': f'Access denied: {e}',
+                    })
+                    break
+                elif e.resp.status == 429:
+                    logger.warning("URL Inspection API rate limited — stopping")
+                    break
+                else:
+                    logger.warning("URL inspection failed for %s: %s", url, e)
+                    results.append({
+                        'url': url,
+                        'verdict': 'ERROR',
+                        'error': str(e),
+                    })
+            except Exception as e:
+                logger.warning("URL inspection failed for %s: %s", url, e)
+                results.append({
+                    'url': url,
+                    'verdict': 'ERROR',
+                    'error': str(e),
+                })
+
+        # Summary logging
+        verdicts = {}
+        for r in results:
+            v = r.get('verdict', 'ERROR')
+            verdicts[v] = verdicts.get(v, 0) + 1
+        logger.info(
+            "URL inspection complete for %s: %d inspected, verdicts: %s",
+            site_url, len(results), verdicts,
+        )
+
+        return results
+
 
 def ingest_gsc_data(
     credentials: Dict[str, Any],
@@ -609,6 +840,8 @@ def ingest_gsc_data(
             - query_page: Query-page mapping
             - query_date: Per-query time series (may be empty for large sites)
             - page_date: Per-page time series
+            - sitemaps: List of submitted sitemaps with status/errors
+            - url_inspection: Indexing status for top 25 pages by clicks
             
     Raises:
         GSCIngestionError: If critical data cannot be fetched
@@ -679,7 +912,26 @@ def ingest_gsc_data(
         logger.warning(f"Failed to fetch page-date data: {str(e)}")
         results['page_date'] = pd.DataFrame(columns=['page', 'date', 'clicks', 'impressions', 'ctr', 'position'])
     
-    total_rows = sum(len(df) for df in results.values())
+    # Sitemaps list (spec item #3 — feeds Module 9 site architecture analysis)
+    try:
+        results['sitemaps'] = client.list_sitemaps(site_url)
+    except Exception as e:
+        logger.warning(f"Failed to list sitemaps: {str(e)}")
+        results['sitemaps'] = []
+    
+    # URL inspection for top pages (spec item #2 — feeds Module 2 page triage)
+    # Inspect the top 25 pages by clicks to check indexing status
+    try:
+        if 'pages' in results and not results['pages'].empty:
+            top_pages = results['pages'].nlargest(25, 'clicks')['page'].tolist()
+            results['url_inspection'] = client.inspect_urls(site_url, top_pages, max_urls=25)
+        else:
+            results['url_inspection'] = []
+    except Exception as e:
+        logger.warning(f"Failed to inspect URLs: {str(e)}")
+        results['url_inspection'] = []
+    
+    total_rows = sum(len(v) if hasattr(v, '__len__') else 0 for v in results.values())
     logger.info(f"GSC ingestion complete for {site_url}: {total_rows} total rows across {len(results)} datasets")
     
     return results
