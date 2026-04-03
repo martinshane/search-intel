@@ -296,6 +296,124 @@ async def get_demo_progress() -> Dict[str, Any]:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Demo PDF export (unauthenticated) — lets visitors download a sample report
+# ---------------------------------------------------------------------------
+
+MODULE_KEY_TO_NUMBER = {
+    "health_trajectory": 1,
+    "page_triage": 2,
+    "serp_landscape": 3,
+    "content_intelligence": 4,
+    "gameplan": 5,
+    "algorithm_impact": 6,
+    "intent_migration": 7,
+    "technical_health": 8,
+    "site_architecture": 9,
+    "branded_split": 10,
+    "competitive_threats": 11,
+    "revenue_attribution": 12,
+}
+
+
+@router.get("/demo/pdf")
+async def export_demo_pdf() -> Response:
+    """
+    Export the demo report as a downloadable PDF.
+
+    This endpoint does NOT require authentication.  It allows landing-page
+    visitors to download a sample Search Intelligence Report PDF before
+    connecting their own data — a key conversion mechanism for the consulting
+    business front door.
+    """
+    from api.demo_data import get_demo_report
+
+    demo = get_demo_report()
+    sections = demo.get("report_data", {}).get("sections", {})
+
+    # Transform sections into the module_results format expected by pdf_export
+    # (keyed by module number -> section data dict)
+    module_results: Dict[int, Dict[str, Any]] = {}
+    for key, section in sections.items():
+        num = MODULE_KEY_TO_NUMBER.get(key)
+        if num is not None and isinstance(section, dict):
+            module_results[num] = section.get("data", section)
+
+    # Build a report_data dict matching what the PDF generator expects
+    report_data = {
+        "domain": demo.get("domain", "acmewidgets.com"),
+        "gsc_property": "sc-domain:acmewidgets.com",
+        "ga4_property": "properties/123456789",
+        "created_at": demo.get("created_at"),
+        "status": "complete",
+    }
+
+    try:
+        from api.services.pdf_export import generate_pdf_report
+        pdf_bytes = generate_pdf_report(report_data, module_results)
+    except ImportError as e:
+        logger.error("PDF export dependency missing: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail="PDF generation not available. Missing dependency: reportlab.",
+        )
+    except Exception as e:
+        logger.exception("Demo PDF generation failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate demo PDF: {str(e)}",
+        )
+
+    ts = datetime.utcnow().strftime("%Y%m%d")
+    filename = f"search_intelligence_demo_{ts}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(pdf_bytes)),
+        },
+    )
+
+
+@router.get("/demo/ctas")
+async def get_demo_ctas() -> Dict[str, Any]:
+    """
+    Return consulting CTAs for the demo report.
+
+    Uses the demo module results to generate contextual CTAs that show
+    visitors the kind of actionable consulting recommendations they would
+    receive with a real report.
+    """
+    from api.demo_data import get_demo_report
+
+    demo = get_demo_report()
+    sections = demo.get("report_data", {}).get("sections", {})
+
+    module_results: Dict[int, Dict[str, Any]] = {}
+    for key, section in sections.items():
+        num = MODULE_KEY_TO_NUMBER.get(key)
+        if num is not None and isinstance(section, dict):
+            module_results[num] = section.get("data", section)
+
+    try:
+        from api.services.consulting_ctas import generate_consulting_ctas
+        ctas = generate_consulting_ctas(
+            domain="acmewidgets.com",
+            module_results=module_results,
+        )
+        return {"ctas": ctas}
+    except ImportError:
+        return {"ctas": [], "error": "CTA generation not available"}
+    except Exception as e:
+        logger.warning("Demo CTA generation failed: %s", e)
+        return {"ctas": [], "error": str(e)}
+
+
+
 @router.get("/{report_id}")
 async def get_report(
     report_id: str,
