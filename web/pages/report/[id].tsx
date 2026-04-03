@@ -12,6 +12,10 @@ const NetworkGraph = dynamic(() => import('../../components/NetworkGraph'), {
     </div>
   ),
 });
+
+// Import Module1TrafficOverview
+import Module1TrafficOverview from '../../components/Module1TrafficOverview';
+
 import {
   LineChart,
   Line,
@@ -61,4373 +65,502 @@ const MODULE_META: Record<string, { title: string; icon: string; number: number 
   site_architecture:    { title: 'Site Architecture',       icon: 'globe',       number: 9  },
   branded_split:        { title: 'Branded vs Non-Branded',  icon: 'users',       number: 10 },
   competitive_threats:  { title: 'Competitive Radar',       icon: 'users',       number: 11 },
-  revenue_attribution:  { title: 'Revenue Attribution',     icon: 'dollar',      number: 12 },
+  revenue_forecast:     { title: 'Revenue Forecast',        icon: 'dollar-sign', number: 12 },
 };
 
 // ---------------------------------------------------------------------------
-// Types
+// Type definitions
 // ---------------------------------------------------------------------------
-interface ReportData {
-  report_id: string;
-  domain: string;
+interface ReportJob {
+  id: string;
+  user_id: string;
+  site_domain: string;
   status: string;
-  generated_at?: string;
-  current_module?: number;
-  progress?: Record<string, string>;
+  progress: number;
+  result: ReportResult | null;
   error_message?: string;
-  summary?: {
-    monthly_clicks?: number;
-    trend?: string;
-    critical_pages?: number;
-    total_estimated_recovery?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ReportResult {
+  modules: Record<string, any>;
+  executive_summary?: {
+    overall_health: string;
+    key_findings: string[];
+    top_recommendations: string[];
   };
-  modules?: Record<string, any>;
 }
 
 // ---------------------------------------------------------------------------
-// Main Report Page Component
+// Helper functions
 // ---------------------------------------------------------------------------
-export default function ReportPage() {
+function getStatusColor(status: string): string {
+  switch (status) {
+    case 'completed':
+    case 'complete':
+      return 'text-green-400';
+    case 'partial':
+      return 'text-yellow-400';
+    case 'failed':
+      return 'text-red-400';
+    case 'processing':
+    case 'pending':
+      return 'text-blue-400';
+    default:
+      return 'text-slate-400';
+  }
+}
+
+function getStatusIcon(status: string) {
+  switch (status) {
+    case 'completed':
+    case 'complete':
+      return <Check className="w-5 h-5" />;
+    case 'partial':
+      return <AlertTriangle className="w-5 h-5" />;
+    case 'failed':
+      return <X className="w-5 h-5" />;
+    case 'processing':
+      return <Loader2 className="w-5 h-5 animate-spin" />;
+    default:
+      return <Clock className="w-5 h-5" />;
+  }
+}
+
+function formatDate(dateStr: string): string {
+  try {
+    return new Date(dateStr).toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+export default function ReportDetailPage() {
   const router = useRouter();
   const { id } = router.query;
-  const isDemo = id === 'demo';
-
-  const [report, setReport] = useState<ReportData | null>(null);
+  
+  const [job, setJob] = useState<ReportJob | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
-  const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Email modal state
-  const [showEmailModal, setShowEmailModal] = useState(false);
-  const [emailAddress, setEmailAddress] = useState('');
-  const [emailSending, setEmailSending] = useState(false);
-  const [emailResult, setEmailResult] = useState<{ success: boolean; message: string } | null>(null);
-
-  // Progressive rendering: show completed modules during generation
-  const [progressiveModules, setProgressiveModules] = useState<Record<string, any>>({});
-  const progressivePollRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Retry state for failed reports
-  const [retrying, setRetrying] = useState(false);
-  const [retryError, setRetryError] = useState<string | null>(null);
-
-  const retryReport = async () => {
-    if (!id) return;
-    setRetrying(true);
-    setRetryError(null);
+  // ---------------------------------------------------------------------------
+  // Fetch report job
+  // ---------------------------------------------------------------------------
+  const fetchJob = useCallback(async () => {
+    if (!id || typeof id !== 'string') return;
+    
     try {
-      const res = await fetch(`${API_BASE}/api/reports/${id}/retry`, {
-        method: 'POST',
-        credentials: 'include',
-      });
+      const res = await fetch(`${API_BASE}/api/reports/${id}`);
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Failed to retry report');
+        if (res.status === 404) {
+          throw new Error('Report not found');
+        }
+        throw new Error(`Failed to fetch report: ${res.statusText}`);
       }
-      // Report re-queued (status=pending) — switch back to loading state and start polling
-      setLoading(true);
-      setReport((prev) => prev ? { ...prev, status: 'pending' } : prev);
-      fetchReport();
-    } catch (err: any) {
-      setRetryError(err.message || 'Retry failed');
-      setRetrying(false);
-    }
-  };
-
-  const sendReportEmail = async () => {
-    if (!emailAddress || !id) return;
-    setEmailSending(true);
-    setEmailResult(null);
-    try {
-      const res = await fetch(`${API_BASE}/api/reports/${id}/email`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to_email: emailAddress }),
-      });
       const data = await res.json();
-      if (res.ok && data.success) {
-        setEmailResult({ success: true, message: data.message || 'Report sent!' });
-        setTimeout(() => {
-          setShowEmailModal(false);
-          setEmailResult(null);
-          setEmailAddress('');
-        }, 2500);
-      } else {
-        setEmailResult({ success: false, message: data.detail || data.message || 'Failed to send email' });
-      }
-    } catch (err: any) {
-      setEmailResult({ success: false, message: err.message || 'Network error' });
-    } finally {
-      setEmailSending(false);
-    }
-  };
-
-  // ---------------------------------------------------------------------------
-  // Progressive module fetching — shows sections as they complete
-  // ---------------------------------------------------------------------------
-  const fetchProgressiveModules = useCallback(async () => {
-    if (!id) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/reports/${id}/modules`, {
-        credentials: 'include',
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.modules) {
-          const completed: Record<string, any> = {};
-          for (const [key, mod] of Object.entries(data.modules)) {
-            const m = mod as any;
-            if (m.status === 'success' && m.data) {
-              completed[key] = m.data;
-            }
-          }
-          setProgressiveModules(completed);
-        }
-        // Keep polling while report is generating
-        if (data.status && !['completed', 'complete', 'done', 'failed', 'partial'].includes(data.status)) {
-          progressivePollRef.current = setTimeout(fetchProgressiveModules, 5000);
-        }
-      }
-    } catch {
-      // Silent fail — main fetchReport handles errors
-    }
-  }, [id]);
-
-  // ---------------------------------------------------------------------------
-  // Fetch report data from API
-  // ---------------------------------------------------------------------------
-  const fetchReport = useCallback(async () => {
-    if (!id) return;
-
-    try {
-      const response = await fetch(`${API_BASE}/api/reports/${id}`, {
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        if (response.status === 401) {
-          // Auth expired — redirect to home to re-authenticate
-          window.location.href = '/?auth=expired';
-          return;
-        }
-        if (response.status === 404) {
-          setError('Report not found');
-          setLoading(false);
-          return;
-        }
-        throw new Error(`Failed to fetch report: ${response.statusText}`);
-      }
-
-      const raw = await response.json();
-
-      // Transform API response (raw Supabase row) to frontend shape.
-      // The API returns: { id, domain, status, report_data: { metadata, sections, errors }, ... }
-      // Each section has: { status, execution_time_seconds, data: { ... } }
-      // The frontend expects a flat modules record: { module_key: module_data }
-      const reportData = raw.report_data || {};
-      const sections = reportData.sections || {};
-
-      const modules: Record<string, any> = {};
-      for (const [key, section] of Object.entries(sections)) {
-        if (section && typeof section === 'object') {
-          const s = section as any;
-          if (s.status === 'success' && s.data) {
-            modules[key] = s.data;
-          }
-        }
-      }
-
-      const data: ReportData = {
-        report_id: raw.id || (id as string),
-        domain: raw.domain || '',
-        status: raw.status || 'unknown',
-        generated_at: raw.completed_at || raw.created_at,
-        current_module: raw.current_module,
-        progress: raw.progress,
-        error_message: raw.error_message || undefined,
-        summary: reportData.metadata || undefined,
-        modules,
-      };
-
-      setReport(data);
+      setJob(data);
       setError(null);
-
-      // If report is still processing, continue polling
-      if (!TERMINAL_STATUSES.has(data.status)) {
-        pollTimeoutRef.current = setTimeout(fetchReport, POLL_INTERVAL_MS);
-      } else {
-        setLoading(false);
+      
+      // Stop polling if terminal status reached
+      if (TERMINAL_STATUSES.has(data.status)) {
+        if (pollTimerRef.current) {
+          clearInterval(pollTimerRef.current);
+          pollTimerRef.current = null;
+        }
       }
     } catch (err) {
       console.error('Error fetching report:', err);
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : 'Failed to load report');
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    } finally {
       setLoading(false);
     }
   }, [id]);
 
   // ---------------------------------------------------------------------------
-  // Initial fetch + polling setup
+  // Initial load and polling setup
   // ---------------------------------------------------------------------------
   useEffect(() => {
-    fetchReport();
-    return () => {
-      if (pollTimeoutRef.current) {
-        clearTimeout(pollTimeoutRef.current);
-      }
-    };
-  }, [fetchReport]);
-
-  // Start progressive module polling during generation
-  useEffect(() => {
-    if (loading && id) {
-      fetchProgressiveModules();
+    if (!id) return;
+    
+    fetchJob();
+    
+    // Start polling if not already terminal
+    if (!job || !TERMINAL_STATUSES.has(job.status)) {
+      pollTimerRef.current = setInterval(fetchJob, POLL_INTERVAL_MS);
     }
+    
     return () => {
-      if (progressivePollRef.current) {
-        clearTimeout(progressivePollRef.current);
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
       }
     };
-  }, [loading, id, fetchProgressiveModules]);
+  }, [id, fetchJob, job?.status]);
 
   // ---------------------------------------------------------------------------
-  // Section toggle handler
+  // Section toggle
   // ---------------------------------------------------------------------------
-  const toggleSection = (sectionKey: string) => {
+  const toggleSection = (moduleKey: string) => {
     setExpandedSections((prev) => {
       const next = new Set(prev);
-      if (next.has(sectionKey)) {
-        next.delete(sectionKey);
+      if (next.has(moduleKey)) {
+        next.delete(moduleKey);
       } else {
-        next.add(sectionKey);
+        next.add(moduleKey);
       }
       return next;
     });
   };
 
   // ---------------------------------------------------------------------------
-  // Loading State
+  // Download report as JSON
+  // ---------------------------------------------------------------------------
+  const downloadReport = () => {
+    if (!job?.result) return;
+    
+    const dataStr = JSON.stringify(job.result, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `report-${job.site_domain}-${job.id}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Render loading state
   // ---------------------------------------------------------------------------
   if (loading) {
-    const progress = report?.progress || {};
-    const completedModules = Object.values(progress).filter(
-      (s) => s === 'success' || s === 'completed' || s === 'failed' || s === 'skipped'
-    ).length;
-    const totalModules = 12;
-    const progressPct = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
-    const currentModuleNum = report?.current_module || 0;
-    const currentModuleName = Object.entries(MODULE_META).find(
-      ([, meta]) => meta.number === currentModuleNum
-    )?.[1]?.title;
+    return (
+      <>
+        <Head>
+          <title>Loading Report | Search Intelligence</title>
+        </Head>
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+          <NavHeader />
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <div className="flex flex-col items-center justify-center py-24">
+              <Loader2 className="w-12 h-12 text-blue-400 animate-spin mb-4" />
+              <p className="text-slate-300 text-lg">Loading report...</p>
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
 
-    const progressiveKeys = Object.keys(progressiveModules);
-    const hasProgressiveData = progressiveKeys.length > 0;
+  // ---------------------------------------------------------------------------
+  // Render error state
+  // ---------------------------------------------------------------------------
+  if (error || !job) {
+    return (
+      <>
+        <Head>
+          <title>Report Error | Search Intelligence</title>
+        </Head>
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+          <NavHeader />
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <div className="flex flex-col items-center justify-center py-24">
+              <AlertTriangle className="w-16 h-16 text-red-400 mb-4" />
+              <h1 className="text-2xl font-bold text-slate-200 mb-2">Error Loading Report</h1>
+              <p className="text-slate-400 mb-6">{error || 'Report not found'}</p>
+              <button
+                onClick={() => router.push('/dashboard')}
+                className="px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors"
+              >
+                Back to Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
 
-    // Map module keys to their content components for progressive rendering
-    const renderProgressiveModule = (key: string, data: any) => {
-      const components: Record<string, (props: { data: any; domain?: string }) => JSX.Element | null> = {
-        health_trajectory: HealthTrajectoryContent,
-        page_triage: PageTriageContent,
-        serp_landscape: SerpLandscapeContent,
-        content_intelligence: ContentIntelligenceContent,
-        gameplan: GameplanContent,
-        algorithm_impact: AlgorithmImpactContent,
-        intent_migration: IntentMigrationContent,
-        technical_health: TechnicalHealthContent,
-        site_architecture: SiteArchitectureContent,
-        branded_split: BrandedSplitContent,
-        competitive_threats: CompetitiveThreatsContent,
-        revenue_attribution: RevenueAttributionContent,
-      };
-      const Comp = components[key];
-      return Comp ? <Comp data={data} domain={report?.domain || ''} /> : null;
-    };
-
+  // ---------------------------------------------------------------------------
+  // Render processing state
+  // ---------------------------------------------------------------------------
+  if (job.status === 'pending' || job.status === 'processing') {
     return (
       <>
         <Head>
           <title>Generating Report | Search Intelligence</title>
         </Head>
-        <NavHeader />
-        <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 py-12 px-4">
-          <div className={hasProgressiveData ? "max-w-7xl mx-auto" : "max-w-4xl mx-auto text-center"}>
-            {/* Progress header */}
-            <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-8 mb-8">
-              <div className="flex items-center justify-center gap-4 mb-4">
-                <RefreshCw className="w-8 h-8 text-blue-400 animate-spin" />
-                <h1 className="text-2xl font-bold text-white">Generating Your Report</h1>
-              </div>
-              <p className="text-slate-300 mb-4 text-center">
-                {report?.status === 'analyzing' && currentModuleName
-                  ? `Running: ${currentModuleName} (${completedModules}/${totalModules} modules)`
-                  : report?.status === 'ingesting'
-                  ? 'Pulling data from Google Search Console and GA4...'
-                  : 'Initializing report generation...'}
-              </p>
-              {completedModules > 0 && (
-                <div className="max-w-md mx-auto mb-2">
-                  <div className="w-full bg-slate-700 rounded-full h-3">
-                    <div
-                      className="bg-gradient-to-r from-blue-500 to-purple-500 h-3 rounded-full transition-all duration-500"
-                      style={{ width: `${progressPct}%` }}
-                    />
-                  </div>
-                  <p className="text-sm text-slate-400 mt-2 text-center">{progressPct}% complete</p>
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+          <NavHeader />
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-8">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h1 className="text-2xl font-bold text-slate-200 mb-1">
+                    Generating Report
+                  </h1>
+                  <p className="text-slate-400">{job.site_domain}</p>
                 </div>
-              )}
-              {report?.domain && (
-                <p className="text-sm text-slate-400 text-center">
-                  Domain: <span className="font-mono text-slate-300">{report.domain}</span>
-                </p>
-              )}
-            </div>
-
-            {/* Progressive module results — completed sections appear as they finish */}
-            {hasProgressiveData && (
-              <div className="space-y-6">
-                <p className="text-sm text-slate-400 text-center mb-4">
-                  Completed sections appear below as they finish analyzing:
-                </p>
-                {Object.entries(MODULE_META).map(([key, meta]) => {
-                  const moduleData = progressiveModules[key];
-                  if (!moduleData) return null;
-                  return (
-                    <div key={key} className="bg-slate-800/40 border border-slate-700/50 rounded-lg overflow-hidden">
-                      <button
-                        onClick={() => toggleSection(key)}
-                        className="w-full flex items-center justify-between p-5 text-left hover:bg-slate-700/30 transition"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-emerald-900/40 flex items-center justify-center">
-                            <CheckCircle className="w-4 h-4 text-emerald-400" />
-                          </div>
-                          <div>
-                            <span className="text-white font-medium">{meta.title}</span>
-                            <span className="text-xs text-slate-500 ml-2">Module {meta.number}</span>
-                          </div>
-                        </div>
-                        {expandedSections.has(key)
-                          ? <ChevronUp className="w-5 h-5 text-slate-400" />
-                          : <ChevronDown className="w-5 h-5 text-slate-400" />}
-                      </button>
-                      {expandedSections.has(key) && (
-                        <div className="px-5 pb-5">
-                          {renderProgressiveModule(key, moduleData)}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                <Loader2 className="w-8 h-8 text-blue-400 animate-spin" />
               </div>
-            )}
+              
+              <div className="space-y-4">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-400">Progress</span>
+                  <span className="text-slate-300 font-medium">{job.progress}%</span>
+                </div>
+                
+                <div className="w-full bg-slate-700 rounded-full h-3 overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${job.progress}%` }}
+                  />
+                </div>
+                
+                <p className="text-slate-400 text-sm mt-6">
+                  This typically takes 2-5 minutes. We're analyzing your site's search performance across 12 comprehensive modules.
+                </p>
+                
+                <div className="flex items-center text-sm text-slate-500 mt-4">
+                  <Clock className="w-4 h-4 mr-2" />
+                  Started {formatDate(job.created_at)}
+                </div>
+              </div>
+            </div>
           </div>
-        </main>
+        </div>
       </>
     );
   }
 
   // ---------------------------------------------------------------------------
-  // Error State
+  // Render failed state
   // ---------------------------------------------------------------------------
-  if (error || !report) {
-    return (
-      <>
-        <Head>
-          <title>Error | Search Intelligence</title>
-        </Head>
-        <NavHeader />
-        <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 py-12 px-4">
-          <div className="max-w-4xl mx-auto text-center">
-            <div className="bg-slate-800/50 border border-red-800 rounded-lg p-12">
-              <AlertTriangle className="w-16 h-16 text-red-400 mx-auto mb-6" />
-              <h1 className="text-2xl font-bold text-white mb-3">
-                Unable to Load Report
-              </h1>
-              <p className="text-slate-300 mb-6">
-                {error || 'Report data could not be retrieved'}
-              </p>
-              <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                <button
-                  onClick={() => router.push('/')}
-                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-                >
-                  Generate New Report
-                </button>
-                <button
-                  onClick={() => router.push('/reports')}
-                  className="px-6 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition"
-                >
-                  My Reports
-                </button>
-              </div>
-            </div>
-          </div>
-        </main>
-      </>
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Report Failed State
-  // ---------------------------------------------------------------------------
-  if (report.status === 'failed') {
+  if (job.status === 'failed') {
     return (
       <>
         <Head>
           <title>Report Failed | Search Intelligence</title>
         </Head>
-        <NavHeader />
-        <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 py-12 px-4">
-          <div className="max-w-4xl mx-auto text-center">
-            <div className="bg-slate-800/50 border border-yellow-800 rounded-lg p-12">
-              <AlertTriangle className="w-16 h-16 text-yellow-400 mx-auto mb-6" />
-              <h1 className="text-2xl font-bold text-white mb-3">
-                Report Generation Failed
-              </h1>
-              <p className="text-slate-300 mb-4">
-                We encountered an error while generating your report for{' '}
-                <span className="font-mono text-slate-200">{report.domain}</span>
-              </p>
-              {report.error_message && (
-                <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-4 mb-6 text-left">
-                  <p className="text-red-300 text-sm font-mono break-words">
-                    {report.error_message}
-                  </p>
-                </div>
-              )}
-              {retryError && (
-                <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-3 mb-4 text-sm text-red-300">
-                  {retryError}
-                </div>
-              )}
-              <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                <button
-                  onClick={retryReport}
-                  disabled={retrying}
-                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                  {retrying ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      Retrying...
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCw className="w-4 h-4" />
-                      Retry This Report
-                    </>
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+          <NavHeader />
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-red-500/30 p-8">
+              <div className="flex items-start space-x-4">
+                <AlertTriangle className="w-8 h-8 text-red-400 flex-shrink-0 mt-1" />
+                <div className="flex-1">
+                  <h1 className="text-2xl font-bold text-slate-200 mb-2">
+                    Report Generation Failed
+                  </h1>
+                  <p className="text-slate-400 mb-4">{job.site_domain}</p>
+                  
+                  {job.error_message && (
+                    <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-4 mb-6">
+                      <p className="text-red-300 text-sm">{job.error_message}</p>
+                    </div>
                   )}
-                </button>
-                <button
-                  onClick={() => router.push('/')}
-                  className="px-6 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition"
-                >
-                  Start New Report
-                </button>
-                <button
-                  onClick={() => router.push('/reports')}
-                  className="px-6 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition"
-                >
-                  My Reports
-                </button>
+                  
+                  <div className="flex items-center space-x-4">
+                    <button
+                      onClick={() => router.push('/dashboard')}
+                      className="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors"
+                    >
+                      Back to Dashboard
+                    </button>
+                    <button
+                      onClick={() => window.location.reload()}
+                      className="px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors flex items-center"
+                    >
+                      <RefreshCw className="w-4 h-4 mr-2" />
+                      Retry
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </main>
+        </div>
       </>
     );
   }
 
   // ---------------------------------------------------------------------------
-  // Main Report View
+  // Render completed report
   // ---------------------------------------------------------------------------
-  const modules = report.modules || {};
-  const summary = report.summary || {};
+  const modules = job.result?.modules || {};
+  const executiveSummary = job.result?.executive_summary;
 
   return (
     <>
       <Head>
-        <title>{report.domain} | Search Intelligence Report</title>
-        <meta
-          name="description"
-          content={`Comprehensive search intelligence analysis for ${report.domain} — 12 modules covering health, triage, SERP landscape, content, algorithm impact, and more.`}
-        />
-        <meta property="og:title" content={`${report.domain} — Search Intelligence Report`} />
-        <meta property="og:description" content={`12-module SEO analysis: health trajectory, page triage, SERP landscape, content intelligence, and 8 more sections.`} />
-        <meta property="og:type" content="article" />
-        <meta property="og:url" content={`https://clankermarketing.com/report/${id}`} />
-        <meta property="og:image" content="https://clankermarketing.com/og-image.png" />
-        <meta property="og:image:width" content="1200" />
-        <meta property="og:image:height" content="630" />
-        <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content={`${report.domain} — Search Intelligence Report`} />
-        <meta name="twitter:description" content={`12-module SEO analysis for ${report.domain}`} />
-        <meta name="twitter:image" content="https://clankermarketing.com/og-image.png" />
-        <link rel="canonical" href={`https://clankermarketing.com/report/${id}`} />
+        <title>{job.site_domain} Report | Search Intelligence</title>
+        <meta name="description" content={`Search Intelligence Report for ${job.site_domain}`} />
       </Head>
 
-      <NavHeader />
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+        <NavHeader />
 
-      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-        {/* Hero Header */}
-        <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 text-white">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center space-x-3">
-                <div className="w-12 h-12 bg-white/20 rounded-lg flex items-center justify-center backdrop-blur-sm">
-                  <BarChart2 className="w-7 h-7" />
-                </div>
-                <div>
-                  <h1 className="text-3xl font-bold">{report.domain}</h1>
-                  <p className="text-blue-100 text-sm mt-1">
-                    Search Intelligence Report
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center space-x-3">
-                <button
-                  onClick={() => {
-                    const a = document.createElement('a');
-                    a.href = `${process.env.NEXT_PUBLIC_API_URL || ''}/api/reports/${id}/pdf`;
-                    a.download = `search_intelligence_${report.domain}.pdf`;
-                    a.click();
-                  }}
-                  className="flex items-center space-x-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm"
-                >
-                  <Download className="w-4 h-4" />
-                  <span className="text-sm font-medium">Download PDF</span>
-                </button>
-                {!isDemo && (
-                <button
-                  onClick={() => setShowEmailModal(true)}
-                  className="flex items-center space-x-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm"
-                >
-                  <Mail className="w-4 h-4" />
-                  <span className="text-sm font-medium">Email Report</span>
-                </button>
-                )}
-                {isDemo ? (
-                <button
-                  onClick={() => router.push('/')}
-                  className="flex items-center space-x-2 px-4 py-2 bg-emerald-500/80 hover:bg-emerald-500 rounded-lg transition backdrop-blur-sm font-medium"
-                >
-                  <Zap className="w-4 h-4" />
-                  <span className="text-sm font-medium">Connect Your Site</span>
-                </button>
-                ) : (
-                <button
-                  onClick={() => router.push(`/compare?id=${id}`)}
-                  className="flex items-center space-x-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm"
-                >
-                  <GitCompare className="w-4 h-4" />
-                  <span className="text-sm font-medium">Compare</span>
-                </button>
-                )}
-                <button
-                  onClick={() => window.print()}
-                  className="flex items-center space-x-2 px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm text-sm"
-                >
-                  Print
-                </button>
-              </div>
-            </div>
-
-            {/* Demo Banner */}
-            {isDemo && (
-              <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <Search className="w-4 h-4 text-amber-400" />
-                  <span className="text-amber-200 text-sm">
-                    This is a sample report for a fictional site. <strong>Connect your site</strong> to see your own data.
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {/* Report header */}
+          <div className="mb-8">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h1 className="text-3xl font-bold text-slate-200 mb-2">
+                  Search Intelligence Report
+                </h1>
+                <div className="flex items-center space-x-4 text-sm text-slate-400">
+                  <span className="flex items-center">
+                    <Globe className="w-4 h-4 mr-1.5" />
+                    {job.site_domain}
+                  </span>
+                  <span className="flex items-center">
+                    <Calendar className="w-4 h-4 mr-1.5" />
+                    {formatDate(job.created_at)}
+                  </span>
+                  <span className={`flex items-center ${getStatusColor(job.status)}`}>
+                    {getStatusIcon(job.status)}
+                    <span className="ml-1.5 capitalize">{job.status}</span>
                   </span>
                 </div>
-                <button
-                  onClick={() => router.push('/')}
-                  className="text-xs px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 rounded transition"
-                >
-                  Get Started
-                </button>
               </div>
-            )}
-
-            {/* Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <SummaryCard
-                icon={<Activity className="w-5 h-5" />}
-                label="Monthly Clicks"
-                value={summary.monthly_clicks?.toLocaleString() || 'N/A'}
-                trend={summary.trend}
-              />
-              <SummaryCard
-                icon={<TrendingUp className="w-5 h-5" />}
-                label="Trend"
-                value={summary.trend || 'Unknown'}
-                className="capitalize"
-              />
-              <SummaryCard
-                icon={<AlertTriangle className="w-5 h-5" />}
-                label="Critical Pages"
-                value={summary.critical_pages?.toString() || '0'}
-              />
-              <SummaryCard
-                icon={<Target className="w-5 h-5" />}
-                label="Recovery Potential"
-                value={
-                  summary.total_estimated_recovery
-                    ? `${summary.total_estimated_recovery.toLocaleString()} clicks/mo`
-                    : 'N/A'
-                }
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Module Sections */}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-          {/* Module 1: Health & Trajectory */}
-          {modules.health_trajectory && (
-            <ModuleSection
-              moduleKey="health_trajectory"
-              expanded={expandedSections.has('health_trajectory')}
-              onToggle={() => toggleSection('health_trajectory')}
-            >
-              <HealthTrajectoryContent data={modules.health_trajectory} />
-            </ModuleSection>
-          )}
-
-          {/* Module 2: Page-Level Triage */}
-          {modules.page_triage && (
-            <ModuleSection
-              moduleKey="page_triage"
-              expanded={expandedSections.has('page_triage')}
-              onToggle={() => toggleSection('page_triage')}
-            >
-              <PageTriageContent data={modules.page_triage} />
-            </ModuleSection>
-          )}
-
-          {/* Module 3: SERP Landscape */}
-          {modules.serp_landscape && (
-            <ModuleSection
-              moduleKey="serp_landscape"
-              expanded={expandedSections.has('serp_landscape')}
-              onToggle={() => toggleSection('serp_landscape')}
-            >
-              <SerpLandscapeContent data={modules.serp_landscape} />
-            </ModuleSection>
-          )}
-
-          {/* Module 4: Content Intelligence */}
-          {modules.content_intelligence && (
-            <ModuleSection
-              moduleKey="content_intelligence"
-              expanded={expandedSections.has('content_intelligence')}
-              onToggle={() => toggleSection('content_intelligence')}
-            >
-              <ContentIntelligenceContent data={modules.content_intelligence} />
-            </ModuleSection>
-          )}
-
-          {/* Module 5: The Gameplan */}
-          {modules.gameplan && (
-            <ModuleSection
-              moduleKey="gameplan"
-              expanded={expandedSections.has('gameplan')}
-              onToggle={() => toggleSection('gameplan')}
-            >
-              <GameplanContent data={modules.gameplan} />
-            </ModuleSection>
-          )}
-
-          {/* Consulting CTA — after Gameplan (spec requirement) */}
-          <div className="my-8 rounded-xl border border-blue-500/30 bg-gradient-to-r from-blue-900/40 via-indigo-900/30 to-blue-900/40 p-6 sm:p-8 text-center">
-            <h3 className="text-xl font-semibold text-white mb-2">
-              Want help executing this plan?
-            </h3>
-            <p className="text-slate-300 mb-5 max-w-xl mx-auto">
-              Our search strategists turn these recommendations into measurable results.
-              Book a free strategy call to discuss your gameplan.
-            </p>
-            <a
-              href="https://clankermarketing.com/book"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg transition shadow-lg shadow-blue-600/20"
-            >
-              Book a Strategy Call
-            </a>
-            <p className="text-slate-500 text-xs mt-4">
-              Clanker Marketing — Search Intelligence Consulting
-            </p>
-          </div>
-
-          {/* Module 6: Algorithm Impact */}
-          {modules.algorithm_impact && (
-            <ModuleSection
-              moduleKey="algorithm_impact"
-              expanded={expandedSections.has('algorithm_impact')}
-              onToggle={() => toggleSection('algorithm_impact')}
-            >
-              <AlgorithmImpactContent data={modules.algorithm_impact} />
-            </ModuleSection>
-          )}
-
-          {/* Module 7: Intent Migration */}
-          {modules.intent_migration && (
-            <ModuleSection
-              moduleKey="intent_migration"
-              expanded={expandedSections.has('intent_migration')}
-              onToggle={() => toggleSection('intent_migration')}
-            >
-              <IntentMigrationContent data={modules.intent_migration} />
-            </ModuleSection>
-          )}
-
-          {/* Module 8: CTR Modeling */}
-          {modules.technical_health && (
-            <ModuleSection
-              moduleKey="technical_health"
-              expanded={expandedSections.has('technical_health')}
-              onToggle={() => toggleSection('technical_health')}
-            >
-              <TechnicalHealthContent data={modules.technical_health} />
-            </ModuleSection>
-          )}
-
-          {/* Module 9: Site Architecture */}
-          {modules.site_architecture && (
-            <ModuleSection
-              moduleKey="site_architecture"
-              expanded={expandedSections.has('site_architecture')}
-              onToggle={() => toggleSection('site_architecture')}
-            >
-              <SiteArchitectureContent data={modules.site_architecture} />
-            </ModuleSection>
-          )}
-
-          {/* Module 10: Branded vs Non-Branded */}
-          {modules.branded_split && (
-            <ModuleSection
-              moduleKey="branded_split"
-              expanded={expandedSections.has('branded_split')}
-              onToggle={() => toggleSection('branded_split')}
-            >
-              <BrandedSplitContent data={modules.branded_split} />
-            </ModuleSection>
-          )}
-
-          {/* Module 11: Competitive Radar */}
-          {modules.competitive_threats && (
-            <ModuleSection
-              moduleKey="competitive_threats"
-              expanded={expandedSections.has('competitive_threats')}
-              onToggle={() => toggleSection('competitive_threats')}
-            >
-              <CompetitiveThreatsContent data={modules.competitive_threats} />
-            </ModuleSection>
-          )}
-
-          {/* Module 12: Revenue Attribution */}
-          {modules.revenue_attribution && (
-            <ModuleSection
-              moduleKey="revenue_attribution"
-              expanded={expandedSections.has('revenue_attribution')}
-              onToggle={() => toggleSection('revenue_attribution')}
-            >
-              <RevenueAttributionContent data={modules.revenue_attribution} />
-            </ModuleSection>
-          )}
-
-          {/* Consulting CTA — after Revenue Attribution (spec requirement) */}
-          {modules.revenue_attribution && (
-            <div className="my-8 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-900/40 via-teal-900/30 to-emerald-900/40 p-6 sm:p-8 text-center">
-              <h3 className="text-xl font-semibold text-white mb-2">
-                These opportunities total{' '}
-                <span className="text-emerald-400">
-                  {modules.revenue_attribution?.total_potential_value
-                    ? `$${Math.round(modules.revenue_attribution.total_potential_value).toLocaleString()}/month`
-                    : 'significant revenue'}
-                </span>
-              </h3>
-              <p className="text-slate-300 mb-5 max-w-xl mx-auto">
-                Let&apos;s capture them together. Our team specialises in turning search
-                intelligence into revenue growth.
-              </p>
-              <a
-                href="https://clankermarketing.com/book"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-block px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg transition shadow-lg shadow-emerald-600/20"
+              
+              <button
+                onClick={downloadReport}
+                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors flex items-center text-sm"
               >
-                Let&apos;s Capture This Revenue
-              </a>
-              <p className="text-slate-500 text-xs mt-4">
-                Clanker Marketing — Search Intelligence Consulting
-              </p>
+                <Download className="w-4 h-4 mr-2" />
+                Download JSON
+              </button>
             </div>
-          )}
-        </div>
 
-        {/* Footer CTA */}
-        <div className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 text-center">
-            <h2 className="text-3xl font-bold mb-4">
-              Ready to Execute This Strategy?
-            </h2>
-            <p className="text-blue-100 mb-8 text-lg max-w-2xl mx-auto">
-              This report identifies opportunities worth{' '}
-              <span className="font-bold text-white">
-                {summary.total_estimated_recovery?.toLocaleString() || 'thousands of'}
-              </span>{' '}
-              clicks per month. Let's make it happen.
-            </p>
-            <a
-              href="https://clankermarketing.com/book"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block px-8 py-4 bg-white/20 hover:bg-white/30 text-white rounded-lg font-semibold transition text-lg shadow-lg"
-            >
-              Work With Us
-            </a>
-            <p className="text-blue-200/60 text-sm mt-6">
-              Powered by <a href="https://clankermarketing.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-white transition">Clanker Marketing</a> — Search Intelligence Consulting
-            </p>
-          </div>
-        </div>
-
-        {/* Email Report Modal */}
-        {showEmailModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { if (!emailSending) { setShowEmailModal(false); setEmailResult(null); } }}>
-            <div className="bg-slate-800 border border-slate-700/50 rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 bg-blue-600/20 rounded-lg flex items-center justify-center">
-                    <Mail className="w-5 h-5 text-blue-400" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-white">Email Report</h3>
-                    <p className="text-sm text-slate-400">Send a PDF copy via email</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => { if (!emailSending) { setShowEmailModal(false); setEmailResult(null); } }}
-                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700/50 transition"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {emailResult ? (
-                <div className={`flex items-center space-x-3 p-4 rounded-lg ${emailResult.success ? 'bg-emerald-900/30 border border-emerald-700/50' : 'bg-red-900/30 border border-red-700/50'}`}>
-                  {emailResult.success ? (
-                    <Check className="w-5 h-5 text-emerald-400 flex-shrink-0" />
-                  ) : (
-                    <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0" />
-                  )}
-                  <p className={`text-sm ${emailResult.success ? 'text-emerald-300' : 'text-red-300'}`}>
-                    {emailResult.message}
-                  </p>
-                </div>
-              ) : (
-                <>
+            {/* Executive summary */}
+            {executiveSummary && (
+              <div className="bg-gradient-to-br from-blue-900/20 to-cyan-900/20 backdrop-blur-sm rounded-xl border border-blue-500/30 p-6 mb-6">
+                <h2 className="text-xl font-semibold text-slate-200 mb-4 flex items-center">
+                  <Target className="w-5 h-5 mr-2 text-blue-400" />
+                  Executive Summary
+                </h2>
+                
+                {executiveSummary.overall_health && (
                   <div className="mb-4">
-                    <label htmlFor="email-input" className="block text-sm font-medium text-slate-300 mb-2">
-                      Recipient email address
-                    </label>
-                    <input
-                      id="email-input"
-                      type="email"
-                      value={emailAddress}
-                      onChange={(e) => setEmailAddress(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && emailAddress) sendReportEmail(); }}
-                      placeholder="name@company.com"
-                      disabled={emailSending}
-                      className="w-full px-4 py-2.5 bg-slate-700/60 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50 text-sm"
-                      autoFocus
-                    />
+                    <span className="text-sm text-slate-400">Overall Health: </span>
+                    <span className="text-slate-200 font-medium">{executiveSummary.overall_health}</span>
                   </div>
-                  <div className="flex items-center justify-end space-x-3">
+                )}
+                
+                {executiveSummary.key_findings && executiveSummary.key_findings.length > 0 && (
+                  <div className="mb-4">
+                    <h3 className="text-sm font-medium text-slate-300 mb-2">Key Findings</h3>
+                    <ul className="space-y-1.5">
+                      {executiveSummary.key_findings.map((finding, idx) => (
+                        <li key={idx} className="flex items-start text-sm text-slate-300">
+                          <CheckCircle className="w-4 h-4 mr-2 text-green-400 flex-shrink-0 mt-0.5" />
+                          {finding}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                
+                {executiveSummary.top_recommendations && executiveSummary.top_recommendations.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-medium text-slate-300 mb-2">Top Recommendations</h3>
+                    <ul className="space-y-1.5">
+                      {executiveSummary.top_recommendations.map((rec, idx) => (
+                        <li key={idx} className="flex items-start text-sm text-slate-300">
+                          <Zap className="w-4 h-4 mr-2 text-yellow-400 flex-shrink-0 mt-0.5" />
+                          {rec}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Module sections */}
+          <div className="space-y-6">
+            {Object.entries(modules).map(([moduleKey, moduleData]) => {
+              const meta = MODULE_META[moduleKey];
+              const isExpanded = expandedSections.has(moduleKey);
+              
+              if (!meta) return null;
+
+              return (
+                <ErrorBoundary key={moduleKey}>
+                  <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 overflow-hidden">
+                    {/* Module header */}
                     <button
-                      onClick={() => { setShowEmailModal(false); setEmailResult(null); }}
-                      disabled={emailSending}
-                      className="px-4 py-2 text-sm text-slate-300 hover:text-white transition disabled:opacity-50"
+                      onClick={() => toggleSection(moduleKey)}
+                      className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-700/30 transition-colors"
                     >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={sendReportEmail}
-                      disabled={emailSending || !emailAddress}
-                      className="flex items-center space-x-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white text-sm font-medium rounded-lg transition disabled:cursor-not-allowed"
-                    >
-                      {emailSending ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>Sending...</span>
-                        </>
+                      <div className="flex items-center space-x-3">
+                        <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center text-blue-400 font-semibold text-sm">
+                          {meta.number}
+                        </div>
+                        <h2 className="text-xl font-semibold text-slate-200">
+                          {meta.title}
+                        </h2>
+                      </div>
+                      {isExpanded ? (
+                        <ChevronUp className="w-5 h-5 text-slate-400" />
                       ) : (
-                        <>
-                          <Mail className="w-4 h-4" />
-                          <span>Send Report</span>
-                        </>
+                        <ChevronDown className="w-5 h-5 text-slate-400" />
                       )}
                     </button>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        )}
 
-      </main>
+                    {/* Module content */}
+                    {isExpanded && (
+                      <div className="px-6 py-6 border-t border-slate-700/50">
+                        {moduleKey === 'health_trajectory' ? (
+                          <ErrorBoundary>
+                            <Module1TrafficOverview data={moduleData} />
+                          </ErrorBoundary>
+                        ) : (
+                          <div className="prose prose-invert max-w-none">
+                            <pre className="bg-slate-900/50 p-4 rounded-lg overflow-x-auto text-xs text-slate-300">
+                              {JSON.stringify(moduleData, null, 2)}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </ErrorBoundary>
+              );
+            })}
+          </div>
+
+          {/* Empty state if no modules */}
+          {Object.keys(modules).length === 0 && (
+            <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-12 text-center">
+              <FileText className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-slate-400 mb-2">No Analysis Data</h3>
+              <p className="text-slate-500">
+                This report completed but contains no module data.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
     </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Component: Summary Card
-// ---------------------------------------------------------------------------
-interface SummaryCardProps {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  trend?: string;
-  className?: string;
-}
-
-function SummaryCard({ icon, label, value, trend, className = '' }: SummaryCardProps) {
-  return (
-    <div className="bg-white/10 backdrop-blur-sm rounded-lg p-4 border border-white/20">
-      <div className="flex items-center space-x-3 mb-2">
-        <div className="text-blue-100">{icon}</div>
-        <span className="text-sm text-blue-100 font-medium">{label}</span>
-      </div>
-      <div className={`text-2xl font-bold ${className}`}>{value}</div>
-      {trend && (
-        <div className="flex items-center space-x-1 mt-1">
-          {trend === 'growing' || trend === 'growth' ? (
-            <TrendingUp className="w-3 h-3 text-green-300" />
-          ) : trend === 'declining' || trend === 'decline' ? (
-            <TrendingDown className="w-3 h-3 text-red-300" />
-          ) : (
-            <Minus className="w-3 h-3 text-blue-300" />
-          )}
-          <span className="text-xs text-blue-100 capitalize">{trend}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Component: Module Section Wrapper
-// ---------------------------------------------------------------------------
-interface ModuleSectionProps {
-  moduleKey: string;
-  expanded: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-}
-
-function ModuleSection({ moduleKey, expanded, onToggle, children }: ModuleSectionProps) {
-  const meta = MODULE_META[moduleKey];
-  if (!meta) return null;
-
-  const IconComponent = getIconComponent(meta.icon);
-
-  return (
-    <div className="bg-slate-800/60 rounded-lg shadow-sm border border-slate-700/50 overflow-hidden">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center justify-between p-6 hover:bg-slate-800/30 transition text-left"
-      >
-        <div className="flex items-center space-x-4">
-          <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center text-blue-400 flex-shrink-0">
-            <IconComponent className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <span className="text-xs font-semibold text-blue-400 uppercase tracking-wide">
-                Module {meta.number}
-              </span>
-            </div>
-            <h2 className="text-xl font-bold text-white mt-1">{meta.title}</h2>
-          </div>
-        </div>
-        <div className="text-slate-500">
-          {expanded ? (
-            <ChevronUp className="w-6 h-6" />
-          ) : (
-            <ChevronDown className="w-6 h-6" />
-          )}
-        </div>
-      </button>
-
-      {expanded && (
-        <div className="border-t border-slate-700/50 p-6 bg-slate-800/30">
-          <ErrorBoundary label={`Module ${meta.number}: ${meta.title}`}>
-            {children}
-          </ErrorBoundary>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Helper: Get Icon Component by Name
-// ---------------------------------------------------------------------------
-function getIconComponent(iconName: string) {
-  const icons: Record<string, any> = {
-    activity: Activity,
-    target: Target,
-    search: Search,
-    'file-text': FileText,
-    layers: Layers,
-    zap: Zap,
-    shield: Shield,
-    'bar-chart': BarChart2,
-    globe: Globe,
-    users: Users,
-    dollar: DollarSign,
-  };
-  return icons[iconName] || Activity;
-}
-
-// ---------------------------------------------------------------------------
-// Module Content Components
-// ---------------------------------------------------------------------------
-
-// Module 1: Health & Trajectory
-function HealthTrajectoryContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  const forecastData = data.forecast_chart_data || [];
-  const trendDirection = data.overall_direction || 'unknown';
-  const trendSlope = data.trend_slope_pct_per_month || 0;
-
-  return (
-    <div className="space-y-6">
-      {/* Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <MetricCard
-          label="Trend Direction"
-          value={trendDirection}
-          className="capitalize"
-          icon={
-            trendDirection === 'growing' || trendDirection === 'growth' ? (
-              <TrendingUp className="w-5 h-5 text-emerald-400" />
-            ) : trendDirection === 'declining' || trendDirection === 'decline' ? (
-              <TrendingDown className="w-5 h-5 text-red-400" />
-            ) : (
-              <Minus className="w-5 h-5 text-slate-400" />
-            )
-          }
-        />
-        <MetricCard
-          label="Monthly Change"
-          value={`${trendSlope >= 0 ? '+' : ''}${trendSlope.toFixed(1)}%`}
-          className={trendSlope >= 0 ? 'text-emerald-400' : 'text-red-400'}
-        />
-        <MetricCard
-          label="90-Day Forecast"
-          value={
-            data.forecast?.['90d']?.clicks
-              ? data.forecast['90d'].clicks.toLocaleString()
-              : 'N/A'
-          }
-        />
-      </div>
-
-      {/* Forecast Chart */}
-      {forecastData.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Traffic Forecast (90 Days)
-          </h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={forecastData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip />
-              <Legend />
-              <Line
-                type="monotone"
-                dataKey="actual"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                dot={false}
-                name="Actual"
-              />
-              <Line
-                type="monotone"
-                dataKey="forecast"
-                stroke="#10b981"
-                strokeWidth={2}
-                strokeDasharray="5 5"
-                dot={false}
-                name="Forecast"
-              />
-              <Line
-                type="monotone"
-                dataKey="ci_low"
-                stroke="#e5e7eb"
-                strokeWidth={1}
-                dot={false}
-                name="Lower Bound"
-              />
-              <Line
-                type="monotone"
-                dataKey="ci_high"
-                stroke="#e5e7eb"
-                strokeWidth={1}
-                dot={false}
-                name="Upper Bound"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Change Points */}
-      {data.change_points && data.change_points.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Detected Change Points
-          </h3>
-          <div className="space-y-2">
-            {data.change_points.map((cp: any, idx: number) => (
-              <div
-                key={idx}
-                className="flex items-center justify-between p-3 bg-slate-800/30 rounded"
-              >
-                <div>
-                  <div className="font-medium text-white">{cp.date}</div>
-                  <div className="text-sm text-slate-400 capitalize">
-                    {cp.direction} — {Math.abs(cp.magnitude * 100).toFixed(1)}% change
-                  </div>
-                </div>
-                {cp.direction === 'drop' ? (
-                  <TrendingDown className="w-5 h-5 text-red-500" />
-                ) : (
-                  <TrendingUp className="w-5 h-5 text-green-500" />
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Seasonality */}
-      {data.seasonality && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Seasonality Patterns
-          </h3>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-sm text-slate-400">Best Day</div>
-              <div className="text-lg font-semibold text-white">
-                {data.seasonality.best_day || 'N/A'}
-              </div>
-            </div>
-            <div>
-              <div className="text-sm text-slate-400">Worst Day</div>
-              <div className="text-lg font-semibold text-white">
-                {data.seasonality.worst_day || 'N/A'}
-              </div>
-            </div>
-          </div>
-          {data.seasonality.cycle_description && (
-            <p className="text-sm text-slate-400 mt-3">
-              {data.seasonality.cycle_description}
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Module 2: Page-Level Triage
-// Module 2: Page-Level Triage
-function PageTriageContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  const pages = data.pages || [];
-  const totalAnalyzed = data.total_pages_analyzed || pages.length;
-  const categoryCounts = data.category_counts || {};
-  const trendSummary = data.trend_summary || {};
-  const ctrSummary = data.ctr_anomaly_summary || {};
-  const priorityActions = data.priority_actions || [];
-
-  // --- Scatter plot data: clicks vs trend slope, colored by category ---
-  const CATEGORY_COLORS: Record<string, string> = {
-    critical: '#ef4444',
-    high: '#f59e0b',
-    medium: '#a3a3a3',
-    low: '#34d399',
-  };
-
-  const scatterData = pages
-    .filter((p: any) => p.total_clicks > 0 && p.trend)
-    .slice(0, 80)
-    .map((p: any) => ({
-      x: p.total_clicks || 0,
-      y: p.trend?.pct_change_30d ?? p.trend?.slope ?? 0,
-      name: (p.page || '').replace(/^https?:\/\/[^/]+/, ''),
-      category: p.category || 'medium',
-      fill: CATEGORY_COLORS[p.category] || '#a3a3a3',
-      clicks: p.total_clicks,
-      position: p.avg_position,
-      ctr: p.avg_ctr,
-      priority: p.priority_score,
-    }));
-
-  const hasScatter = scatterData.length >= 3;
-
-  // --- Category distribution bar chart data ---
-  const categoryOrder = ['critical', 'high', 'medium', 'low'];
-  const categoryChartData = categoryOrder
-    .filter((cat) => (categoryCounts[cat] || 0) > 0)
-    .map((cat) => ({
-      name: cat.charAt(0).toUpperCase() + cat.slice(1),
-      count: categoryCounts[cat] || 0,
-      fill: CATEGORY_COLORS[cat],
-    }));
-  const hasCategoryChart = categoryChartData.length > 0;
-
-  // --- Trend distribution for summary ---
-  const rising = trendSummary.rising || 0;
-  const declining = trendSummary.declining || 0;
-  const flat = trendSummary.flat || 0;
-  const ctrUnder = ctrSummary.underperforming || 0;
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50 text-center">
-          <div className="text-2xl font-bold text-white">{totalAnalyzed}</div>
-          <div className="text-xs text-slate-400 mt-1">Pages Analyzed</div>
-        </div>
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50 text-center">
-          <div className="text-2xl font-bold text-emerald-400">{rising}</div>
-          <div className="text-xs text-slate-400 mt-1">Rising</div>
-        </div>
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50 text-center">
-          <div className="text-2xl font-bold text-red-400">{declining}</div>
-          <div className="text-xs text-slate-400 mt-1">Declining</div>
-        </div>
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50 text-center">
-          <div className="text-2xl font-bold text-amber-400">{ctrUnder}</div>
-          <div className="text-xs text-slate-400 mt-1">CTR Below Expected</div>
-        </div>
-      </div>
-
-      {/* Scatter Plot: Clicks vs Trend (spec: "Scatter plot (current clicks vs decay rate), color-coded by bucket") */}
-      {hasScatter && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Page Performance Scatter
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Each dot is a page — X = total clicks, Y = 30-day trend (%), color = priority category
-          </p>
-          <ResponsiveContainer width="100%" height={360}>
-            <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis
-                dataKey="x"
-                type="number"
-                name="Total Clicks"
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                label={{ value: 'Total Clicks', position: 'bottom', fill: '#94a3b8', fontSize: 11, offset: 15 }}
-                scale="log"
-                domain={['auto', 'auto']}
-                allowDataOverflow
-              />
-              <YAxis
-                dataKey="y"
-                type="number"
-                name="30d Trend %"
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                label={{ value: '30-Day Trend %', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }}
-              />
-              <ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 4" />
-              <Tooltip
-                cursor={{ strokeDasharray: '3 3' }}
-                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: 8 }}
-                labelStyle={{ color: '#e2e8f0' }}
-                formatter={(_: any, name: string, props: any) => {
-                  const d = props.payload;
-                  return [
-                    null,
-                    <div key="tip" style={{ fontSize: 12 }}>
-                      <div style={{ fontWeight: 600, marginBottom: 4, color: '#f8fafc' }}>{d.name}</div>
-                      <div>Clicks: {d.clicks?.toLocaleString()}</div>
-                      <div>Trend: {d.y >= 0 ? '+' : ''}{d.y?.toFixed(1)}%</div>
-                      <div>Avg Position: {d.position?.toFixed(1)}</div>
-                      <div>CTR: {(d.ctr * 100)?.toFixed(2)}%</div>
-                      <div>Priority: {d.priority?.toFixed(0)}</div>
-                      <div style={{ color: d.fill, fontWeight: 600, marginTop: 2 }}>
-                        {d.category?.toUpperCase()}
-                      </div>
-                    </div>,
-                  ];
-                }}
-              />
-              <Scatter data={scatterData} isAnimationActive={false}>
-                {scatterData.map((entry: any, idx: number) => (
-                  <Cell key={idx} fill={entry.fill} fillOpacity={0.75} r={5} />
-                ))}
-              </Scatter>
-            </ScatterChart>
-          </ResponsiveContainer>
-          {/* Legend */}
-          <div className="flex items-center justify-center gap-6 mt-2">
-            {categoryOrder.map((cat) => (
-              <div key={cat} className="flex items-center gap-1.5 text-xs text-slate-400">
-                <span
-                  className="inline-block w-3 h-3 rounded-full"
-                  style={{ backgroundColor: CATEGORY_COLORS[cat] }}
-                />
-                {cat.charAt(0).toUpperCase() + cat.slice(1)}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Two-column: Category Distribution + CTR Anomalies */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Category Distribution Bar Chart */}
-        {hasCategoryChart && (
-          <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-            <h3 className="text-sm font-semibold text-slate-300 mb-3">
-              Priority Distribution
-            </h3>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={categoryChartData} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} />
-                <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} allowDecimals={false} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: 8 }}
-                  labelStyle={{ color: '#e2e8f0' }}
-                />
-                <Bar dataKey="count" name="Pages" radius={[4, 4, 0, 0]}>
-                  {categoryChartData.map((entry: any, idx: number) => (
-                    <Cell key={idx} fill={entry.fill} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-
-        {/* CTR Anomaly Summary */}
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-3">
-            CTR Performance vs Expected
-          </h3>
-          <div className="space-y-3">
-            {[
-              { label: 'Underperforming', count: ctrSummary.underperforming || 0, color: 'text-red-400', bg: 'bg-red-900/30' },
-              { label: 'Normal', count: ctrSummary.normal || 0, color: 'text-slate-300', bg: 'bg-slate-700/30' },
-              { label: 'Overperforming', count: ctrSummary.overperforming || 0, color: 'text-emerald-400', bg: 'bg-emerald-900/30' },
-            ].map((item) => {
-              const total = (ctrSummary.underperforming || 0) + (ctrSummary.normal || 0) + (ctrSummary.overperforming || 0);
-              const pct = total > 0 ? (item.count / total) * 100 : 0;
-              return (
-                <div key={item.label}>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className={item.color}>{item.label}</span>
-                    <span className="text-slate-400">{item.count} ({pct.toFixed(0)}%)</span>
-                  </div>
-                  <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${item.bg}`}
-                      style={{ width: `${pct}%`, backgroundColor: item.label === 'Underperforming' ? '#ef4444' : item.label === 'Overperforming' ? '#34d399' : '#64748b' }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* Priority Actions */}
-      {priorityActions.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-red-900/30">
-          <h3 className="text-sm font-semibold text-red-400 mb-3">
-            Priority Actions ({priorityActions.length})
-          </h3>
-          <div className="space-y-2">
-            {priorityActions.map((action: any, idx: number) => (
-              <div key={idx} className="flex items-start gap-3 p-3 bg-slate-800/80 rounded border border-slate-700/50">
-                <span className="flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
-                  style={{ backgroundColor: action.category === 'critical' ? '#991b1b' : '#92400e', color: '#fff' }}>
-                  {idx + 1}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-blue-400 truncate" title={action.page}>{action.page?.replace(/^https?:\/\/[^/]+/, '') || 'Unknown'}</div>
-                  <div className="text-xs text-slate-300 mt-1">{action.action}</div>
-                </div>
-                <div className="flex-shrink-0 text-right">
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded ${action.category === 'critical' ? 'bg-red-900/50 text-red-300' : 'bg-amber-900/50 text-amber-300'}`}>
-                    {action.category}
-                  </span>
-                  <div className="text-xs text-slate-500 mt-1">Score: {action.score?.toFixed(0)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Pages Table — updated field names to match backend */}
-      <div className="bg-slate-800/60 rounded-lg border border-slate-700/50 overflow-hidden">
-        <h3 className="text-sm font-semibold text-slate-300 px-4 py-3 border-b border-slate-700/50">
-          All Pages ({pages.length})
-        </h3>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-slate-800/30 border-b border-slate-700/50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
-                  Page
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
-                  Category
-                </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
-                  Clicks
-                </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
-                  Avg Position
-                </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
-                  Trend
-                </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
-                  Priority
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
-                  Action
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-700/50">
-              {pages.slice(0, 25).map((page: any, idx: number) => {
-                const trendDir = page.trend?.direction || 'flat';
-                const trendPct = page.trend?.pct_change_30d ?? 0;
-                const catColor = CATEGORY_COLORS[page.category] || '#a3a3a3';
-                return (
-                  <tr key={idx} className="hover:bg-slate-800/80">
-                    <td className="px-4 py-3">
-                      <a
-                        href={page.page}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-blue-400 hover:underline flex items-center"
-                      >
-                        <span className="truncate max-w-xs">{(page.page || '').replace(/^https?:\/\/[^/]+/, '')}</span>
-                        <ExternalLink className="w-3 h-3 ml-1 flex-shrink-0" />
-                      </a>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-xs font-semibold px-2 py-0.5 rounded" style={{ backgroundColor: catColor + '22', color: catColor }}>
-                        {page.category || 'medium'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm text-white">
-                      {page.total_clicks?.toLocaleString() || 0}
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm text-white">
-                      {page.avg_position?.toFixed(1) || '-'}
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm">
-                      <span className={trendDir === 'rising' ? 'text-emerald-400' : trendDir === 'declining' ? 'text-red-400' : 'text-slate-400'}>
-                        {trendPct >= 0 ? '+' : ''}{trendPct?.toFixed(1)}%
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <PriorityBadge score={page.priority_score} />
-                    </td>
-                    <td className="px-4 py-3 text-sm text-slate-300">
-                      {page.recommended_action || 'Monitor'}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-// Module 3: SERP Landscape
-function SerpLandscapeContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  const competitors = data.competitors || [];
-  const displacements = data.serp_feature_displacement || [];
-  const featurePrevalence = data.serp_feature_summary?.feature_prevalence || {};
-  const intentDist = data.intent_analysis?.intent_distribution || {};
-  const intentMismatches = data.intent_analysis?.intent_mismatches || [];
-  const clickBreakdown = data.click_share?.keyword_breakdown || [];
-
-  // --- SERP Feature Prevalence chart data ---
-  const FEATURE_COLORS: Record<string, string> = {
-    featured_snippet: '#f59e0b',
-    people_also_ask: '#8b5cf6',
-    ai_overview: '#ec4899',
-    video_carousel: '#ef4444',
-    local_pack: '#10b981',
-    knowledge_panel: '#06b6d4',
-    image_pack: '#f97316',
-    shopping_results: '#84cc16',
-    top_stories: '#6366f1',
-    reddit_threads: '#fb923c',
-    site_links: '#14b8a6',
-  };
-
-  const featureChartData = Object.entries(featurePrevalence)
-    .map(([feature, val]: [string, any]) => ({
-      feature: feature.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
-      featureKey: feature,
-      pct: val?.pct || 0,
-      count: val?.count || 0,
-    }))
-    .sort((a, b) => b.pct - a.pct)
-    .slice(0, 12);
-
-  const hasFeatureChart = featureChartData.length >= 2;
-
-  // --- Intent distribution chart data ---
-  const INTENT_COLORS: Record<string, string> = {
-    informational: '#60a5fa',
-    commercial: '#f59e0b',
-    transactional: '#34d399',
-    navigational: '#a78bfa',
-  };
-
-  const intentChartData = Object.entries(intentDist)
-    .filter(([_, v]) => (v as number) > 0)
-    .map(([intent, val]) => ({
-      intent: intent.charAt(0).toUpperCase() + intent.slice(1),
-      intentKey: intent,
-      share: Math.round((val as number) * 100),
-    }))
-    .sort((a, b) => b.share - a.share);
-
-  const hasIntentChart = intentChartData.length >= 2;
-
-  // --- Click share top keywords chart data ---
-  const clickChartData = clickBreakdown.slice(0, 15).map((kw: any) => ({
-    keyword: kw.keyword?.length > 25 ? kw.keyword.slice(0, 22) + '...' : kw.keyword,
-    fullKeyword: kw.keyword,
-    clicks: kw.clicks || 0,
-    potential: kw.potential_clicks || 0,
-    share: Math.round((kw.click_share || 0) * 100),
-  }));
-
-  const hasClickChart = clickChartData.length >= 3;
-
-  return (
-    <div className="space-y-6">
-      {/* Summary metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <MetricCard
-          label="Keywords Analyzed"
-          value={data.keywords_analyzed || 0}
-        />
-        <MetricCard
-          label="Click Share"
-          value={`${((data.click_share?.total_click_share || 0) * 100).toFixed(1)}%`}
-        />
-        <MetricCard
-          label="Monthly Clicks"
-          value={(data.click_share?.current_monthly_clicks || 0).toLocaleString()}
-        />
-        <MetricCard
-          label="Click Opportunity"
-          value={`+${(data.click_share?.click_opportunity || 0).toLocaleString()}`}
-        />
-      </div>
-
-      {/* SERP Feature Prevalence Bar Chart */}
-      {hasFeatureChart && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            SERP Feature Prevalence
-          </h3>
-          <p className="text-xs text-slate-400 mb-4">
-            Percentage of your keywords where each SERP feature appears — features that push your organic listing further down the page.
-          </p>
-          <div style={{ width: '100%', height: Math.max(280, featureChartData.length * 36) }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={featureChartData} layout="vertical" margin={{ left: 20, right: 30, top: 5, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" horizontal={false} />
-                <XAxis type="number" domain={[0, 100]} tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(v: number) => `${v}%`} />
-                <YAxis type="category" dataKey="feature" tick={{ fill: '#cbd5e1', fontSize: 11 }} width={140} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
-                  labelStyle={{ color: '#f1f5f9' }}
-                  formatter={(value: number, _name: string, props: any) => [`${value}% (${props.payload.count} keywords)`, 'Prevalence']}
-                />
-                <Bar dataKey="pct" radius={[0, 4, 4, 0]} maxBarSize={24}>
-                  {featureChartData.map((entry, index) => (
-                    <Cell key={index} fill={FEATURE_COLORS[entry.featureKey] || '#64748b'} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-
-      {/* Intent Distribution + Click Share side by side */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Intent Distribution */}
-        {hasIntentChart && (
-          <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-            <h3 className="text-sm font-semibold text-slate-300 mb-4">
-              Keyword Intent Distribution
-            </h3>
-            <div style={{ width: '100%', height: 220 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={intentChartData} margin={{ left: 10, right: 10, top: 5, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis dataKey="intent" tick={{ fill: '#cbd5e1', fontSize: 12 }} />
-                  <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(v: number) => `${v}%`} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
-                    labelStyle={{ color: '#f1f5f9' }}
-                    formatter={(value: number) => [`${value}%`, 'Share']}
-                  />
-                  <Bar dataKey="share" radius={[4, 4, 0, 0]} maxBarSize={60}>
-                    {intentChartData.map((entry, index) => (
-                      <Cell key={index} fill={INTENT_COLORS[entry.intentKey] || '#64748b'} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        )}
-
-        {/* Click Share - Current vs Potential */}
-        {hasClickChart && (
-          <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-            <h3 className="text-sm font-semibold text-slate-300 mb-4">
-              Click Share by Keyword (Current vs Potential)
-            </h3>
-            <div style={{ width: '100%', height: 220 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={clickChartData.slice(0, 8)} margin={{ left: 10, right: 10, top: 5, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis dataKey="keyword" tick={{ fill: '#94a3b8', fontSize: 10 }} interval={0} angle={-25} textAnchor="end" height={60} />
-                  <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
-                    labelStyle={{ color: '#f1f5f9' }}
-                    formatter={(value: number, name: string) => [value.toLocaleString(), name === 'clicks' ? 'Current Clicks' : 'Potential Clicks']}
-                    labelFormatter={(label: string) => {
-                      const item = clickChartData.find((d: any) => d.keyword === label);
-                      return item?.fullKeyword || label;
-                    }}
-                  />
-                  <Legend formatter={(value: string) => value === 'clicks' ? 'Current' : 'Potential'} />
-                  <Bar dataKey="potential" fill="#334155" radius={[4, 4, 0, 0]} maxBarSize={30} />
-                  <Bar dataKey="clicks" fill="#60a5fa" radius={[4, 4, 0, 0]} maxBarSize={30} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* SERP Feature Displacement */}
-      {displacements.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            SERP Feature Displacement
-          </h3>
-          <p className="text-xs text-slate-400 mb-3">
-            Keywords where SERP features push your organic listing below its true ranking position.
-          </p>
-          <div className="space-y-3">
-            {displacements.slice(0, 10).map((disp: any, idx: number) => (
-              <div
-                key={idx}
-                className="flex items-start justify-between p-3 bg-slate-800/30 rounded"
-              >
-                <div className="flex-1">
-                  <div className="font-medium text-white">{disp.keyword}</div>
-                  <div className="text-sm text-slate-400 mt-1">
-                    Organic #{disp.organic_position} → Visual #{disp.visual_position}
-                  </div>
-                  <div className="text-xs text-slate-400 mt-1">
-                    {disp.features_above?.join(', ')}
-                  </div>
-                </div>
-                <div className="text-right ml-4">
-                  <div className="text-sm font-medium text-red-400">
-                    {((disp.estimated_ctr_impact || 0) * 100).toFixed(1)}%
-                  </div>
-                  <div className="text-xs text-slate-400">CTR impact</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Intent Mismatches */}
-      {intentMismatches.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Intent Mismatches
-          </h3>
-          <p className="text-xs text-slate-400 mb-3">
-            Keywords where your page type doesn\u2019t match the dominant SERP intent — potential content strategy misalignment.
-          </p>
-          <div className="space-y-2">
-            {intentMismatches.slice(0, 10).map((mm: any, idx: number) => (
-              <div
-                key={idx}
-                className="flex items-start justify-between p-3 bg-slate-800/30 rounded"
-              >
-                <div className="flex-1">
-                  <div className="font-medium text-white">{mm.keyword}</div>
-                  <div className="text-xs text-slate-400 mt-1">
-                    Page: <span className="text-slate-300">{mm.page_url || mm.page_type || 'unknown'}</span>
-                  </div>
-                </div>
-                <div className="text-right ml-4">
-                  <div className="text-xs">
-                    <span className="text-amber-400">{mm.serp_intent}</span>
-                    <span className="text-slate-500 mx-1">≠</span>
-                    <span className="text-blue-400">{mm.page_type}</span>
-                  </div>
-                  <div className="text-xs text-slate-500 mt-0.5">SERP vs Page</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Competitors */}
-      {competitors.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Top Competitors
-          </h3>
-          <div className="space-y-2">
-            {competitors.slice(0, 10).map((comp: any, idx: number) => (
-              <div
-                key={idx}
-                className="flex items-center justify-between p-3 bg-slate-800/30 rounded"
-              >
-                <div>
-                  <div className="font-medium text-white">{comp.domain}</div>
-                  <div className="text-sm text-slate-400">
-                    {comp.keywords_shared} shared keywords
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-sm font-medium text-white">
-                    Avg pos: {comp.avg_position?.toFixed(1)}
-                  </div>
-                  <ThreatBadge level={comp.threat_level} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Module 4: Content Intelligence
-function ContentIntelligenceContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  const cannibalization = data.cannibalization_clusters || [];
-  const strikingDistance = data.striking_distance || [];
-  const thinContent = data.thin_content || [];
-  const updateMatrix = data.update_priority_matrix || {};
-  const summary = data.summary || {};
-
-  // Quadrant colors for the 2×2 matrix
-  const QUADRANT_COLORS: Record<string, string> = {
-    urgent_update: '#ef4444',      // red
-    leave_alone: '#6b7280',        // grey
-    structural_problem: '#f59e0b', // amber
-    double_down: '#10b981',        // emerald
-  };
-
-  const QUADRANT_LABELS: Record<string, string> = {
-    urgent_update: 'Urgent Update',
-    leave_alone: 'Leave Alone',
-    structural_problem: 'Structural Problem',
-    double_down: 'Double Down',
-  };
-
-  // Build scatter data from all 4 quadrants
-  const scatterDataByQuadrant: Record<string, any[]> = {};
-  ['urgent_update', 'leave_alone', 'structural_problem', 'double_down'].forEach(q => {
-    const pages = updateMatrix[q] || [];
-    scatterDataByQuadrant[q] = pages.slice(0, 30).map((p: any) => ({
-      x: p.age_days ?? 0,
-      y: typeof p.trend === 'number' ? p.trend : 0,
-      url: p.url || '',
-      impressions: p.impressions || 0,
-      clicks: p.clicks || 0,
-      position: p.position || 0,
-      quadrant: q,
-    }));
-  });
-
-  const allScatterPoints = Object.values(scatterDataByQuadrant).flat();
-  const hasMatrixChart = allScatterPoints.length > 2;
-
-  // Quadrant counts for the distribution bar chart
-  const quadrantCounts = ['urgent_update', 'structural_problem', 'leave_alone', 'double_down'].map(q => ({
-    name: QUADRANT_LABELS[q] || q,
-    count: (updateMatrix[q] || []).length,
-    fill: QUADRANT_COLORS[q] || '#6b7280',
-  }));
-  const hasQuadrantChart = quadrantCounts.some(q => q.count > 0);
-
-  // Thin content severity distribution
-  const severityDist = { high: 0, medium: 0, low: 0 };
-  thinContent.forEach((p: any) => {
-    if (p.severity >= 3) severityDist.high++;
-    else if (p.severity >= 2) severityDist.medium++;
-    else severityDist.low++;
-  });
-
-  // Flag label mapping
-  const FLAG_LABELS: Record<string, string> = {
-    low_word_count: 'Thin Content',
-    high_bounce_rate: 'High Bounce',
-    low_engagement_time: 'Low Engagement',
-    low_ctr: 'Low CTR',
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <div className="text-xs text-slate-400 uppercase mb-1">Cannibalization Issues</div>
-          <div className={`text-2xl font-bold ${(summary.cannibalization_clusters_found || 0) > 0 ? 'text-amber-400' : 'text-white'}`}>
-            {summary.cannibalization_clusters_found || cannibalization.length}
-          </div>
-          {summary.total_impressions_cannibalized > 0 && (
-            <div className="text-xs text-slate-400 mt-1">
-              {summary.total_impressions_cannibalized?.toLocaleString()} impressions affected
-            </div>
-          )}
-        </div>
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <div className="text-xs text-slate-400 uppercase mb-1">Striking Distance</div>
-          <div className="text-2xl font-bold text-emerald-400">
-            {summary.striking_distance_keywords || strikingDistance.length}
-          </div>
-          {summary.estimated_strike_distance_clicks > 0 && (
-            <div className="text-xs text-slate-400 mt-1">
-              +{summary.estimated_strike_distance_clicks?.toLocaleString()} potential clicks
-            </div>
-          )}
-        </div>
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <div className="text-xs text-slate-400 uppercase mb-1">Thin Content Pages</div>
-          <div className={`text-2xl font-bold ${(summary.thin_content_pages || thinContent.length) > 5 ? 'text-red-400' : 'text-white'}`}>
-            {summary.thin_content_pages || thinContent.length}
-          </div>
-          {thinContent.length > 0 && (
-            <div className="text-xs text-slate-400 mt-1">
-              {severityDist.high} critical, {severityDist.medium} moderate
-            </div>
-          )}
-        </div>
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <div className="text-xs text-slate-400 uppercase mb-1">Urgent Updates</div>
-          <div className={`text-2xl font-bold ${(summary.urgent_update_pages || 0) > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
-            {summary.urgent_update_pages || (updateMatrix.urgent_update || []).length}
-          </div>
-          <div className="text-xs text-slate-400 mt-1">
-            old content losing traffic
-          </div>
-        </div>
-      </div>
-
-      {/* 2×2 Content Age vs Performance Matrix (Scatter Chart) */}
-      {hasMatrixChart && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Content Age vs Performance Matrix
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Each dot is a page. X = content age (days), Y = trend score. Quadrants show priority actions.
-          </p>
-          <ResponsiveContainer width="100%" height={380}>
-            <ScatterChart margin={{ top: 20, right: 30, bottom: 20, left: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis
-                type="number"
-                dataKey="x"
-                name="Age (days)"
-                stroke="#94a3b8"
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                label={{ value: 'Content Age (days)', position: 'insideBottom', offset: -10, fill: '#94a3b8', fontSize: 11 }}
-              />
-              <YAxis
-                type="number"
-                dataKey="y"
-                name="Trend"
-                stroke="#94a3b8"
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                label={{ value: 'Trend Score', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }}
-              />
-              <ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 4" label={{ value: 'Stable', fill: '#64748b', fontSize: 10 }} />
-              <ReferenceLine x={180} stroke="#64748b" strokeDasharray="4 4" label={{ value: '6 months', fill: '#64748b', fontSize: 10, position: 'top' }} />
-              <Tooltip
-                cursor={{ strokeDasharray: '3 3' }}
-                contentStyle={{
-                  backgroundColor: '#1e293b',
-                  border: '1px solid #475569',
-                  borderRadius: '8px',
-                  color: '#e2e8f0',
-                  fontSize: '12px',
-                }}
-                formatter={(value: any, name: string) => {
-                  if (name === 'Age (days)') return [`${value} days`, 'Age'];
-                  if (name === 'Trend') return [typeof value === 'number' ? value.toFixed(3) : value, 'Trend'];
-                  return [value, name];
-                }}
-                labelFormatter={() => ''}
-                content={({ active, payload }: any) => {
-                  if (!active || !payload?.[0]) return null;
-                  const d = payload[0].payload;
-                  return (
-                    <div style={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px', padding: '8px 12px', fontSize: '12px', color: '#e2e8f0' }}>
-                      <div style={{ fontWeight: 600, marginBottom: '4px', maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.url}</div>
-                      <div>Age: {d.x} days</div>
-                      <div>Trend: {d.y?.toFixed(3)}</div>
-                      <div>Clicks: {d.clicks?.toLocaleString()}</div>
-                      <div>Impressions: {d.impressions?.toLocaleString()}</div>
-                      <div>Avg Position: {d.position?.toFixed(1)}</div>
-                      <div style={{ marginTop: '4px', color: QUADRANT_COLORS[d.quadrant] || '#fff', fontWeight: 600 }}>
-                        {QUADRANT_LABELS[d.quadrant] || d.quadrant}
-                      </div>
-                    </div>
-                  );
-                }}
-              />
-              {/* Render each quadrant as a separate Scatter for color coding */}
-              {['urgent_update', 'leave_alone', 'structural_problem', 'double_down'].map(q => (
-                scatterDataByQuadrant[q].length > 0 && (
-                  <Scatter
-                    key={q}
-                    name={QUADRANT_LABELS[q]}
-                    data={scatterDataByQuadrant[q]}
-                    fill={QUADRANT_COLORS[q]}
-                    opacity={0.8}
-                  />
-                )
-              ))}
-              <Legend
-                verticalAlign="top"
-                wrapperStyle={{ color: '#94a3b8', fontSize: '11px', paddingBottom: '8px' }}
-              />
-            </ScatterChart>
-          </ResponsiveContainer>
-          {/* Quadrant labels */}
-          <div className="grid grid-cols-2 gap-2 mt-2 text-xs text-center">
-            <div className="p-2 rounded" style={{ backgroundColor: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)' }}>
-              <span className="text-amber-400 font-semibold">↙ New + Declining</span>
-              <div className="text-slate-400">Structural Problem</div>
-            </div>
-            <div className="p-2 rounded" style={{ backgroundColor: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)' }}>
-              <span className="text-red-400 font-semibold">↘ Old + Declining</span>
-              <div className="text-slate-400">Urgent Update</div>
-            </div>
-            <div className="p-2 rounded" style={{ backgroundColor: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.3)' }}>
-              <span className="text-emerald-400 font-semibold">↗ New + Growing</span>
-              <div className="text-slate-400">Double Down</div>
-            </div>
-            <div className="p-2 rounded" style={{ backgroundColor: 'rgba(107,114,128,0.15)', border: '1px solid rgba(107,114,128,0.3)' }}>
-              <span className="text-slate-300 font-semibold">↘ Old + Stable</span>
-              <div className="text-slate-400">Leave Alone</div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Quadrant Distribution Bar Chart */}
-      {hasQuadrantChart && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-            <h3 className="text-sm font-semibold text-slate-300 mb-3">
-              Content Priority Distribution
-            </h3>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={quadrantCounts} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 10 }} angle={-15} textAnchor="end" height={50} />
-                <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} allowDecimals={false} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px', color: '#e2e8f0', fontSize: '12px' }}
-                />
-                <Bar dataKey="count" name="Pages" radius={[4, 4, 0, 0]}>
-                  {quadrantCounts.map((entry, idx) => (
-                    <Cell key={idx} fill={entry.fill} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-
-          {/* Thin Content Severity Breakdown */}
-          {thinContent.length > 0 && (
-            <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-              <h3 className="text-sm font-semibold text-slate-300 mb-3">
-                Thin Content Severity
-              </h3>
-              <div className="space-y-3 mt-4">
-                {[
-                  { label: 'Critical (3+ flags)', count: severityDist.high, color: '#ef4444', pct: thinContent.length > 0 ? Math.round(severityDist.high / thinContent.length * 100) : 0 },
-                  { label: 'Moderate (2 flags)', count: severityDist.medium, color: '#f59e0b', pct: thinContent.length > 0 ? Math.round(severityDist.medium / thinContent.length * 100) : 0 },
-                  { label: 'Low (1 flag)', count: severityDist.low, color: '#6b7280', pct: thinContent.length > 0 ? Math.round(severityDist.low / thinContent.length * 100) : 0 },
-                ].map((sev, idx) => (
-                  <div key={idx}>
-                    <div className="flex justify-between text-xs text-slate-300 mb-1">
-                      <span>{sev.label}</span>
-                      <span>{sev.count} pages ({sev.pct}%)</span>
-                    </div>
-                    <div className="w-full h-3 bg-slate-700 rounded-full overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all"
-                        style={{ width: `${sev.pct}%`, backgroundColor: sev.color, minWidth: sev.count > 0 ? '8px' : '0' }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-3 text-xs text-slate-500">
-                {thinContent.length} pages flagged with quality issues
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Thin Content Table */}
-      {thinContent.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Thin Content Pages
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Pages with search visibility that have quality issues — thin content, high bounce, or poor engagement.
-          </p>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-slate-800/30 border-b border-slate-700/50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">Page</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">Impressions</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">Position</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">Words</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">Issues</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-700/50">
-                {thinContent.slice(0, 20).map((page: any, idx: number) => (
-                  <tr key={idx} className="hover:bg-slate-800/80">
-                    <td className="px-4 py-3 text-sm text-white max-w-[200px] truncate" title={page.url}>
-                      {page.url}
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm text-white">
-                      {page.impressions?.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm text-white">
-                      {page.position?.toFixed(1)}
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm text-white">
-                      {page.word_count != null ? (
-                        <span className={page.word_count < 500 ? 'text-red-400 font-medium' : ''}>
-                          {page.word_count?.toLocaleString()}
-                        </span>
-                      ) : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      <div className="flex flex-wrap gap-1">
-                        {(page.flags || []).map((flag: string, fi: number) => (
-                          <span
-                            key={fi}
-                            className="px-1.5 py-0.5 text-xs rounded"
-                            style={{
-                              backgroundColor: flag === 'low_word_count' ? 'rgba(239,68,68,0.2)' :
-                                flag === 'high_bounce_rate' ? 'rgba(245,158,11,0.2)' :
-                                flag === 'low_engagement_time' ? 'rgba(168,85,247,0.2)' :
-                                'rgba(107,114,128,0.2)',
-                              color: flag === 'low_word_count' ? '#fca5a5' :
-                                flag === 'high_bounce_rate' ? '#fcd34d' :
-                                flag === 'low_engagement_time' ? '#c4b5fd' :
-                                '#d1d5db',
-                            }}
-                          >
-                            {FLAG_LABELS[flag] || flag}
-                          </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-sm text-slate-300 capitalize">
-                      {(page.recommended_action || '').replace(/_/g, ' ')}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Update Priority Matrix — Quadrant Detail Cards */}
-      {hasQuadrantChart && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Content Update Priority Matrix
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {['urgent_update', 'structural_problem', 'double_down', 'leave_alone'].map(q => {
-              const pages = updateMatrix[q] || [];
-              if (pages.length === 0) return null;
-              return (
-                <div
-                  key={q}
-                  className="p-3 rounded-lg border"
-                  style={{
-                    backgroundColor: `${QUADRANT_COLORS[q]}10`,
-                    borderColor: `${QUADRANT_COLORS[q]}40`,
-                  }}
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: QUADRANT_COLORS[q] }} />
-                    <span className="text-sm font-semibold" style={{ color: QUADRANT_COLORS[q] }}>
-                      {QUADRANT_LABELS[q]}
-                    </span>
-                    <span className="text-xs text-slate-400 ml-auto">{pages.length} pages</span>
-                  </div>
-                  <div className="space-y-1.5">
-                    {pages.slice(0, 5).map((p: any, idx: number) => (
-                      <div key={idx} className="flex items-center justify-between text-xs">
-                        <span className="text-slate-300 truncate max-w-[180px]" title={p.url}>
-                          {p.url}
-                        </span>
-                        <span className="text-slate-400 ml-2 flex-shrink-0">
-                          {p.impressions?.toLocaleString()} imp · {p.age_days}d old
-                        </span>
-                      </div>
-                    ))}
-                    {pages.length > 5 && (
-                      <div className="text-xs text-slate-500">
-                        +{pages.length - 5} more pages
-                      </div>
-                    )}
-                  </div>
-                  {pages.length > 0 && pages[0].action && (
-                    <div className="text-xs text-slate-400 mt-2 italic">
-                      → {pages[0].action}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Cannibalization */}
-      {cannibalization.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Keyword Cannibalization
-          </h3>
-          <div className="space-y-3">
-            {cannibalization.map((cluster: any, idx: number) => (
-              <div key={idx} className="p-3 rounded border" style={{ backgroundColor: 'rgba(245,158,11,0.1)', borderColor: 'rgba(245,158,11,0.3)' }}>
-                <div className="font-medium text-white mb-2">
-                  {cluster.query_group}
-                </div>
-                <div className="text-sm text-slate-300 space-y-1">
-                  <div>Pages: {cluster.pages?.join(' vs ')}</div>
-                  <div>Shared queries: {cluster.shared_queries}</div>
-                  <div>Impressions affected: {cluster.total_impressions_affected?.toLocaleString()}</div>
-                  <div className="mt-2">
-                    <span className="px-2 py-0.5 text-xs rounded font-medium" style={{
-                      backgroundColor: cluster.recommendation === 'consolidate' ? 'rgba(239,68,68,0.2)' : 'rgba(59,130,246,0.2)',
-                      color: cluster.recommendation === 'consolidate' ? '#fca5a5' : '#93c5fd',
-                    }}>
-                      {cluster.recommendation}
-                    </span>
-                    <span className="text-xs text-slate-400 ml-2">Keep: {cluster.keep_page}</span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Striking Distance */}
-      {strikingDistance.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Striking Distance Opportunities
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Keywords ranking 8-20 with high impression volume — small improvements can move these to page 1.
-          </p>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-slate-800/30 border-b border-slate-700/50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
-                    Query
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
-                    Position
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
-                    Impressions
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-300 uppercase">
-                    Click Gain
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
-                    Intent
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-300 uppercase">
-                    Landing Page
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-700/50">
-                {strikingDistance.slice(0, 20).map((opp: any, idx: number) => (
-                  <tr key={idx} className="hover:bg-slate-800/80">
-                    <td className="px-4 py-3 text-sm text-white">{opp.query}</td>
-                    <td className="px-4 py-3 text-right text-sm text-white">
-                      {opp.current_position?.toFixed(1)}
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm text-white">
-                      {opp.impressions?.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm text-emerald-400 font-medium">
-                      +{opp.estimated_click_gain_if_top5?.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      <span className="px-1.5 py-0.5 text-xs rounded capitalize" style={{
-                        backgroundColor: opp.intent === 'commercial' ? 'rgba(245,158,11,0.2)' :
-                          opp.intent === 'transactional' ? 'rgba(16,185,129,0.2)' :
-                          opp.intent === 'informational' ? 'rgba(59,130,246,0.2)' :
-                          'rgba(107,114,128,0.2)',
-                        color: opp.intent === 'commercial' ? '#fcd34d' :
-                          opp.intent === 'transactional' ? '#6ee7b7' :
-                          opp.intent === 'informational' ? '#93c5fd' :
-                          '#d1d5db',
-                      }}>
-                        {opp.intent}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-sm text-slate-400 max-w-[150px] truncate" title={opp.landing_page}>
-                      {opp.landing_page}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Module 6: The Gameplan
-function GameplanContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  // Collect all actions with their category for the Impact vs Effort chart
-  const CATEGORY_CONFIG: Record<string, { label: string; color: string; bgClass: string; borderClass: string; dotColor: string }> = {
-    critical:   { label: 'Critical Fixes',          color: '#ef4444', bgClass: 'bg-red-900/30',    borderClass: 'border-red-200',         dotColor: '#f87171' },
-    quick_wins: { label: 'Quick Wins',              color: '#f59e0b', bgClass: 'bg-amber-900/30',  borderClass: 'border-yellow-200',      dotColor: '#fbbf24' },
-    strategic:  { label: 'Strategic Plays',         color: '#3b82f6', bgClass: 'bg-blue-900/30',   borderClass: 'border-blue-200',        dotColor: '#60a5fa' },
-    structural: { label: 'Structural Improvements', color: '#6b7280', bgClass: 'bg-slate-800/30',  borderClass: 'border-slate-700/50',    dotColor: '#9ca3af' },
-  };
-
-  const EFFORT_MAP: Record<string, number> = { low: 1, medium: 2, high: 3 };
-  const EFFORT_LABELS: Record<number, string> = { 1: 'Low', 2: 'Medium', 3: 'High' };
-
-  // Build scatter data for Impact vs Effort chart
-  const allActions: Array<{ action: string; impact: number; effort: string; effortNum: number; category: string; page?: string; dependency?: string }> = [];
-  for (const cat of ['critical', 'quick_wins', 'strategic', 'structural']) {
-    const items = data[cat] || [];
-    for (const item of items) {
-      allActions.push({
-        action: item.action || '',
-        impact: item.impact || 0,
-        effort: item.effort || 'medium',
-        effortNum: EFFORT_MAP[item.effort?.toLowerCase()] || 2,
-        category: cat,
-        page: item.page,
-        dependency: item.dependency,
-      });
-    }
-  }
-
-  const hasScatterData = allActions.length >= 2;
-
-  // Build scatter data grouped by category for colored dots
-  const scatterDataByCategory: Record<string, Array<{ x: number; y: number; action: string; effort: string; category: string; page?: string }>> = {};
-  for (const a of allActions) {
-    const cat = a.category;
-    if (!scatterDataByCategory[cat]) scatterDataByCategory[cat] = [];
-    // Add small jitter to effort axis to avoid overlapping dots
-    const jitter = (Math.random() - 0.5) * 0.3;
-    scatterDataByCategory[cat].push({
-      x: a.effortNum + jitter,
-      y: a.impact,
-      action: a.action,
-      effort: a.effort,
-      category: cat,
-      page: a.page,
-    });
-  }
-
-  // Effort distribution for bar chart
-  const effortCounts = { low: 0, medium: 0, high: 0 };
-  let totalImpactByEffort = { low: 0, medium: 0, high: 0 };
-  for (const a of allActions) {
-    const eff = a.effort?.toLowerCase() as keyof typeof effortCounts;
-    if (eff in effortCounts) {
-      effortCounts[eff]++;
-      totalImpactByEffort[eff] += a.impact;
-    }
-  }
-  const effortChartData = [
-    { effort: 'Low Effort', count: effortCounts.low, impact: totalImpactByEffort.low, fill: '#10b981' },
-    { effort: 'Medium Effort', count: effortCounts.medium, impact: totalImpactByEffort.medium, fill: '#f59e0b' },
-    { effort: 'High Effort', count: effortCounts.high, impact: totalImpactByEffort.high, fill: '#ef4444' },
-  ];
-
-  // Category counts for summary
-  const categoryCounts = {
-    critical: (data.critical || []).length,
-    quick_wins: (data.quick_wins || []).length,
-    strategic: (data.strategic || []).length,
-    structural: (data.structural || []).length,
-  };
-  const totalActions = categoryCounts.critical + categoryCounts.quick_wins + categoryCounts.strategic + categoryCounts.structural;
-
-  // Custom tooltip for scatter chart
-  const ScatterTooltip = ({ active, payload }: any) => {
-    if (!active || !payload?.[0]?.payload) return null;
-    const d = payload[0].payload;
-    const catConfig = CATEGORY_CONFIG[d.category];
-    return (
-      <div className="bg-slate-900 border border-slate-600 rounded-lg p-3 shadow-xl max-w-xs">
-        <div className="font-medium text-white text-xs mb-1">{d.action}</div>
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-          <span className="text-slate-400">Category:</span>
-          <span style={{ color: catConfig?.color || '#fff' }}>{catConfig?.label || d.category}</span>
-          <span className="text-slate-400">Impact:</span>
-          <span className="text-emerald-400">+{d.y?.toLocaleString()} clicks/mo</span>
-          <span className="text-slate-400">Effort:</span>
-          <span className="text-slate-300 capitalize">{d.effort}</span>
-          {d.page && (
-            <>
-              <span className="text-slate-400">Page:</span>
-              <span className="text-slate-300 truncate" title={d.page}>{d.page.replace(/^https?:\/\/[^/]+/, '')}</span>
-            </>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Cards — 4-grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <MetricCard
-          label="Recovery Potential"
-          value={`${data.total_estimated_monthly_click_recovery?.toLocaleString() || 0}`}
-          className="text-emerald-400"
-        />
-        <MetricCard
-          label="Growth Opportunity"
-          value={`${data.total_estimated_monthly_click_growth?.toLocaleString() || 0}`}
-          className="text-blue-400"
-        />
-        <MetricCard
-          label="Total Actions"
-          value={`${totalActions}`}
-          className="text-white"
-        />
-        <MetricCard
-          label="Critical Fixes"
-          value={`${categoryCounts.critical}`}
-          className={categoryCounts.critical > 0 ? 'text-red-400' : 'text-emerald-400'}
-        />
-      </div>
-
-      {/* Impact vs Effort Scatter Chart — the consulting money-shot */}
-      {hasScatterData && (
-        <div className="bg-slate-800/40 rounded-lg border border-slate-700/50 p-4">
-          <h3 className="text-sm font-semibold text-white mb-1">Impact vs Effort Matrix</h3>
-          <p className="text-xs text-slate-400 mb-3">
-            Top-left quadrant = high-impact, low-effort actions. Start here for maximum ROI.
-          </p>
-          <ResponsiveContainer width="100%" height={380}>
-            <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis
-                type="number"
-                dataKey="x"
-                domain={[0.5, 3.5]}
-                ticks={[1, 2, 3]}
-                tickFormatter={(v: number) => EFFORT_LABELS[v] || ''}
-                stroke="#64748b"
-                tick={{ fontSize: 11, fill: '#94a3b8' }}
-                label={{ value: 'Effort Level', position: 'bottom', offset: 15, fill: '#94a3b8', fontSize: 11 }}
-              />
-              <YAxis
-                type="number"
-                dataKey="y"
-                stroke="#64748b"
-                tick={{ fontSize: 11, fill: '#94a3b8' }}
-                label={{ value: 'Impact (clicks/mo)', angle: -90, position: 'insideLeft', offset: -5, fill: '#94a3b8', fontSize: 11 }}
-              />
-              {/* Quadrant reference lines */}
-              <ReferenceLine x={1.75} stroke="#475569" strokeDasharray="6 4" />
-              <ReferenceLine y={(() => {
-                const impacts = allActions.map(a => a.impact).filter(Boolean);
-                return impacts.length > 0 ? impacts.reduce((s, v) => s + v, 0) / impacts.length : 50;
-              })()} stroke="#475569" strokeDasharray="6 4" />
-              <Tooltip content={<ScatterTooltip />} />
-              {/* Render each category as a separate Scatter for color coding */}
-              {Object.entries(scatterDataByCategory).map(([cat, points]) => (
-                <Scatter
-                  key={cat}
-                  name={CATEGORY_CONFIG[cat]?.label || cat}
-                  data={points}
-                  fill={CATEGORY_CONFIG[cat]?.dotColor || '#94a3b8'}
-                  fillOpacity={0.85}
-                  r={7}
-                />
-              ))}
-              <Legend
-                wrapperStyle={{ fontSize: 11 }}
-                iconType="circle"
-                iconSize={8}
-              />
-            </ScatterChart>
-          </ResponsiveContainer>
-          {/* Quadrant labels */}
-          <div className="grid grid-cols-2 gap-2 mt-2 text-xs">
-            <div className="bg-emerald-900/20 border border-emerald-800/30 rounded p-2 text-center">
-              <span className="text-emerald-400 font-medium">High Impact, Low Effort</span>
-              <br /><span className="text-slate-400">Start here — quick ROI</span>
-            </div>
-            <div className="bg-blue-900/20 border border-blue-800/30 rounded p-2 text-center">
-              <span className="text-blue-400 font-medium">High Impact, High Effort</span>
-              <br /><span className="text-slate-400">Strategic investments</span>
-            </div>
-            <div className="bg-amber-900/20 border border-amber-800/30 rounded p-2 text-center">
-              <span className="text-amber-400 font-medium">Low Impact, Low Effort</span>
-              <br /><span className="text-slate-400">Fill-in tasks</span>
-            </div>
-            <div className="bg-slate-800/40 border border-slate-700/30 rounded p-2 text-center">
-              <span className="text-slate-400 font-medium">Low Impact, High Effort</span>
-              <br /><span className="text-slate-500">Deprioritize</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Effort Distribution + Category Breakdown — 2-column */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Impact by Effort Level */}
-        <div className="bg-slate-800/40 rounded-lg border border-slate-700/50 p-4">
-          <h3 className="text-sm font-semibold text-white mb-3">Impact by Effort Level</h3>
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={effortChartData} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis dataKey="effort" stroke="#64748b" tick={{ fontSize: 10, fill: '#94a3b8' }} />
-              <YAxis stroke="#64748b" tick={{ fontSize: 10, fill: '#94a3b8' }} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px', fontSize: 11, color: '#e2e8f0' }}
-                formatter={(value: any, name: string) => [
-                  name === 'impact' ? `+${Number(value).toLocaleString()} clicks/mo` : value,
-                  name === 'impact' ? 'Total Impact' : 'Actions',
-                ]}
-              />
-              <Bar dataKey="impact" radius={[4, 4, 0, 0]}>
-                {effortChartData.map((entry, idx) => (
-                  <Cell key={idx} fill={entry.fill} fillOpacity={0.8} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* Category Breakdown */}
-        <div className="bg-slate-800/40 rounded-lg border border-slate-700/50 p-4">
-          <h3 className="text-sm font-semibold text-white mb-3">Action Breakdown by Priority</h3>
-          <div className="space-y-3">
-            {Object.entries(categoryCounts).map(([cat, count]) => {
-              const config = CATEGORY_CONFIG[cat];
-              if (!config || count === 0) return null;
-              const pct = totalActions > 0 ? Math.round((count / totalActions) * 100) : 0;
-              const catImpact = allActions.filter(a => a.category === cat).reduce((s, a) => s + a.impact, 0);
-              return (
-                <div key={cat}>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span style={{ color: config.color }}>{config.label}</span>
-                    <span className="text-slate-400">{count} actions &middot; +{catImpact.toLocaleString()} clicks/mo</span>
-                  </div>
-                  <div className="w-full bg-slate-700/50 rounded-full h-2">
-                    <div
-                      className="h-2 rounded-full transition-all"
-                      style={{ width: `${pct}%`, backgroundColor: config.color, opacity: 0.8 }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* Narrative */}
-      {data.narrative && (
-        <div className="bg-blue-900/30 border border-blue-200 rounded-lg p-4">
-          <h3 className="text-sm font-semibold text-white mb-2">Executive Summary</h3>
-          <p className="text-sm text-slate-100 leading-relaxed whitespace-pre-wrap">
-            {data.narrative}
-          </p>
-        </div>
-      )}
-
-      {/* Action Lists — Enhanced */}
-      {data.critical && data.critical.length > 0 && (
-        <ActionSection
-          title="Critical Fixes (This Week)"
-          actions={data.critical}
-          category="critical"
-          config={CATEGORY_CONFIG}
-          effortMap={EFFORT_MAP}
-        />
-      )}
-      {data.quick_wins && data.quick_wins.length > 0 && (
-        <ActionSection
-          title="Quick Wins (This Month)"
-          actions={data.quick_wins}
-          category="quick_wins"
-          config={CATEGORY_CONFIG}
-          effortMap={EFFORT_MAP}
-        />
-      )}
-      {data.strategic && data.strategic.length > 0 && (
-        <ActionSection
-          title="Strategic Plays (This Quarter)"
-          actions={data.strategic}
-          category="strategic"
-          config={CATEGORY_CONFIG}
-          effortMap={EFFORT_MAP}
-        />
-      )}
-      {data.structural && data.structural.length > 0 && (
-        <ActionSection
-          title="Structural Improvements (Ongoing)"
-          actions={data.structural}
-          category="structural"
-          config={CATEGORY_CONFIG}
-          effortMap={EFFORT_MAP}
-        />
-      )}
-    </div>
-  );
-}
-
-function ActionSection({
-  title,
-  actions,
-  category,
-  config,
-  effortMap,
-}: {
-  title: string;
-  actions: any[];
-  category: string;
-  config: Record<string, { label: string; color: string; bgClass: string; borderClass: string; dotColor: string }>;
-  effortMap: Record<string, number>;
-}) {
-  const catConfig = config[category] || config['structural'];
-  const EFFORT_COLORS: Record<string, string> = {
-    low: '#10b981',
-    medium: '#f59e0b',
-    high: '#ef4444',
-  };
-  const EFFORT_WIDTH: Record<string, string> = {
-    low: 'w-1/3',
-    medium: 'w-2/3',
-    high: 'w-full',
-  };
-
-  return (
-    <div className={`rounded-lg border p-4 ${catConfig.bgClass} ${catConfig.borderClass}`}>
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-white">{title}</h3>
-        <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: catConfig.color + '30', color: catConfig.dotColor }}>
-          {actions.length} action{actions.length !== 1 ? 's' : ''}
-        </span>
-      </div>
-      <div className="space-y-2">
-        {actions.map((action: any, idx: number) => {
-          const effortKey = (action.effort || 'medium').toLowerCase();
-          return (
-            <div key={idx} className="bg-slate-800/60 p-3 rounded border border-slate-700/50">
-              <div className="flex items-start justify-between gap-2">
-                <div className="font-medium text-white text-sm flex-1">{action.action}</div>
-                <span className="text-emerald-400 text-xs font-mono whitespace-nowrap">
-                  +{(action.impact || 0).toLocaleString()}
-                </span>
-              </div>
-              <div className="mt-2 flex items-center gap-3 text-xs">
-                {/* Effort bar */}
-                <div className="flex items-center gap-1.5 min-w-[100px]">
-                  <span className="text-slate-500 w-10">Effort:</span>
-                  <div className="flex-1 bg-slate-700/50 rounded-full h-1.5 max-w-[60px]">
-                    <div
-                      className={`h-1.5 rounded-full ${EFFORT_WIDTH[effortKey] || 'w-2/3'}`}
-                      style={{ backgroundColor: EFFORT_COLORS[effortKey] || '#f59e0b' }}
-                    />
-                  </div>
-                  <span className="text-slate-400 capitalize">{effortKey}</span>
-                </div>
-                {/* Page link */}
-                {action.page && (
-                  <div className="text-slate-500 truncate max-w-[200px]" title={action.page}>
-                    {action.page.replace(/^https?:\/\/[^/]+/, '')}
-                  </div>
-                )}
-                {/* Dependency */}
-                {action.dependency && (
-                  <div className="text-purple-400 truncate max-w-[180px]" title={action.dependency}>
-                    Dep: {action.dependency}
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// Module 7: Algorithm Impact
-function AlgorithmImpactContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  const updates = data.updates_impacting_site || [];
-  const trafficSeries = data.traffic_series || [];
-  const updateTimeline = data.update_timeline || [];
-  const vulnerabilityFactors = data.vulnerability_factors || [];
-  const unexplainedChanges = data.unexplained_changes || [];
-
-  // --- Traffic timeline chart data ---
-  const hasTimelineChart = trafficSeries.length >= 2;
-
-  // Build chart data from weekly traffic series
-  const chartData = trafficSeries.map((pt: any) => ({
-    date: pt.date?.substring(5) || '', // MM-DD format for X axis
-    fullDate: pt.date || '',
-    clicks: pt.clicks || 0,
-    impressions: pt.impressions || 0,
-  }));
-
-  // Map update dates to nearest week in chart data for reference line placement
-  const updateMarkers = updateTimeline.map((u: any) => {
-    const uDate = u.date?.substring(0, 10) || '';
-    // Find the closest chart data point
-    let closestIdx = 0;
-    let closestDist = Infinity;
-    chartData.forEach((d: any, idx: number) => {
-      const dist = Math.abs(new Date(d.fullDate).getTime() - new Date(uDate).getTime());
-      if (dist < closestDist) {
-        closestDist = dist;
-        closestIdx = idx;
-      }
-    });
-    // Also check impacting updates for impact data
-    const impacting = updates.find((imp: any) => imp.update_name === u.name);
-    return {
-      date: chartData[closestIdx]?.date || uDate.substring(5),
-      name: u.name?.replace(/\d{4}\s*/g, '').trim() || u.name,
-      fullName: u.name,
-      type: u.type,
-      impact: impacting?.site_impact || 'none',
-      clickChangePct: impacting?.click_change_pct || null,
-    };
-  });
-
-  // Update type colors
-  const UPDATE_TYPE_COLORS: Record<string, string> = {
-    core: '#ef4444',
-    spam: '#f59e0b',
-    helpful_content: '#8b5cf6',
-    product_reviews: '#ec4899',
-    link: '#06b6d4',
-  };
-
-  // Recovery status labels
-  const RECOVERY_LABELS: Record<string, { label: string; color: string }> = {
-    recovered: { label: 'Recovered', color: 'text-emerald-400' },
-    partial_recovery: { label: 'Partial Recovery', color: 'text-amber-400' },
-    not_recovered: { label: 'Not Recovered', color: 'text-red-400' },
-    ongoing: { label: 'Ongoing', color: 'text-blue-400' },
-    unknown: { label: 'Unknown', color: 'text-slate-400' },
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <MetricCard
-          label="Vulnerability Score"
-          value={`${((data.vulnerability_score || 0) * 100).toFixed(0)}%`}
-          className={
-            (data.vulnerability_score || 0) > 0.7
-              ? 'text-red-400'
-              : (data.vulnerability_score || 0) > 0.4
-              ? 'text-amber-400'
-              : 'text-emerald-400'
-          }
-        />
-        <MetricCard
-          label="Updates in Period"
-          value={data.total_updates_in_period || 0}
-        />
-        <MetricCard
-          label="Impactful Updates"
-          value={data.updates_with_site_impact || 0}
-          className={
-            (data.updates_with_site_impact || 0) > 3 ? 'text-red-400' :
-            (data.updates_with_site_impact || 0) > 1 ? 'text-amber-400' : 'text-emerald-400'
-          }
-        />
-        <MetricCard
-          label="Unexplained Changes"
-          value={unexplainedChanges.length}
-          className={unexplainedChanges.length > 0 ? 'text-amber-400' : 'text-slate-400'}
-        />
-      </div>
-
-      {/* Algorithm Timeline Chart — Traffic with Update Markers */}
-      {hasTimelineChart && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Traffic Timeline with Algorithm Updates
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Weekly clicks with algorithm update markers overlaid. Red lines = core updates, amber = spam, purple = helpful content.
-          </p>
-          <ResponsiveContainer width="100%" height={320}>
-            <AreaChart data={chartData} margin={{ top: 10, right: 20, bottom: 20, left: 20 }}>
-              <defs>
-                <linearGradient id="algoClicksGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis
-                dataKey="date"
-                stroke="#94a3b8"
-                tick={{ fontSize: 11 }}
-                interval={Math.max(0, Math.floor(chartData.length / 12) - 1)}
-                angle={-30}
-                textAnchor="end"
-                height={50}
-              />
-              <YAxis
-                stroke="#94a3b8"
-                tick={{ fontSize: 11 }}
-                tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
-              />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: 8 }}
-                labelStyle={{ color: '#e2e8f0' }}
-                formatter={(value: any, name: string) => [
-                  Number(value).toLocaleString(),
-                  name === 'clicks' ? 'Weekly Clicks' : 'Weekly Impressions'
-                ]}
-              />
-              <Area
-                type="monotone"
-                dataKey="clicks"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                fill="url(#algoClicksGrad)"
-                dot={false}
-              />
-              {/* Algorithm update reference lines */}
-              {updateMarkers.map((marker: any, idx: number) => (
-                <ReferenceLine
-                  key={`algo-${idx}`}
-                  x={marker.date}
-                  stroke={UPDATE_TYPE_COLORS[marker.type] || '#94a3b8'}
-                  strokeDasharray={marker.impact === 'none' ? '4 4' : '0'}
-                  strokeWidth={marker.impact === 'none' ? 1 : 2}
-                  strokeOpacity={marker.impact === 'none' ? 0.5 : 0.8}
-                  label={{
-                    value: marker.type === 'core' ? 'C' : marker.type === 'spam' ? 'S' : marker.type === 'helpful_content' ? 'H' : 'U',
-                    position: 'top',
-                    fill: UPDATE_TYPE_COLORS[marker.type] || '#94a3b8',
-                    fontSize: 10,
-                    fontWeight: 'bold',
-                  }}
-                />
-              ))}
-            </AreaChart>
-          </ResponsiveContainer>
-          {/* Legend for update types */}
-          <div className="flex flex-wrap gap-4 mt-3 px-2">
-            {[
-              { label: 'C = Core Update', color: '#ef4444' },
-              { label: 'S = Spam Update', color: '#f59e0b' },
-              { label: 'H = Helpful Content', color: '#8b5cf6' },
-              { label: 'Traffic (clicks)', color: '#3b82f6' },
-            ].map((item, idx) => (
-              <div key={idx} className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: item.color }} />
-                <span className="text-xs text-slate-400">{item.label}</span>
-              </div>
-            ))}
-            <div className="flex items-center gap-1.5">
-              <div className="w-3 h-0 border-t-2 border-dashed border-slate-500" />
-              <span className="text-xs text-slate-400">No site impact</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Algorithm Update Impact Cards */}
-      {updates.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Algorithm Updates Impact ({updates.length})
-          </h3>
-          <div className="space-y-3">
-            {updates.map((update: any, idx: number) => {
-              const recovery = RECOVERY_LABELS[update.recovery_status] || RECOVERY_LABELS.unknown;
-              return (
-                <div
-                  key={idx}
-                  className={`p-3 rounded border ${
-                    update.site_impact === 'negative'
-                      ? 'bg-red-900/20 border-red-700/40'
-                      : update.site_impact === 'positive'
-                      ? 'bg-emerald-900/20 border-emerald-700/40'
-                      : 'bg-slate-800/30 border-slate-700/50'
-                  }`}
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <div className="font-medium text-white">
-                          {update.update_name}
-                        </div>
-                        <span
-                          className="text-[10px] px-1.5 py-0.5 rounded font-medium uppercase"
-                          style={{
-                            backgroundColor: `${UPDATE_TYPE_COLORS[update.update_type] || '#64748b'}20`,
-                            color: UPDATE_TYPE_COLORS[update.update_type] || '#94a3b8',
-                          }}
-                        >
-                          {update.update_type?.replace(/_/g, ' ') || 'update'}
-                        </span>
-                      </div>
-                      <div className="text-sm text-slate-400 mt-1">
-                        {update.date?.substring(0, 10)} • {update.days_since_update || '?'} days ago
-                      </div>
-                      {update.common_characteristics?.length > 0 && (
-                        <div className="text-xs text-slate-400 mt-2 flex flex-wrap gap-1">
-                          {update.common_characteristics.map((c: string, ci: number) => (
-                            <span key={ci} className="px-1.5 py-0.5 bg-slate-700/50 rounded text-slate-300">
-                              {c.replace(/_/g, ' ')}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      {update.pages_most_affected?.length > 0 && (
-                        <div className="text-xs text-slate-500 mt-2">
-                          Top affected: {update.pages_most_affected.slice(0, 3).map((p: any) => {
-                            const url = p.page || '';
-                            return url.length > 40 ? '...' + url.slice(-37) : url;
-                          }).join(', ')}
-                        </div>
-                      )}
-                    </div>
-                    <div className="text-right ml-4 flex-shrink-0">
-                      <div
-                        className={`text-lg font-bold ${
-                          update.click_change_pct >= 0
-                            ? 'text-emerald-400'
-                            : 'text-red-400'
-                        }`}
-                      >
-                        {update.click_change_pct >= 0 ? '+' : ''}
-                        {update.click_change_pct?.toFixed(1)}%
-                      </div>
-                      <div className="text-xs text-slate-500 mt-0.5">clicks</div>
-                      <div className={`text-xs mt-1 ${recovery.color}`}>
-                        {recovery.label}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Vulnerability Factors */}
-      {vulnerabilityFactors.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-3">Vulnerability Factors</h3>
-          <div className="flex flex-wrap gap-2">
-            {vulnerabilityFactors.map((factor: string, idx: number) => (
-              <span
-                key={idx}
-                className="px-2.5 py-1 bg-red-900/20 border border-red-700/30 rounded text-xs text-red-300"
-              >
-                {factor.replace(/_/g, ' ')}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Unexplained Changes */}
-      {unexplainedChanges.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-3">
-            Unexplained Traffic Changes ({unexplainedChanges.length})
-          </h3>
-          <p className="text-xs text-slate-500 mb-3">
-            Change points not correlated with any known algorithm update — may be technical issues, competitor movements, or manual actions.
-          </p>
-          <div className="space-y-2">
-            {unexplainedChanges.slice(0, 8).map((cp: any, idx: number) => (
-              <div key={idx} className="flex items-center justify-between p-2 bg-amber-900/10 border border-amber-700/20 rounded">
-                <span className="text-sm text-white">
-                  {cp.date?.substring(0, 10) || 'Unknown date'}
-                </span>
-                <span className={`text-sm font-medium ${
-                  (cp.magnitude || cp.direction === 'drop' || (cp.click_change_pct && cp.click_change_pct < 0))
-                    ? 'text-red-400'
-                    : 'text-emerald-400'
-                }`}>
-                  {cp.direction === 'drop' ? '↓' : cp.direction === 'rise' ? '↑' : '~'}
-                  {cp.magnitude ? ` ${(cp.magnitude * 100).toFixed(0)}%` : ''}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Recommendation */}
-      {data.recommendation && (
-        <div className="bg-blue-900/20 border border-blue-700/30 rounded-lg p-4">
-          <h3 className="text-sm font-semibold text-blue-300 mb-2">Strategic Recommendation</h3>
-          <p className="text-sm text-slate-200 leading-relaxed">{data.recommendation}</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Module 8: Intent Migration
-function IntentMigrationContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  const shifts = data.intent_shifts || [];
-  const emerging = data.emerging_intents || [];
-  const portfolio = data.portfolio_distribution || {};
-  const contentAlignment = data.content_alignment || [];
-
-  // --- Intent distribution chart data ---
-  // Backend returns: { recent_distribution: {info: 0.45, ...}, previous_distribution: {...}, changes_by_intent: {...} }
-  const recentDist = portfolio.recent_distribution || {};
-  const prevDist = portfolio.previous_distribution || {};
-  const changesByIntent = portfolio.changes_by_intent || {};
-
-  const INTENT_COLORS: Record<string, string> = {
-    informational: '#60a5fa',  // blue
-    commercial: '#f59e0b',     // amber
-    transactional: '#34d399',  // emerald
-    navigational: '#a78bfa',   // purple
-  };
-
-  // Build grouped bar data: one entry per intent type, with previous and recent values
-  const allIntents = Array.from(new Set([...Object.keys(recentDist), ...Object.keys(prevDist)]));
-  const distributionChartData = allIntents
-    .filter(intent => (recentDist[intent] || 0) > 0 || (prevDist[intent] || 0) > 0)
-    .sort((a, b) => (recentDist[b] || 0) - (recentDist[a] || 0))
-    .map(intent => ({
-      intent: intent.charAt(0).toUpperCase() + intent.slice(1),
-      intentKey: intent,
-      Previous: Math.round((prevDist[intent] || 0) * 100),
-      Recent: Math.round((recentDist[intent] || 0) * 100),
-    }));
-
-  const hasDistributionChart = distributionChartData.length >= 2;
-
-  // Build stacked area data from the two windows for a simple 2-point timeline
-  // This gives a visual "flow" from previous to recent
-  const areaChartData = allIntents.length >= 2
-    ? [
-        { period: 'Previous', ...Object.fromEntries(allIntents.map(i => [i, Math.round((prevDist[i] || 0) * 100)])) },
-        { period: 'Recent', ...Object.fromEntries(allIntents.map(i => [i, Math.round((recentDist[i] || 0) * 100)])) },
-      ]
-    : [];
-
-  const hasAreaChart = areaChartData.length === 2 && allIntents.length >= 2;
-
-  // Summary metric cards from portfolio
-  const dominantIntent = portfolio.dominant_intent || '';
-  const totalRecent = portfolio.total_queries_recent || 0;
-  const totalComparison = portfolio.total_queries_comparison || 0;
-
-  // Fallback: if portfolio_distribution is a simple {intent: pct} dict (old format)
-  const isSimplePortfolio = !portfolio.recent_distribution && typeof Object.values(portfolio)[0] === 'number';
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {dominantIntent && (
-          <MetricCard
-            label="Dominant Intent"
-            value={dominantIntent.charAt(0).toUpperCase() + dominantIntent.slice(1)}
-          />
-        )}
-        {totalRecent > 0 && (
-          <MetricCard
-            label="Queries Analyzed"
-            value={totalRecent.toLocaleString()}
-          />
-        )}
-        <MetricCard
-          label="Intent Shifts"
-          value={shifts.length}
-          className={shifts.length > 5 ? 'text-amber-400' : 'text-emerald-400'}
-        />
-        <MetricCard
-          label="Emerging Queries"
-          value={emerging.length}
-          className="text-blue-400"
-        />
-      </div>
-
-      {/* Stacked Area Chart — Intent Migration Flow */}
-      {hasAreaChart && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Intent Distribution Migration
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            How your query portfolio's intent mix has shifted between periods
-          </p>
-          <div style={{ width: '100%', height: 280 }}>
-            <ResponsiveContainer>
-              <AreaChart data={areaChartData} margin={{ top: 10, right: 30, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis dataKey="period" stroke="#94a3b8" tick={{ fontSize: 12, fill: '#94a3b8' }} />
-                <YAxis stroke="#94a3b8" tick={{ fontSize: 11, fill: '#94a3b8' }} unit="%" domain={[0, 100]} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
-                  labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
-                  formatter={(value: any, name: string) => [`${value}%`, name.charAt(0).toUpperCase() + name.slice(1)]}
-                />
-                <Legend
-                  formatter={(value: string) => value.charAt(0).toUpperCase() + value.slice(1)}
-                  wrapperStyle={{ color: '#94a3b8', fontSize: 12 }}
-                />
-                {allIntents.map((intent) => (
-                  <Area
-                    key={intent}
-                    type="monotone"
-                    dataKey={intent}
-                    stackId="1"
-                    stroke={INTENT_COLORS[intent] || '#6b7280'}
-                    fill={INTENT_COLORS[intent] || '#6b7280'}
-                    fillOpacity={0.6}
-                  />
-                ))}
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-
-      {/* Grouped Bar Chart — Previous vs Recent */}
-      {hasDistributionChart && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Intent Distribution: Previous vs Recent
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Side-by-side comparison of intent share by type
-          </p>
-          <div style={{ width: '100%', height: 260 }}>
-            <ResponsiveContainer>
-              <BarChart data={distributionChartData} margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis dataKey="intent" stroke="#94a3b8" tick={{ fontSize: 11, fill: '#94a3b8' }} />
-                <YAxis stroke="#94a3b8" tick={{ fontSize: 11, fill: '#94a3b8' }} unit="%" />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
-                  labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
-                  formatter={(value: any, name: string) => [`${value}%`, name]}
-                />
-                <Legend wrapperStyle={{ color: '#94a3b8', fontSize: 12 }} />
-                <Bar dataKey="Previous" fill="#64748b" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="Recent" radius={[4, 4, 0, 0]}>
-                  {distributionChartData.map((entry, index) => (
-                    <Cell key={index} fill={INTENT_COLORS[entry.intentKey] || '#60a5fa'} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-
-      {/* Intent Change Summary (from changes_by_intent) */}
-      {Object.keys(changesByIntent).length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Intent Share Changes
-          </h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {Object.entries(changesByIntent)
-              .sort(([, a]: [string, any], [, b]: [string, any]) => Math.abs(b.change || 0) - Math.abs(a.change || 0))
-              .map(([intent, info]: [string, any]) => {
-                const change = info.change || 0;
-                const direction = info.direction || 'stable';
-                const isGrowing = direction === 'growing';
-                const isDeclining = direction === 'declining';
-                return (
-                  <div
-                    key={intent}
-                    className="p-3 rounded-lg border text-center"
-                    style={{
-                      backgroundColor: isGrowing ? 'rgba(52, 211, 153, 0.1)' : isDeclining ? 'rgba(248, 113, 113, 0.1)' : 'rgba(100, 116, 139, 0.1)',
-                      borderColor: isGrowing ? 'rgba(52, 211, 153, 0.3)' : isDeclining ? 'rgba(248, 113, 113, 0.3)' : 'rgba(100, 116, 139, 0.3)',
-                    }}
-                  >
-                    <div className="text-xs text-slate-400 capitalize mb-1">{intent}</div>
-                    <div className="text-lg font-bold text-white">
-                      {((info.recent || 0) * 100).toFixed(0)}%
-                    </div>
-                    <div className={`text-xs font-medium mt-1 ${isGrowing ? 'text-emerald-400' : isDeclining ? 'text-red-400' : 'text-slate-400'}`}>
-                      {change >= 0 ? '+' : ''}{(change * 100).toFixed(1)}pp
-                    </div>
-                  </div>
-                );
-              })}
-          </div>
-        </div>
-      )}
-
-      {/* Fallback: Simple portfolio display for old-format data */}
-      {isSimplePortfolio && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {Object.entries(portfolio).map(([intent, pct]: [string, any]) => (
-            <div key={intent} className="bg-slate-800/60 p-3 rounded-lg border border-slate-700/50 text-center">
-              <div className="text-xs text-slate-400 capitalize">{intent}</div>
-              <div className="text-xl font-bold text-white mt-1">
-                {typeof pct === 'number' ? `${(pct * 100).toFixed(0)}%` : String(pct)}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Content Alignment Mismatches */}
-      {contentAlignment.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Intent-Content Misalignments ({contentAlignment.length})
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Queries where page type doesn't match dominant search intent
-          </p>
-          <div className="space-y-2">
-            {contentAlignment.slice(0, 10).map((item: any, idx: number) => (
-              <div key={idx} className="p-3 bg-amber-900/20 border border-amber-700/30 rounded">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="font-medium text-white text-sm">{item.query}</div>
-                    <div className="text-xs text-slate-400 mt-1">
-                      {item.landing_page && <span className="truncate block max-w-xs">{item.landing_page}</span>}
-                    </div>
-                  </div>
-                  <div className="text-right ml-3 flex-shrink-0">
-                    <div className="text-xs">
-                      <span className="text-amber-400 font-medium capitalize">{item.dominant_intent || item.query_intent}</span>
-                      <span className="text-slate-500 mx-1">vs</span>
-                      <span className="text-blue-400 font-medium capitalize">{item.page_type || item.content_type}</span>
-                    </div>
-                    {item.impressions != null && (
-                      <div className="text-xs text-slate-500 mt-0.5">{item.impressions.toLocaleString()} imp</div>
-                    )}
-                  </div>
-                </div>
-                {item.severity && (
-                  <span className={`inline-block mt-2 text-xs px-2 py-0.5 rounded ${
-                    item.severity === 'critical' ? 'bg-red-900/50 text-red-300' :
-                    item.severity === 'high' ? 'bg-amber-900/50 text-amber-300' :
-                    'bg-slate-700/50 text-slate-300'
-                  }`}>
-                    {item.severity}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Intent Shifts */}
-      {shifts.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Detected Intent Shifts ({shifts.length})
-          </h3>
-          <div className="space-y-3">
-            {shifts.slice(0, 15).map((shift: any, idx: number) => (
-              <div
-                key={idx}
-                className="p-3 bg-purple-900/30 border border-purple-700/40 rounded"
-              >
-                <div className="font-medium text-white">{shift.query || shift.keyword}</div>
-                <div className="text-sm text-slate-300 mt-2">
-                  {shift.previous_intent || shift.from_intent} → {shift.current_intent || shift.to_intent}
-                </div>
-                {shift.confidence != null && (
-                  <div className="text-xs text-slate-400 mt-1">
-                    Confidence: {((shift.confidence || 0) * 100).toFixed(0)}%
-                  </div>
-                )}
-                {shift.recommendation && (
-                  <div className="text-sm text-purple-300 mt-2 font-medium">
-                    → {shift.recommendation}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Emerging Intents */}
-      {emerging.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Emerging Intents ({emerging.length})
-          </h3>
-          <div className="space-y-2">
-            {emerging.slice(0, 10).map((item: any, idx: number) => (
-              <div key={idx} className="flex justify-between p-2 bg-slate-800/30 rounded">
-                <span className="text-white text-sm">{item.query || item.keyword}</span>
-                <span className="text-emerald-400 text-sm font-medium">{item.intent || item.emerging_intent}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Recommendations */}
-      {data.recommendations?.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-3">Recommendations</h3>
-          <div className="space-y-3">
-            {data.recommendations.slice(0, 5).map((rec: any, idx: number) => (
-              <div key={idx} className="p-3 bg-blue-900/20 border border-blue-700/30 rounded">
-                <div className="flex items-start gap-2">
-                  <span className="text-blue-400 font-bold text-sm mt-0.5">{rec.priority || idx + 1}.</span>
-                  <div className="flex-1">
-                    <div className="text-sm font-medium text-white">
-                      {rec.title || (typeof rec === 'string' ? rec : rec.text || rec.recommendation || '')}
-                    </div>
-                    {rec.description && (
-                      <div className="text-xs text-slate-400 mt-1">{rec.description}</div>
-                    )}
-                    {rec.estimated_impact && (
-                      <span className={`inline-block mt-1 text-xs px-2 py-0.5 rounded ${
-                        rec.estimated_impact === 'high' ? 'bg-emerald-900/50 text-emerald-300' :
-                        rec.estimated_impact === 'medium' ? 'bg-amber-900/50 text-amber-300' :
-                        'bg-slate-700/50 text-slate-300'
-                      }`}>
-                        {rec.estimated_impact} impact
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-// Module 9: Technical Health (CTR Modeling)
-function TechnicalHealthContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  const keywordAnalysis = data.keyword_ctr_analysis || [];
-  const opportunities = data.feature_opportunities || data.serp_feature_opportunities || [];
-
-  // Prepare scatter data: expected vs actual CTR
-  const scatterData = keywordAnalysis.slice(0, 50).map((kw: any) => ({
-    keyword: kw.keyword,
-    expected: parseFloat(((kw.expected_ctr_contextual || kw.expected_ctr_generic || 0) * 100).toFixed(2)),
-    actual: parseFloat(((kw.actual_ctr || 0) * 100).toFixed(2)),
-    impressions: kw.impressions || 0,
-    position: kw.position || 0,
-    performance: (kw.actual_ctr || 0) > (kw.expected_ctr_contextual || kw.expected_ctr_generic || 0)
-      ? 'overperformer' : 'underperformer',
-  }));
-
-  const overperformers = keywordAnalysis.filter(
-    (kw: any) => (kw.actual_ctr || 0) > (kw.expected_ctr_contextual || kw.expected_ctr_generic || 0)
-  );
-  const underperformers = keywordAnalysis.filter(
-    (kw: any) => (kw.actual_ctr || 0) <= (kw.expected_ctr_contextual || kw.expected_ctr_generic || 0)
-  );
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <MetricCard
-          label="Model Accuracy (R\u00b2)"
-          value={data.ctr_model_accuracy ? `${(data.ctr_model_accuracy * 100).toFixed(0)}%` : 'N/A'}
-        />
-        <MetricCard
-          label="Overperformers"
-          value={overperformers.length}
-          className="text-emerald-400"
-        />
-        <MetricCard
-          label="Underperformers"
-          value={underperformers.length}
-          className="text-red-400"
-        />
-      </div>
-
-      {/* CTR Scatter Plot: Expected vs Actual */}
-      {scatterData.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Expected vs Actual CTR
-          </h3>
-          <p className="text-xs text-slate-400 mb-3">
-            Points above the diagonal are overperforming; below are underperforming relative to SERP context.
-          </p>
-          <ResponsiveContainer width="100%" height={350}>
-            <ScatterChart margin={{ top: 10, right: 20, bottom: 20, left: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis
-                type="number"
-                dataKey="expected"
-                name="Expected CTR"
-                tick={{ fontSize: 11 }}
-                label={{ value: 'Expected CTR (%)', position: 'insideBottom', offset: -10, fontSize: 12 }}
-              />
-              <YAxis
-                type="number"
-                dataKey="actual"
-                name="Actual CTR"
-                tick={{ fontSize: 11 }}
-                label={{ value: 'Actual CTR (%)', angle: -90, position: 'insideLeft', offset: 0, fontSize: 12 }}
-              />
-              <Tooltip
-                content={({ active, payload }: any) => {
-                  if (!active || !payload?.length) return null;
-                  const d = payload[0].payload;
-                  return (
-                    <div className="bg-slate-800/60 p-3 rounded shadow-lg border text-xs">
-                      <div className="font-semibold text-white mb-1">{d.keyword}</div>
-                      <div>Position: #{d.position}</div>
-                      <div>Expected CTR: {d.expected}%</div>
-                      <div>Actual CTR: {d.actual}%</div>
-                      <div>Impressions: {d.impressions.toLocaleString()}</div>
-                    </div>
-                  );
-                }}
-              />
-              <Scatter data={scatterData} fill="#3b82f6">
-                {scatterData.map((entry: any, index: number) => (
-                  <Cell
-                    key={index}
-                    fill={entry.performance === 'overperformer' ? '#22c55e' : '#ef4444'}
-                  />
-                ))}
-              </Scatter>
-              <ReferenceLine
-                segment={[{ x: 0, y: 0 }, { x: Math.max(...scatterData.map((d: any) => Math.max(d.expected, d.actual)), 10), y: Math.max(...scatterData.map((d: any) => Math.max(d.expected, d.actual)), 10) }]}
-                stroke="#94a3b8"
-                strokeDasharray="5 5"
-                label=""
-              />
-            </ScatterChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Top Underperformers — Title Rewrite Candidates */}
-      {underperformers.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Title/Snippet Rewrite Candidates
-          </h3>
-          <p className="text-xs text-slate-400 mb-3">
-            Keywords where actual CTR is significantly below what the SERP context predicts — likely a title or meta description problem.
-          </p>
-          <div className="space-y-2">
-            {underperformers
-              .sort((a: any, b: any) => {
-                const gapA = (a.expected_ctr_contextual || a.expected_ctr_generic || 0) - (a.actual_ctr || 0);
-                const gapB = (b.expected_ctr_contextual || b.expected_ctr_generic || 0) - (b.actual_ctr || 0);
-                return gapB - gapA;
-              })
-              .slice(0, 10)
-              .map((kw: any, idx: number) => {
-                const expected = kw.expected_ctr_contextual || kw.expected_ctr_generic || 0;
-                const gap = expected - (kw.actual_ctr || 0);
-                return (
-                  <div key={idx} className="flex items-center justify-between p-3 bg-red-900/30 border border-red-100 rounded">
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium text-white text-sm truncate">{kw.keyword}</div>
-                      <div className="text-xs text-slate-400 mt-1">
-                        Position #{kw.position} · {(kw.impressions || 0).toLocaleString()} impressions/mo
-                      </div>
-                    </div>
-                    <div className="text-right ml-4 flex-shrink-0">
-                      <div className="text-sm text-red-400 font-medium">
-                        -{(gap * 100).toFixed(1)}% CTR gap
-                      </div>
-                      <div className="text-xs text-slate-400">
-                        {((kw.actual_ctr || 0) * 100).toFixed(1)}% actual vs {(expected * 100).toFixed(1)}% expected
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-          </div>
-        </div>
-      )}
-
-      {/* SERP Feature Opportunities */}
-      {opportunities.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            SERP Feature Opportunities
-          </h3>
-          <div className="space-y-2">
-            {opportunities.slice(0, 8).map((opp: any, idx: number) => (
-              <div key={idx} className="flex items-center justify-between p-3 bg-emerald-900/30 border border-green-100 rounded">
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-white text-sm truncate">{opp.keyword}</div>
-                  <div className="text-xs text-slate-400 mt-1">{opp.feature_type || opp.opportunity}</div>
-                </div>
-                <div className="text-right ml-4 flex-shrink-0">
-                  <div className="text-sm text-emerald-400 font-medium">
-                    +{(opp.estimated_click_gain || 0).toLocaleString()} clicks/mo
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Module 10: Site Architecture
-function SiteArchitectureContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  const hubs = data.hub_pages || [];
-  const orphans = data.orphan_pages || [];
-
-  return (
-    <div className="space-y-6">
-      {/* Network Graph */}
-      {data.network_graph && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Internal Link Network
-          </h3>
-          <NetworkGraph nodes={data.network_graph?.nodes || []} links={data.network_graph?.links || []} />
-        </div>
-      )}
-
-      {/* Hub Pages */}
-      {hubs.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Hub Pages (High PageRank)
-          </h3>
-          <div className="space-y-2">
-            {hubs.slice(0, 10).map((hub: any, idx: number) => (
-              <div
-                key={idx}
-                className="flex items-center justify-between p-3 bg-slate-800/30 rounded"
-              >
-                <a
-                  href={hub.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-blue-400 hover:underline flex items-center truncate flex-1"
-                >
-                  <span className="truncate">{hub.url}</span>
-                  <ExternalLink className="w-3 h-3 ml-1 flex-shrink-0" />
-                </a>
-                <div className="ml-4 text-right">
-                  <div className="text-sm font-medium text-white">
-                    PR: {hub.pagerank?.toFixed(3)}
-                  </div>
-                  <div className="text-xs text-slate-400">
-                    {hub.inbound_links} links
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Orphan Pages */}
-      {orphans.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Orphan Pages (No Internal Links)
-          </h3>
-          <div className="space-y-2">
-            {orphans.slice(0, 10).map((orphan: any, idx: number) => {
-              const orphanUrl = typeof orphan === 'string' ? orphan : orphan?.url || '';
-              return (
-              <div key={idx} className="p-3 bg-amber-900/30 border border-yellow-200 rounded">
-                <a
-                  href={orphanUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-blue-400 hover:underline flex items-center"
-                >
-                  <span className="truncate">{orphanUrl}</span>
-                  <ExternalLink className="w-3 h-3 ml-1 flex-shrink-0" />
-                </a>
-                {typeof orphan !== 'string' && orphan?.impressions > 0 && (
-                  <div className="text-xs text-slate-400 mt-1">
-                    {orphan.impressions.toLocaleString()} impressions · {orphan.clicks || 0} clicks
-                    {orphan.impact === 'high' && <span className="ml-2 text-amber-400 font-medium">High Impact</span>}
-                  </div>
-                )}
-              </div>
-              );
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Module 11: Branded Split
-function BrandedSplitContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  // Module 10 returns: segments.branded, segments.non_branded (aggregates),
-  // branded_pct (float 0-100), brand_dependency (object), trends, etc.
-  const branded = data.segments?.branded || {};
-  const nonBranded = data.segments?.non_branded || {};
-  const dependency = data.brand_dependency || {};
-  const brandedPct = data.branded_pct ?? dependency.branded_click_share_pct ?? 0;
-  const nbGrowth = data.non_branded_growth;
-  const topBranded = data.top_branded_queries || [];
-  const topNonBranded = data.top_non_branded_queries || [];
-  const opportunities = data.non_branded_opportunities || [];
-
-  // Trend timeline data for dual-axis chart
-  const trendTimeline = data.trends?.timeline || [];
-  const hasTrendChart = trendTimeline.length >= 2;
-
-  // Format week labels for the chart (e.g. "Jan 6" instead of "2025-01-06")
-  const chartData = trendTimeline.map((pt: any) => {
-    const d = new Date(pt.week + 'T00:00:00');
-    const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    return {
-      week: label,
-      branded_clicks: pt.branded_clicks || 0,
-      non_branded_clicks: pt.non_branded_clicks || 0,
-      branded_share_pct: pt.branded_click_share_pct ?? 0,
-    };
-  });
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-2">
-            Branded Traffic
-          </h3>
-          <div className="text-3xl font-bold text-white">
-            {(branded.clicks || branded.total_clicks || 0).toLocaleString()}
-          </div>
-          <div className="text-sm text-slate-400 mt-1">clicks/month</div>
-        </div>
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-2">
-            Non-Branded Traffic
-          </h3>
-          <div className="text-3xl font-bold text-white">
-            {(nonBranded.clicks || nonBranded.total_clicks || 0).toLocaleString()}
-          </div>
-          <div className="text-sm text-slate-400 mt-1">clicks/month</div>
-        </div>
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-2">
-            Brand Dependency
-          </h3>
-          <div className="text-2xl font-bold text-white">
-            {brandedPct > 1 ? brandedPct.toFixed(1) : (brandedPct * 100).toFixed(1)}%
-          </div>
-          <p className="text-xs text-slate-400 mt-2">
-            {(brandedPct > 1 ? brandedPct : brandedPct * 100) > 70
-              ? 'High dependency — diversify with non-branded content'
-              : (brandedPct > 1 ? brandedPct : brandedPct * 100) > 40
-              ? 'Moderate dependency — healthy balance'
-              : 'Strong non-branded presence — good diversification'}
-          </p>
-        </div>
-      </div>
-
-      {/* Branded vs Non-Branded Trend Chart (Dual-Axis) */}
-      {hasTrendChart && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Branded vs Non-Branded Clicks Over Time
-          </h3>
-          <ResponsiveContainer width="100%" height={320}>
-            <LineChart data={chartData} margin={{ top: 5, right: 50, left: 10, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis
-                dataKey="week"
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                tickLine={{ stroke: '#475569' }}
-                interval={Math.max(0, Math.floor(chartData.length / 8))}
-              />
-              <YAxis
-                yAxisId="clicks"
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                tickLine={{ stroke: '#475569' }}
-                tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
-                label={{ value: 'Clicks', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11, dx: -5 }}
-              />
-              <YAxis
-                yAxisId="share"
-                orientation="right"
-                domain={[0, 100]}
-                tick={{ fill: '#f59e0b', fontSize: 11 }}
-                tickLine={{ stroke: '#475569' }}
-                tickFormatter={(v: number) => `${v}%`}
-                label={{ value: 'Brand Share', angle: 90, position: 'insideRight', fill: '#f59e0b', fontSize: 11, dx: 10 }}
-              />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
-                labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
-                formatter={(value: any, name: string) => {
-                  if (name === 'branded_share_pct') return [`${Number(value).toFixed(1)}%`, 'Brand Share'];
-                  if (name === 'branded_clicks') return [Number(value).toLocaleString(), 'Branded Clicks'];
-                  if (name === 'non_branded_clicks') return [Number(value).toLocaleString(), 'Non-Branded Clicks'];
-                  return [value, name];
-                }}
-              />
-              <Legend
-                wrapperStyle={{ paddingTop: '12px' }}
-                formatter={(value: string) => {
-                  if (value === 'branded_clicks') return 'Branded Clicks';
-                  if (value === 'non_branded_clicks') return 'Non-Branded Clicks';
-                  if (value === 'branded_share_pct') return 'Brand Share %';
-                  return value;
-                }}
-              />
-              <Line
-                yAxisId="clicks"
-                type="monotone"
-                dataKey="branded_clicks"
-                stroke="#60a5fa"
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 4, fill: '#60a5fa' }}
-              />
-              <Line
-                yAxisId="clicks"
-                type="monotone"
-                dataKey="non_branded_clicks"
-                stroke="#34d399"
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 4, fill: '#34d399' }}
-              />
-              <Line
-                yAxisId="share"
-                type="monotone"
-                dataKey="branded_share_pct"
-                stroke="#f59e0b"
-                strokeWidth={1.5}
-                strokeDasharray="5 3"
-                dot={false}
-                activeDot={{ r: 3, fill: '#f59e0b' }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-          {data.trends?.trend?.trend_direction && (
-            <p className="text-xs text-slate-400 mt-3 text-center">
-              {data.trends.trend.trend_direction === 'increasing_brand_dependency'
-                ? `⚠️ Brand dependency increasing — branded share grew ${data.trends.trend.branded_share_change_pp ?? ''}pp over the period`
-                : data.trends.trend.trend_direction === 'decreasing_brand_dependency'
-                ? `✅ Brand dependency decreasing — non-branded clicks grew ${data.trends.trend.non_branded_click_growth_pct ?? ''}% over the period`
-                : 'Brand/non-branded split is stable over the analysis period'}
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Non-Branded Growth (fallback when no chart timeline) */}
-      {nbGrowth != null && !hasTrendChart && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-2">
-            Non-Branded Growth Trend
-          </h3>
-          <div className={`text-2xl font-bold ${nbGrowth > 0 ? 'text-emerald-400' : nbGrowth < 0 ? 'text-red-400' : 'text-white'}`}>
-            {nbGrowth > 0 ? '+' : ''}{typeof nbGrowth === 'number' ? nbGrowth.toFixed(1) : nbGrowth}%
-          </div>
-        </div>
-      )}
-
-      {/* Top Non-Branded Queries */}
-      {topNonBranded.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-3">
-            Top Non-Branded Queries
-          </h3>
-          <div className="space-y-2">
-            {topNonBranded.slice(0, 10).map((q: any, idx: number) => (
-              <div key={idx} className="flex justify-between p-2 bg-slate-800/30 rounded text-sm">
-                <span className="text-white truncate mr-4">{q.query || q.keyword}</span>
-                <span className="text-slate-400 whitespace-nowrap">{(q.clicks || 0).toLocaleString()} clicks</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Opportunities */}
-      {opportunities.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-3">
-            Non-Branded Opportunities ({opportunities.length})
-          </h3>
-          <div className="space-y-2">
-            {opportunities.slice(0, 8).map((opp: any, idx: number) => (
-              <div key={idx} className="p-2 bg-emerald-900/20 border border-emerald-700/30 rounded text-sm">
-                <div className="text-white font-medium">{opp.query || opp.keyword}</div>
-                {opp.potential_clicks && (
-                  <div className="text-xs text-emerald-400 mt-1">+{opp.potential_clicks.toLocaleString()} potential clicks</div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Recommendations */}
-      {data.recommendations?.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-3">Recommendations</h3>
-          <ul className="space-y-2">
-            {data.recommendations.slice(0, 5).map((rec: any, idx: number) => (
-              <li key={idx} className="text-sm text-slate-300 flex items-start gap-2">
-                <span className="text-blue-400 mt-0.5">•</span>
-                <span>{typeof rec === 'string' ? rec : rec.text || rec.recommendation || JSON.stringify(rec)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Module 11: Competitive Threats — Radar Chart + Enhanced Visualizations
-function CompetitiveThreatsContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  const competitors = data.competitor_profiles || [];
-  const vulnerability = data.keyword_vulnerability || {};
-  const emerging = data.emerging_threats || [];
-  const pressure = data.competitive_pressure || [];
-  const contentVelocity = data.content_velocity || {};
-  const vulnerableKeywords = vulnerability.vulnerable_keywords || [];
-
-  // --- Radar chart data ---
-  const RADAR_COLORS = [
-    '#60a5fa', '#f87171', '#34d399', '#fbbf24', '#a78bfa',
-    '#f472b6', '#38bdf8', '#fb923c', '#4ade80', '#e879f9',
-  ];
-
-  const topCompetitors = competitors.slice(0, 6);
-  const maxOverlap = Math.max(...topCompetitors.map((c: any) => c.overlap_percentage || 0), 1);
-  const maxTop3 = Math.max(...topCompetitors.map((c: any) => c.position_distribution?.top_3 || 0), 1);
-  const maxUrls = Math.max(...topCompetitors.map((c: any) => c.unique_urls_seen || 0), 1);
-  const maxShared = Math.max(...topCompetitors.map((c: any) => c.keywords_shared || 0), 1);
-
-  const radarDimensions = [
-    'Keyword Overlap',
-    'Avg Position',
-    'Top-3 Rankings',
-    'Win Rate',
-    'Content Breadth',
-    'Shared Keywords',
-  ];
-
-  const radarData = radarDimensions.map((dim) => {
-    const point: any = { dimension: dim };
-    topCompetitors.forEach((comp: any, idx: number) => {
-      const key = `comp_${idx}`;
-      switch (dim) {
-        case 'Keyword Overlap':
-          point[key] = Math.round((comp.overlap_percentage || 0) / maxOverlap * 100);
-          break;
-        case 'Avg Position':
-          point[key] = Math.round(Math.max(0, (20 - (comp.avg_position || 20)) / 20 * 100));
-          break;
-        case 'Top-3 Rankings':
-          point[key] = Math.round((comp.position_distribution?.top_3 || 0) / maxTop3 * 100);
-          break;
-        case 'Win Rate':
-          point[key] = Math.round((comp.head_to_head_win_rate || 0) * 100);
-          break;
-        case 'Content Breadth':
-          point[key] = Math.round((comp.unique_urls_seen || 0) / maxUrls * 100);
-          break;
-        case 'Shared Keywords':
-          point[key] = Math.round((comp.keywords_shared || 0) / maxShared * 100);
-          break;
-      }
-    });
-    return point;
-  });
-
-  const hasRadarData = topCompetitors.length >= 2;
-
-  // --- Vulnerability bar chart data ---
-  const vulnChartData = vulnerableKeywords.slice(0, 12).map((v: any) => ({
-    keyword: (v.keyword || v.query || '').length > 25
-      ? (v.keyword || v.query || '').substring(0, 22) + '...'
-      : (v.keyword || v.query || ''),
-    fullKeyword: v.keyword || v.query || '',
-    gap: Math.abs(v.position_gap || v.gap || 0),
-    competitors_ahead: v.competitors_ahead || v.comps_ahead || 0,
-    severity: v.severity || v.threat_level || 'medium',
-    your_position: v.user_position || v.your_position || 0,
-  }));
-
-  const hasVulnChart = vulnChartData.length >= 2;
-
-  const THREAT_COLORS: Record<string, string> = {
-    critical: '#ef4444',
-    high: '#f97316',
-    medium: '#eab308',
-    low: '#22c55e',
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <MetricCard label="Keywords Analyzed" value={data.keywords_analyzed || 0} />
-        <MetricCard label="Competitors Found" value={competitors.length} />
-        <MetricCard label="Vulnerable Keywords" value={vulnerability.total_vulnerable || 0} className="text-red-400" />
-        <MetricCard label="Critical Threats" value={vulnerability.critical_count || 0} className={vulnerability.critical_count > 0 ? 'text-red-500' : 'text-green-400'} />
-      </div>
-
-      {/* ========== RADAR CHART ========== */}
-      {hasRadarData && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Competitive Radar — Top {topCompetitors.length} Competitors
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Each axis represents a normalized competitive dimension (0–100 scale). Higher = stronger competitor.
-          </p>
-          <ResponsiveContainer width="100%" height={380}>
-            <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="75%">
-              <PolarGrid stroke="#334155" />
-              <PolarAngleAxis dataKey="dimension" tick={{ fill: '#94a3b8', fontSize: 11 }} />
-              <PolarRadiusAxis angle={30} domain={[0, 100]} tick={{ fill: '#64748b', fontSize: 10 }} axisLine={false} />
-              {topCompetitors.map((_: any, idx: number) => (
-                <RechartsRadar
-                  key={`comp_${idx}`}
-                  name={topCompetitors[idx].domain}
-                  dataKey={`comp_${idx}`}
-                  stroke={RADAR_COLORS[idx % RADAR_COLORS.length]}
-                  fill={RADAR_COLORS[idx % RADAR_COLORS.length]}
-                  fillOpacity={0.08}
-                  strokeWidth={2}
-                />
-              ))}
-              <Legend wrapperStyle={{ fontSize: '11px', color: '#94a3b8' }} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', fontSize: '12px' }}
-                labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
-                itemStyle={{ color: '#cbd5e1' }}
-              />
-            </RadarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* ========== Keyword Vulnerability Bar Chart ========== */}
-      {hasVulnChart && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Keyword Vulnerability — Position Gaps
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Keywords where competitors rank above you. Bar length = position gap.
-          </p>
-          <ResponsiveContainer width="100%" height={Math.max(280, vulnChartData.length * 32)}>
-            <BarChart data={vulnChartData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 11 }} label={{ value: 'Position Gap', position: 'insideBottom', offset: -2, fill: '#64748b', fontSize: 11 }} />
-              <YAxis dataKey="keyword" type="category" width={140} tick={{ fill: '#e2e8f0', fontSize: 11 }} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', fontSize: '12px' }}
-                formatter={(value: any, _name: string, props: any) => {
-                  const item = props.payload;
-                  return [`Gap: ${value} positions (${item.competitors_ahead} ahead) — Your pos: #${item.your_position}`, item.fullKeyword];
-                }}
-                labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
-              />
-              <Bar dataKey="gap" radius={[0, 4, 4, 0]}>
-                {vulnChartData.map((entry: any, idx: number) => (
-                  <Cell key={idx} fill={THREAT_COLORS[entry.severity] || '#eab308'} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* ========== Content Velocity Comparison ========== */}
-      {contentVelocity.competitor_velocity && contentVelocity.competitor_velocity.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">
-            Content Velocity — Publishing Pace
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Estimated unique pages per competitor in your keyword set.
-            {contentVelocity.user_unique_pages > 0 && (
-              <span className="text-blue-400 ml-1">Your pages: {contentVelocity.user_unique_pages}</span>
-            )}
-          </p>
-          <div className="space-y-2">
-            {contentVelocity.competitor_velocity.slice(0, 8).map((cv: any, idx: number) => {
-              const maxPages = Math.max(
-                ...contentVelocity.competitor_velocity.map((c: any) => c.unique_pages || c.estimated_pages || 0),
-                contentVelocity.user_unique_pages || 1
-              );
-              const pages = cv.unique_pages || cv.estimated_pages || 0;
-              const pct = Math.min(100, (pages / maxPages) * 100);
-              return (
-                <div key={idx} className="flex items-center gap-3">
-                  <div className="w-32 text-sm text-slate-300 truncate" title={cv.domain}>{cv.domain}</div>
-                  <div className="flex-1 bg-slate-900/50 rounded-full h-5 relative overflow-hidden">
-                    <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: RADAR_COLORS[idx % RADAR_COLORS.length] }} />
-                    <span className="absolute inset-y-0 right-2 flex items-center text-xs text-slate-300 font-medium">{pages} pages</span>
-                  </div>
-                </div>
-              );
-            })}
-            {contentVelocity.user_unique_pages > 0 && (
-              <div className="flex items-center gap-3 border-t border-slate-700/40 pt-2 mt-2">
-                <div className="w-32 text-sm text-blue-400 font-semibold truncate">You</div>
-                <div className="flex-1 bg-slate-900/50 rounded-full h-5 relative overflow-hidden">
-                  <div className="h-full rounded-full bg-blue-500" style={{ width: `${Math.min(100, (contentVelocity.user_unique_pages / Math.max(...contentVelocity.competitor_velocity.map((c: any) => c.unique_pages || c.estimated_pages || 0), 1)) * 100)}%` }} />
-                  <span className="absolute inset-y-0 right-2 flex items-center text-xs text-blue-300 font-medium">{contentVelocity.user_unique_pages} pages</span>
-                </div>
-              </div>
-            )}
-          </div>
-          {contentVelocity.user_content_gap > 0 && (
-            <div className="mt-3 text-xs text-amber-400">
-              Content gap: competitors average {contentVelocity.user_content_gap} more pages than you.
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ========== Competitor Profile Cards ========== */}
-      {competitors.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">Top Competitors ({competitors.length})</h3>
-          <div className="space-y-3">
-            {competitors.slice(0, 10).map((comp: any, idx: number) => (
-              <div key={idx} className="p-3 bg-slate-800/30 border border-slate-700/40 rounded">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="font-medium text-white flex items-center gap-2">
-                      {comp.domain || comp.competitor}
-                      <ThreatBadge level={comp.threat_level || 'medium'} />
-                    </div>
-                    <div className="text-sm text-slate-300 mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                      <span>{comp.keywords_shared || comp.keyword_overlap || 0} shared keywords ({comp.overlap_percentage || 0}%)</span>
-                      {comp.avg_position && <span className="text-slate-400">Avg pos: #{comp.avg_position.toFixed(1)}</span>}
-                      {comp.head_to_head_win_rate != null && <span className="text-slate-400">Win rate: {(comp.head_to_head_win_rate * 100).toFixed(0)}%</span>}
-                    </div>
-                    {comp.position_distribution && (
-                      <div className="flex gap-2 mt-2">
-                        {comp.position_distribution.top_3 > 0 && (
-                          <span className="text-xs px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-700/30">Top 3: {comp.position_distribution.top_3}</span>
-                        )}
-                        {comp.position_distribution.pos_4_10 > 0 && (
-                          <span className="text-xs px-2 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-700/30">4–10: {comp.position_distribution.pos_4_10}</span>
-                        )}
-                        {comp.position_distribution.pos_11_plus > 0 && (
-                          <span className="text-xs px-2 py-0.5 rounded bg-slate-700/40 text-slate-400 border border-slate-600/30">11+: {comp.position_distribution.pos_11_plus}</span>
-                        )}
-                      </div>
-                    )}
-                    {comp.rank_1_keywords && comp.rank_1_keywords.length > 0 && (
-                      <div className="mt-2 text-xs text-slate-400">
-                        #1 for: {comp.rank_1_keywords.slice(0, 3).map((kw: string, ki: number) => (
-                          <span key={ki} className="text-amber-400 mr-2">{kw}</span>
-                        ))}
-                        {comp.rank_1_keywords.length > 3 && <span>+{comp.rank_1_keywords.length - 3} more</span>}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ========== Competitive Pressure ========== */}
-      {pressure.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">Competitive Pressure by Cluster</h3>
-          <div className="space-y-2">
-            {pressure.slice(0, 10).map((p: any, idx: number) => (
-              <div key={idx} className="flex items-center justify-between p-2 bg-slate-800/30 rounded">
-                <div className="flex-1">
-                  <span className="text-white text-sm">{p.cluster || p.keyword || p.query}</span>
-                  {p.keywords_in_cluster && <span className="text-xs text-slate-500 ml-2">({p.keywords_in_cluster} keywords)</span>}
-                </div>
-                <div className="flex items-center gap-3">
-                  {p.avg_competitor_gap != null && <span className="text-xs text-slate-400">Gap: {typeof p.avg_competitor_gap === 'number' ? p.avg_competitor_gap.toFixed(1) : p.avg_competitor_gap}</span>}
-                  <ThreatBadge level={p.pressure_level || p.threat_level || 'medium'} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ========== Emerging Threats ========== */}
-      {emerging.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-1">Emerging Threats ({emerging.length})</h3>
-          <p className="text-xs text-slate-500 mb-4">Competitors with rapidly growing presence in your keyword set.</p>
-          <div className="space-y-3">
-            {emerging.slice(0, 8).map((et: any, idx: number) => (
-              <div key={idx} className="p-3 bg-red-900/15 border border-red-700/30 rounded">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="text-white font-medium flex items-center gap-2">
-                      {et.domain || et.competitor}
-                      {et.signal && <span className="text-xs px-2 py-0.5 rounded bg-red-900/40 text-red-300 border border-red-700/30">{et.signal.replace(/_/g, ' ')}</span>}
-                    </div>
-                    <div className="text-xs text-slate-400 mt-1 flex flex-wrap gap-x-3">
-                      {et.new_keywords > 0 && <span>{et.new_keywords} new keyword appearances</span>}
-                      {et.avg_entry_position && <span>Avg entry: #{typeof et.avg_entry_position === 'number' ? et.avg_entry_position.toFixed(1) : et.avg_entry_position}</span>}
-                      {et.current_avg_position && <span>Current avg: #{typeof et.current_avg_position === 'number' ? et.current_avg_position.toFixed(1) : et.current_avg_position}</span>}
-                      {et.unique_urls_seen && <span>{et.unique_urls_seen} URLs seen</span>}
-                    </div>
-                    {et.reason && <div className="text-xs text-red-300/70 mt-1">{et.reason}</div>}
-                    {et.description && <div className="text-xs text-red-300/70 mt-1">{et.description}</div>}
-                  </div>
-                  <ThreatBadge level={et.threat_level || 'high'} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ========== Recommendations ========== */}
-      {data.recommendations?.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-3">Strategic Recommendations</h3>
-          <div className="space-y-2">
-            {data.recommendations.slice(0, 8).map((rec: any, idx: number) => {
-              const recText = typeof rec === 'string' ? rec : rec.text || rec.recommendation || rec.action || JSON.stringify(rec);
-              const priority = typeof rec === 'object' ? (rec.priority || rec.urgency || '') : '';
-              const impact = typeof rec === 'object' ? (rec.impact || rec.estimated_impact || '') : '';
-              return (
-                <div key={idx} className="flex items-start gap-3 p-2 bg-slate-800/30 rounded">
-                  <span className="text-blue-400 font-mono text-xs mt-0.5 w-5 text-center flex-shrink-0">{idx + 1}</span>
-                  <div className="flex-1">
-                    <span className="text-sm text-slate-300">{recText}</span>
-                    {(priority || impact) && (
-                      <div className="flex gap-2 mt-1">
-                        {priority && (
-                          <span className={`text-xs px-1.5 py-0.5 rounded ${priority === 'critical' || priority === 'high' ? 'bg-red-900/30 text-red-300' : priority === 'medium' ? 'bg-amber-900/30 text-amber-300' : 'bg-slate-700/30 text-slate-400'}`}>{priority}</span>
-                        )}
-                        {impact && <span className="text-xs px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-300">{impact}</span>}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Module 12: Revenue Attribution
-function RevenueAttributionContent({ data }: { data: any }) {
-  if (!data) return <div className="text-slate-400">No data available</div>;
-
-  // Module 12 returns: summary, revenue_by_page, top_converting_queries,
-  // revenue_at_risk, position_improvement_roi, conversion_funnel,
-  // revenue_concentration, recommendations, data_quality
-  const funnel = data.conversion_funnel || {};
-  const revenueByPage = data.revenue_by_page || [];
-  const atRisk = data.revenue_at_risk || [];
-  const roiOpps = data.position_improvement_roi || [];
-  const topQueries = data.top_converting_queries || [];
-  const concentration = data.revenue_concentration || {};
-  const quality = data.data_quality || {};
-
-  const totalRevenue = funnel.total_revenue || revenueByPage.reduce((sum: number, p: any) => sum + (p.estimated_revenue || p.revenue || 0), 0);
-  const topPage = revenueByPage.length > 0 ? (revenueByPage[0].page || revenueByPage[0].url || 'N/A') : 'N/A';
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <MetricCard
-          label="Estimated Revenue"
-          value={`$${Math.round(totalRevenue).toLocaleString()}`}
-          className="text-emerald-400"
-        />
-        <MetricCard
-          label="Pages Analyzed"
-          value={quality.pages_analyzed || revenueByPage.length || 0}
-        />
-        <MetricCard
-          label="At-Risk Revenue"
-          value={`$${Math.round(atRisk.reduce((s: number, r: any) => s + (r.revenue_at_risk || r.estimated_revenue || 0), 0)).toLocaleString()}`}
-          className="text-red-400"
-        />
-      </div>
-
-      {/* Revenue by Page (Top pages bar chart) */}
-      {revenueByPage.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Top Revenue Pages
-          </h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={revenueByPage.slice(0, 15).map((p: any) => ({
-              page: (p.page || p.url || '').replace(/^https?:\/\/[^/]+/, '').substring(0, 40),
-              revenue: Math.round(p.estimated_revenue || p.revenue || 0),
-            }))}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="page" tick={{ fontSize: 10, angle: -30 }} height={60} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip formatter={(value: any) => [`$${value.toLocaleString()}`, 'Revenue']} />
-              <Bar dataKey="revenue" fill="#10b981" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Position Improvement ROI */}
-      {roiOpps.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Position Improvement ROI
-          </h3>
-          <div className="space-y-2">
-            {roiOpps.slice(0, 8).map((opp: any, idx: number) => (
-              <div key={idx} className="flex items-center justify-between p-2 bg-slate-800/30 rounded text-sm">
-                <div className="flex-1 truncate mr-4">
-                  <span className="text-white">{opp.query || opp.keyword}</span>
-                  {opp.current_position && (
-                    <span className="text-slate-400 ml-2">pos #{opp.current_position.toFixed(1)}</span>
-                  )}
-                </div>
-                <span className="text-emerald-400 whitespace-nowrap font-medium">
-                  +${Math.round(opp.additional_revenue || opp.potential_revenue || 0).toLocaleString()}/mo
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Revenue at Risk */}
-      {atRisk.length > 0 && (
-        <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Revenue at Risk
-          </h3>
-          <div className="space-y-2">
-            {atRisk.slice(0, 8).map((item: any, idx: number) => (
-              <div key={idx} className="flex items-center justify-between p-2 bg-red-900/20 border border-red-700/30 rounded text-sm">
-                <span className="text-white truncate mr-4">{(item.page || item.url || '').replace(/^https?:\/\/[^/]+/, '')}</span>
-                <span className="text-red-400 whitespace-nowrap font-medium">
-                  ${Math.round(item.revenue_at_risk || item.estimated_revenue || 0).toLocaleString()}/mo
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Utility Components
-// ---------------------------------------------------------------------------
-
-function MetricCard({
-  label,
-  value,
-  icon,
-  className = '',
-}: {
-  label: string;
-  value: string | number;
-  icon?: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className="bg-slate-800/60 p-4 rounded-lg border border-slate-700/50">
-      {icon && <div className="mb-2">{icon}</div>}
-      <div className="text-sm text-slate-400 mb-1">{label}</div>
-      <div className={`text-2xl font-bold ${className}`}>{value}</div>
-    </div>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    growing: 'bg-green-100 text-green-800',
-    stable: 'bg-slate-700/40 text-slate-100',
-    decaying: 'bg-yellow-100 text-yellow-800',
-    critical: 'bg-red-100 text-red-800',
-  };
-
-  return (
-    <span
-      className={`px-2 py-1 text-xs font-medium rounded ${
-        colors[status] || 'bg-slate-700/40 text-slate-100'
-      }`}
-    >
-      {status}
-    </span>
-  );
-}
-
-function PriorityBadge({ score }: { score: number }) {
-  const color =
-    score >= 80
-      ? 'bg-red-100 text-red-800'
-      : score >= 50
-      ? 'bg-yellow-100 text-yellow-800'
-      : 'bg-green-100 text-green-800';
-  const label =
-    score >= 80 ? 'Critical' : score >= 50 ? 'High' : 'Normal';
-
-  return (
-    <span className={`px-2 py-1 text-xs font-medium rounded ${color}`}>
-      {label} ({score.toFixed(0)})
-    </span>
-  );
-}
-
-function ThreatBadge({ level }: { level: string }) {
-  const colors: Record<string, string> = {
-    high: 'bg-red-100 text-red-800',
-    medium: 'bg-yellow-100 text-yellow-800',
-    low: 'bg-green-100 text-green-800',
-  };
-
-  return (
-    <span
-      className={`px-2 py-1 text-xs font-medium rounded ${
-        colors[level] || 'bg-slate-700/40 text-slate-100'
-      }`}
-    >
-      {level}
-    </span>
   );
 }
