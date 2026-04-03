@@ -254,6 +254,47 @@ def _ingest_gsc_data(credentials: Dict[str, Any], gsc_property: str) -> Dict[str
         # Query-level summary (alias used by Module 10 branded_split)
         gsc_data["gsc_query_data"] = gsc_data["gsc_keyword_data"]
 
+        # Sitemaps list (spec item #3 — feeds Module 9 site architecture)
+        try:
+            gsc_data["gsc_sitemaps"] = client.list_sitemaps(gsc_property)
+            logger.info(
+                "GSC sitemaps: %d sitemaps found",
+                len(gsc_data["gsc_sitemaps"]),
+            )
+        except Exception as sm_exc:
+            logger.warning("Sitemaps fetch failed (non-critical): %s", sm_exc)
+            gsc_data["gsc_sitemaps"] = []
+
+        # URL inspection for top pages (spec item #2 — feeds Module 2 page triage)
+        # Inspect indexing status of top 25 pages by clicks
+        try:
+            page_summary = gsc_data.get("gsc_page_summary")
+            top_page_urls = []
+            if page_summary is not None:
+                try:
+                    import pandas as pd
+                    if isinstance(page_summary, pd.DataFrame) and not page_summary.empty:
+                        top_page_urls = (
+                            page_summary.nlargest(25, "clicks")["page"].tolist()
+                        )
+                except (ImportError, KeyError, TypeError):
+                    pass
+
+            if top_page_urls:
+                gsc_data["gsc_url_inspection"] = client.inspect_urls(
+                    gsc_property, top_page_urls, max_urls=25
+                )
+                logger.info(
+                    "GSC URL inspection: %d pages inspected",
+                    len(gsc_data["gsc_url_inspection"]),
+                )
+            else:
+                gsc_data["gsc_url_inspection"] = []
+                logger.info("No pages available for URL inspection")
+        except Exception as ui_exc:
+            logger.warning("URL inspection failed (non-critical): %s", ui_exc)
+            gsc_data["gsc_url_inspection"] = []
+
         logger.info("GSC ingestion complete for %s", gsc_property)
     except Exception as exc:
         logger.error("GSC ingestion failed for %s: %s", gsc_property, exc)
