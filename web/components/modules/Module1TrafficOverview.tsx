@@ -3,8 +3,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Area, AreaChart } from 'recharts';
-import { TrendingUp, TrendingDown, Minus, Activity, Users, Eye, MousePointerClick, AlertCircle, Info } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
+import { TrendingUp, TrendingDown, Minus, Activity, Users, Eye, MousePointerClick, AlertCircle, Info, ArrowUp, ArrowDown } from 'lucide-react';
 import { fetchModuleData } from '@/lib/api';
 
 interface DailyDataPoint {
@@ -16,6 +16,8 @@ interface DailyDataPoint {
   pageviews: number;
   bounce_rate: number;
   avg_session_duration: number;
+  ctr: number;
+  avg_position: number;
 }
 
 interface MetricSummary {
@@ -71,6 +73,8 @@ interface Module1Data {
     users: MetricSummary;
     sessions: MetricSummary;
     pageviews: MetricSummary;
+    ctr: MetricSummary;
+    avg_position: MetricSummary;
   };
   data_range: {
     start_date: string;
@@ -87,7 +91,7 @@ const Module1TrafficOverview: React.FC<Module1Props> = ({ reportId }) => {
   const [data, setData] = useState<Module1Data | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(['clicks', 'users']);
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(['clicks', 'impressions']);
 
   useEffect(() => {
     const loadData = async () => {
@@ -120,44 +124,25 @@ const Module1TrafficOverview: React.FC<Module1Props> = ({ reportId }) => {
     }
   };
 
-  const getDirectionColor = (direction: string) => {
+  const getDirectionColor = (direction: string): string => {
     switch (direction) {
       case 'strong_growth':
-        return 'text-green-700 bg-green-50 border-green-200';
+        return 'bg-green-100 text-green-800 border-green-200';
       case 'growth':
-        return 'text-green-600 bg-green-50 border-green-200';
-      case 'strong_decline':
-        return 'text-red-700 bg-red-50 border-red-200';
+        return 'bg-green-50 text-green-700 border-green-100';
+      case 'flat':
+        return 'bg-gray-100 text-gray-800 border-gray-200';
       case 'decline':
-        return 'text-red-600 bg-red-50 border-red-200';
+        return 'bg-orange-50 text-orange-700 border-orange-100';
+      case 'strong_decline':
+        return 'bg-red-100 text-red-800 border-red-200';
       default:
-        return 'text-gray-600 bg-gray-50 border-gray-200';
+        return 'bg-gray-100 text-gray-800 border-gray-200';
     }
   };
 
-  const getDirectionLabel = (direction: string) => {
-    const labels: Record<string, string> = {
-      strong_growth: 'Strong Growth',
-      growth: 'Growing',
-      flat: 'Stable',
-      decline: 'Declining',
-      strong_decline: 'Strong Decline'
-    };
-    return labels[direction] || direction;
-  };
-
-  const getHealthScoreColor = (score: number) => {
-    if (score >= 80) return 'text-green-600';
-    if (score >= 60) return 'text-yellow-600';
-    if (score >= 40) return 'text-orange-600';
-    return 'text-red-600';
-  };
-
-  const getHealthScoreBadge = (score: number) => {
-    if (score >= 80) return { label: 'Excellent', variant: 'default' as const, color: 'bg-green-500' };
-    if (score >= 60) return { label: 'Good', variant: 'secondary' as const, color: 'bg-yellow-500' };
-    if (score >= 40) return { label: 'Fair', variant: 'secondary' as const, color: 'bg-orange-500' };
-    return { label: 'Poor', variant: 'destructive' as const, color: 'bg-red-500' };
+  const getDirectionLabel = (direction: string): string => {
+    return direction.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
   };
 
   const formatNumber = (num: number): string => {
@@ -170,9 +155,8 @@ const Module1TrafficOverview: React.FC<Module1Props> = ({ reportId }) => {
     return num.toFixed(0);
   };
 
-  const formatPercentage = (num: number): string => {
-    const sign = num > 0 ? '+' : '';
-    return `${sign}${num.toFixed(1)}%`;
+  const formatPercent = (num: number): string => {
+    return (num >= 0 ? '+' : '') + num.toFixed(1) + '%';
   };
 
   const formatDate = (dateStr: string): string => {
@@ -180,82 +164,43 @@ const Module1TrafficOverview: React.FC<Module1Props> = ({ reportId }) => {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
 
-  const prepareChartData = () => {
-    if (!data) return [];
-    
-    return data.daily_data.map(point => ({
-      date: formatDate(point.date),
-      fullDate: point.date,
-      clicks: point.clicks,
-      impressions: point.impressions,
-      users: point.users,
-      sessions: point.sessions,
-      pageviews: point.pageviews
-    }));
+  const formatDateLong = (dateStr: string): string => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   };
 
-  const MetricCard: React.FC<{
-    title: string;
-    icon: React.ReactNode;
-    value: number;
-    change: number;
-    changeLabel?: string;
-  }> = ({ title, icon, value, change, changeLabel = 'vs last month' }) => {
-    const isPositive = change > 0;
-    const isNegative = change < 0;
-    
-    return (
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">{title}</CardTitle>
-          {icon}
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{formatNumber(value)}</div>
-          <div className="flex items-center text-xs text-muted-foreground mt-1">
-            {isPositive && <TrendingUp className="h-3 w-3 text-green-600 mr-1" />}
-            {isNegative && <TrendingDown className="h-3 w-3 text-red-600 mr-1" />}
-            <span className={isPositive ? 'text-green-600' : isNegative ? 'text-red-600' : ''}>
-              {formatPercentage(change)}
-            </span>
-            <span className="ml-1">{changeLabel}</span>
-          </div>
-        </CardContent>
-      </Card>
-    );
+  const toggleMetric = (metric: string) => {
+    setSelectedMetrics(prev => {
+      if (prev.includes(metric)) {
+        return prev.filter(m => m !== metric);
+      } else {
+        return [...prev, metric];
+      }
+    });
   };
 
   if (loading) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <Skeleton className="h-8 w-64 mb-2" />
-            <Skeleton className="h-4 w-96" />
-          </div>
-          <Skeleton className="h-20 w-20 rounded-full" />
-        </div>
-        
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {[...Array(4)].map((_, i) => (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map(i => (
             <Card key={i}>
-              <CardHeader>
+              <CardHeader className="pb-2">
                 <Skeleton className="h-4 w-24" />
               </CardHeader>
               <CardContent>
                 <Skeleton className="h-8 w-32 mb-2" />
-                <Skeleton className="h-3 w-24" />
+                <Skeleton className="h-4 w-20" />
               </CardContent>
             </Card>
           ))}
         </div>
-
         <Card>
           <CardHeader>
             <Skeleton className="h-6 w-48" />
           </CardHeader>
           <CardContent>
-            <Skeleton className="h-80 w-full" />
+            <Skeleton className="h-[400px] w-full" />
           </CardContent>
         </Card>
       </div>
@@ -272,381 +217,453 @@ const Module1TrafficOverview: React.FC<Module1Props> = ({ reportId }) => {
   }
 
   if (!data) {
-    return null;
+    return (
+      <Alert>
+        <Info className="h-4 w-4" />
+        <AlertDescription>No data available for this report.</AlertDescription>
+      </Alert>
+    );
   }
 
-  const healthBadge = getHealthScoreBadge(data.traffic_health_score);
-  const chartData = prepareChartData();
+  const metricConfigs = [
+    { key: 'clicks', label: 'Total Clicks', icon: MousePointerClick, color: '#3b82f6' },
+    { key: 'impressions', label: 'Total Impressions', icon: Eye, color: '#8b5cf6' },
+    { key: 'users', label: 'Total Users', icon: Users, color: '#10b981' },
+    { key: 'ctr', label: 'Average CTR', icon: Activity, color: '#f59e0b', isPercent: true },
+  ];
 
   return (
     <div className="space-y-6">
-      {/* Header with Health Score */}
+      {/* Header Section */}
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Traffic Health & Trajectory</h2>
-          <p className="text-muted-foreground mt-2">
-            Analysis of {data.data_range.days_analyzed} days from {formatDate(data.data_range.start_date)} to {formatDate(data.data_range.end_date)}
+          <h2 className="text-3xl font-bold text-gray-900 mb-2">Traffic Overview & Health</h2>
+          <p className="text-gray-600">
+            Analysis period: {formatDateLong(data.data_range.start_date)} - {formatDateLong(data.data_range.end_date)} ({data.data_range.days_analyzed} days)
           </p>
-          <div className="flex items-center gap-3 mt-4">
-            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${getDirectionColor(data.overall_direction)}`}>
-              {getDirectionIcon(data.overall_direction)}
-              <span className="font-semibold">{getDirectionLabel(data.overall_direction)}</span>
-              <span className="text-sm">({formatPercentage(data.trend_slope_pct_per_month)}/month)</span>
-            </div>
-          </div>
         </div>
-        
-        {/* Traffic Health Score Circle */}
-        <div className="flex flex-col items-center">
-          <div className="relative w-24 h-24">
-            <svg className="transform -rotate-90 w-24 h-24">
-              <circle
-                cx="48"
-                cy="48"
-                r="40"
-                stroke="currentColor"
-                strokeWidth="8"
-                fill="none"
-                className="text-gray-200"
-              />
-              <circle
-                cx="48"
-                cy="48"
-                r="40"
-                stroke="currentColor"
-                strokeWidth="8"
-                fill="none"
-                strokeDasharray={`${2 * Math.PI * 40}`}
-                strokeDashoffset={`${2 * Math.PI * 40 * (1 - data.traffic_health_score / 100)}`}
-                className={getHealthScoreColor(data.traffic_health_score)}
-                strokeLinecap="round"
-              />
-            </svg>
-            <div className="absolute inset-0 flex items-center justify-center">
-              <span className={`text-2xl font-bold ${getHealthScoreColor(data.traffic_health_score)}`}>
-                {data.traffic_health_score}
-              </span>
-            </div>
-          </div>
-          <Badge variant={healthBadge.variant} className={`mt-2 ${healthBadge.color}`}>
-            {healthBadge.label}
-          </Badge>
-          <span className="text-xs text-muted-foreground mt-1">Health Score</span>
-        </div>
+        <Badge className={`${getDirectionColor(data.overall_direction)} border px-4 py-2 text-sm font-semibold`}>
+          <span className="flex items-center gap-2">
+            {getDirectionIcon(data.overall_direction)}
+            {getDirectionLabel(data.overall_direction)}
+          </span>
+        </Badge>
       </div>
+
+      {/* Traffic Health Score */}
+      <Card className="border-l-4 border-l-blue-600">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Activity className="h-5 w-5" />
+            Traffic Health Score
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-6">
+            <div className="text-5xl font-bold text-blue-600">
+              {data.traffic_health_score.toFixed(1)}
+              <span className="text-2xl text-gray-400">/100</span>
+            </div>
+            <div className="flex-1">
+              <div className="w-full bg-gray-200 rounded-full h-4 mb-2">
+                <div
+                  className="bg-blue-600 h-4 rounded-full transition-all duration-500"
+                  style={{ width: `${data.traffic_health_score}%` }}
+                />
+              </div>
+              <p className="text-sm text-gray-600">
+                Trend: <strong>{formatPercent(data.trend_slope_pct_per_month)}</strong> per month
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Key Metrics Cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <MetricCard
-          title="Total Clicks"
-          icon={<MousePointerClick className="h-4 w-4 text-muted-foreground" />}
-          value={data.metrics_summary.clicks.total}
-          change={data.metrics_summary.clicks.mom_change_pct}
-        />
-        <MetricCard
-          title="Total Impressions"
-          icon={<Eye className="h-4 w-4 text-muted-foreground" />}
-          value={data.metrics_summary.impressions.total}
-          change={data.metrics_summary.impressions.mom_change_pct}
-        />
-        <MetricCard
-          title="Users"
-          icon={<Users className="h-4 w-4 text-muted-foreground" />}
-          value={data.metrics_summary.users.total}
-          change={data.metrics_summary.users.mom_change_pct}
-        />
-        <MetricCard
-          title="Sessions"
-          icon={<Activity className="h-4 w-4 text-muted-foreground" />}
-          value={data.metrics_summary.sessions.total}
-          change={data.metrics_summary.sessions.mom_change_pct}
-        />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {metricConfigs.map(({ key, label, icon: Icon, color, isPercent }) => {
+          const summary = data.metrics_summary[key as keyof typeof data.metrics_summary];
+          if (!summary) return null;
+
+          const changeValue = summary.mom_change_pct;
+          const isPositive = changeValue > 0;
+          const isNegative = changeValue < 0;
+
+          return (
+            <Card key={key} className="hover:shadow-lg transition-shadow">
+              <CardHeader className="pb-2">
+                <CardDescription className="flex items-center gap-2 text-xs font-medium">
+                  <Icon className="h-4 w-4" style={{ color }} />
+                  {label}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-gray-900 mb-1">
+                  {isPercent ? `${(summary.total * 100).toFixed(2)}%` : formatNumber(summary.total)}
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  {isPositive && (
+                    <span className="flex items-center text-green-600 font-medium">
+                      <ArrowUp className="h-3 w-3" />
+                      {formatPercent(Math.abs(changeValue))}
+                    </span>
+                  )}
+                  {isNegative && (
+                    <span className="flex items-center text-red-600 font-medium">
+                      <ArrowDown className="h-3 w-3" />
+                      {formatPercent(Math.abs(changeValue))}
+                    </span>
+                  )}
+                  {!isPositive && !isNegative && (
+                    <span className="flex items-center text-gray-600 font-medium">
+                      <Minus className="h-3 w-3" />
+                      {formatPercent(0)}
+                    </span>
+                  )}
+                  <span className="text-gray-500">vs last month</span>
+                </div>
+                <div className="text-xs text-gray-400 mt-1">
+                  WoW: {formatPercent(summary.wow_change_pct)}
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
-      {/* Main Traffic Chart */}
+      {/* Time Series Chart */}
       <Card>
         <CardHeader>
-          <CardTitle>Traffic Trends</CardTitle>
-          <CardDescription>
-            Daily performance metrics over time
-          </CardDescription>
-          <div className="flex gap-2 mt-4">
-            {['clicks', 'impressions', 'users', 'sessions', 'pageviews'].map((metric) => (
-              <Badge
-                key={metric}
-                variant={selectedMetrics.includes(metric) ? 'default' : 'outline'}
-                className="cursor-pointer"
-                onClick={() => {
-                  if (selectedMetrics.includes(metric)) {
-                    setSelectedMetrics(selectedMetrics.filter(m => m !== metric));
-                  } else {
-                    setSelectedMetrics([...selectedMetrics, metric]);
-                  }
-                }}
+          <CardTitle>Traffic Trends Over Time</CardTitle>
+          <CardDescription>Daily performance metrics with trend analysis</CardDescription>
+          <div className="flex flex-wrap gap-2 mt-4">
+            {[
+              { key: 'clicks', label: 'Clicks', color: '#3b82f6' },
+              { key: 'impressions', label: 'Impressions', color: '#8b5cf6' },
+              { key: 'users', label: 'Users', color: '#10b981' },
+              { key: 'sessions', label: 'Sessions', color: '#f59e0b' },
+            ].map(metric => (
+              <button
+                key={metric.key}
+                onClick={() => toggleMetric(metric.key)}
+                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                  selectedMetrics.includes(metric.key)
+                    ? 'bg-blue-100 text-blue-700 border border-blue-300'
+                    : 'bg-gray-100 text-gray-600 border border-gray-300 hover:bg-gray-200'
+                }`}
               >
-                {metric.charAt(0).toUpperCase() + metric.slice(1)}
-              </Badge>
+                <span className="inline-block w-3 h-3 rounded-full mr-2" style={{ backgroundColor: metric.color }} />
+                {metric.label}
+              </button>
             ))}
           </div>
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={400}>
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id="colorClicks" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                </linearGradient>
-                <linearGradient id="colorImpressions" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
-                </linearGradient>
-                <linearGradient id="colorUsers" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                </linearGradient>
-                <linearGradient id="colorSessions" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
-                </linearGradient>
-                <linearGradient id="colorPageviews" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#ec4899" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#ec4899" stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-              <XAxis 
-                dataKey="date" 
-                tick={{ fontSize: 12 }}
-                tickLine={false}
+            <LineChart data={data.daily_data} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis
+                dataKey="date"
+                tickFormatter={formatDate}
+                stroke="#6b7280"
+                style={{ fontSize: '12px' }}
               />
-              <YAxis 
-                tick={{ fontSize: 12 }}
-                tickLine={false}
-                tickFormatter={(value) => formatNumber(value)}
-              />
-              <Tooltip 
-                contentStyle={{ 
-                  backgroundColor: 'hsl(var(--background))',
-                  border: '1px solid hsl(var(--border))',
-                  borderRadius: '6px'
+              <YAxis stroke="#6b7280" style={{ fontSize: '12px' }} tickFormatter={formatNumber} />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: 'white',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '8px',
+                  padding: '12px',
                 }}
-                formatter={(value: number) => formatNumber(value)}
+                labelFormatter={(label) => formatDateLong(label)}
+                formatter={(value: number) => [formatNumber(value), '']}
               />
               <Legend />
               {selectedMetrics.includes('clicks') && (
-                <Area
+                <Line
                   type="monotone"
                   dataKey="clicks"
                   stroke="#3b82f6"
                   strokeWidth={2}
-                  fill="url(#colorClicks)"
+                  dot={false}
                   name="Clicks"
                 />
               )}
               {selectedMetrics.includes('impressions') && (
-                <Area
+                <Line
                   type="monotone"
                   dataKey="impressions"
                   stroke="#8b5cf6"
                   strokeWidth={2}
-                  fill="url(#colorImpressions)"
+                  dot={false}
                   name="Impressions"
                 />
               )}
               {selectedMetrics.includes('users') && (
-                <Area
+                <Line
                   type="monotone"
                   dataKey="users"
                   stroke="#10b981"
                   strokeWidth={2}
-                  fill="url(#colorUsers)"
+                  dot={false}
                   name="Users"
                 />
               )}
               {selectedMetrics.includes('sessions') && (
-                <Area
+                <Line
                   type="monotone"
                   dataKey="sessions"
                   stroke="#f59e0b"
                   strokeWidth={2}
-                  fill="url(#colorSessions)"
+                  dot={false}
                   name="Sessions"
                 />
               )}
-              {selectedMetrics.includes('pageviews') && (
-                <Area
-                  type="monotone"
-                  dataKey="pageviews"
-                  stroke="#ec4899"
-                  strokeWidth={2}
-                  fill="url(#colorPageviews)"
-                  name="Pageviews"
-                />
-              )}
-            </AreaChart>
+            </LineChart>
           </ResponsiveContainer>
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 md:grid-cols-2">
-        {/* Change Points */}
-        {data.change_points.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Significant Changes Detected</CardTitle>
-              <CardDescription>
-                Structural shifts in traffic patterns
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {data.change_points.map((point, idx) => (
-                  <div key={idx} className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
-                    {point.direction === 'drop' && <TrendingDown className="h-5 w-5 text-red-600 mt-0.5" />}
-                    {point.direction === 'spike' && <TrendingUp className="h-5 w-5 text-green-600 mt-0.5" />}
-                    {point.direction === 'shift' && <Activity className="h-5 w-5 text-blue-600 mt-0.5" />}
-                    <div className="flex-1">
-                      <div className="font-semibold text-sm">{formatDate(point.date)}</div>
-                      <div className="text-sm text-muted-foreground">
-                        {Math.abs(point.magnitude * 100).toFixed(1)}% {point.direction}
-                      </div>
-                      {point.description && (
-                        <div className="text-xs text-muted-foreground mt-1">{point.description}</div>
-                      )}
-                    </div>
+      {/* Forecast Section */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {(['30d', '60d', '90d'] as const).map(period => {
+          const forecast = data.forecast[period];
+          const days = period === '30d' ? 30 : period === '60d' ? 60 : 90;
+          
+          return (
+            <Card key={period}>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg">{days}-Day Forecast</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-bold text-gray-900 mb-2">
+                  {formatNumber(forecast.clicks)}
+                </div>
+                <div className="text-sm text-gray-600 mb-3">
+                  Expected clicks
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                  <div className="text-xs text-gray-500 mb-1">Confidence Interval (95%)</div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-700">
+                      Low: <strong>{formatNumber(forecast.ci_low)}</strong>
+                    </span>
+                    <span className="text-gray-700">
+                      High: <strong>{formatNumber(forecast.ci_high)}</strong>
+                    </span>
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        )}
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
 
-        {/* Seasonality Insights */}
+      {/* Seasonality Insights */}
+      {data.seasonality && (
         <Card>
           <CardHeader>
-            <CardTitle>Seasonality Patterns</CardTitle>
-            <CardDescription>
-              Recurring traffic patterns detected
-            </CardDescription>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5" />
+              Seasonality Patterns
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
-                <div className="text-sm font-medium mb-2">Day of Week Pattern</div>
-                <div className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2">
-                    <TrendingUp className="h-4 w-4 text-green-600" />
-                    <span>Best: {data.seasonality.best_day}</span>
+                <h4 className="font-semibold text-gray-900 mb-2">Day of Week Performance</h4>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg border border-green-200">
+                    <span className="text-sm text-gray-700">Best Day</span>
+                    <Badge className="bg-green-100 text-green-800 border-green-200">
+                      {data.seasonality.best_day}
+                    </Badge>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <TrendingDown className="h-4 w-4 text-red-600" />
-                    <span>Worst: {data.seasonality.worst_day}</span>
+                  <div className="flex items-center justify-between p-3 bg-red-50 rounded-lg border border-red-200">
+                    <span className="text-sm text-gray-700">Worst Day</span>
+                    <Badge className="bg-red-100 text-red-800 border-red-200">
+                      {data.seasonality.worst_day}
+                    </Badge>
                   </div>
                 </div>
               </div>
-
-              {data.seasonality.monthly_cycle && (
-                <div>
-                  <div className="text-sm font-medium mb-2">Monthly Cycle</div>
-                  <p className="text-sm text-muted-foreground">
-                    {data.seasonality.cycle_description}
-                  </p>
+              <div>
+                <h4 className="font-semibold text-gray-900 mb-2">Monthly Patterns</h4>
+                <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  {data.seasonality.monthly_cycle ? (
+                    <>
+                      <div className="flex items-center gap-2 mb-2">
+                        <Badge className="bg-blue-100 text-blue-800 border-blue-200">
+                          Detected
+                        </Badge>
+                        <span className="text-sm font-medium text-blue-900">Monthly cycle present</span>
+                      </div>
+                      <p className="text-sm text-gray-700">{data.seasonality.cycle_description}</p>
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-700">No significant monthly patterns detected</p>
+                  )}
                 </div>
-              )}
-
-              <Alert>
-                <Info className="h-4 w-4" />
-                <AlertDescription className="text-sm">
-                  Use these patterns to optimize content publishing and promotional timing.
-                </AlertDescription>
-              </Alert>
+              </div>
             </div>
           </CardContent>
         </Card>
-      </div>
+      )}
 
-      {/* Forecast */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Traffic Forecast</CardTitle>
-          <CardDescription>
-            Projected performance based on current trends
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-3">
-            {(['30d', '60d', '90d'] as const).map((period) => {
-              const forecast = data.forecast[period];
-              const days = period === '30d' ? 30 : period === '60d' ? 60 : 90;
-              const currentClicks = data.metrics_summary.clicks.total;
-              const projectedChange = ((forecast.clicks - currentClicks) / currentClicks) * 100;
-              
-              return (
-                <div key={period} className="p-4 rounded-lg border bg-card">
-                  <div className="text-sm font-medium text-muted-foreground mb-2">
-                    {days} Days
-                  </div>
-                  <div className="text-2xl font-bold mb-1">
-                    {formatNumber(forecast.clicks)}
-                  </div>
-                  <div className="text-sm text-muted-foreground mb-3">
-                    clicks (±{formatNumber(forecast.ci_high - forecast.clicks)})
-                  </div>
-                  <div className="flex items-center text-sm">
-                    {projectedChange > 0 ? (
-                      <TrendingUp className="h-4 w-4 text-green-600 mr-1" />
-                    ) : (
-                      <TrendingDown className="h-4 w-4 text-red-600 mr-1" />
-                    )}
-                    <span className={projectedChange > 0 ? 'text-green-600' : 'text-red-600'}>
-                      {formatPercentage(projectedChange)}
-                    </span>
-                  </div>
-                  <div className="mt-3 pt-3 border-t text-xs text-muted-foreground">
-                    Range: {formatNumber(forecast.ci_low)} - {formatNumber(forecast.ci_high)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Anomalies */}
-      {data.anomalies.length > 0 && (
+      {/* Change Points */}
+      {data.change_points && data.change_points.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Traffic Anomalies</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5" />
+              Significant Traffic Changes
+            </CardTitle>
             <CardDescription>
-              Unusual patterns and one-off events detected
+              Detected structural breaks in traffic patterns
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="space-y-2">
-              {data.anomalies.map((anomaly, idx) => (
-                <div key={idx} className="flex items-center justify-between p-3 rounded-lg border">
-                  <div className="flex items-center gap-3">
-                    <AlertCircle className="h-5 w-5 text-yellow-600" />
-                    <div>
-                      <div className="font-semibold text-sm">{formatDate(anomaly.date)}</div>
-                      <div className="text-sm text-muted-foreground">
-                        {anomaly.type === 'discord' ? 'One-off anomaly' : 'Recurring pattern'}
+            <div className="space-y-3">
+              {data.change_points.map((cp, idx) => (
+                <div
+                  key={idx}
+                  className={`p-4 rounded-lg border-l-4 ${
+                    cp.direction === 'drop'
+                      ? 'bg-red-50 border-red-500'
+                      : cp.direction === 'spike'
+                      ? 'bg-green-50 border-green-500'
+                      : 'bg-blue-50 border-blue-500'
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-semibold text-gray-900">{formatDateLong(cp.date)}</span>
+                        <Badge
+                          className={
+                            cp.direction === 'drop'
+                              ? 'bg-red-100 text-red-800 border-red-200'
+                              : cp.direction === 'spike'
+                              ? 'bg-green-100 text-green-800 border-green-200'
+                              : 'bg-blue-100 text-blue-800 border-blue-200'
+                          }
+                        >
+                          {cp.direction}
+                        </Badge>
                       </div>
-                      {anomaly.description && (
-                        <div className="text-xs text-muted-foreground mt-1">{anomaly.description}</div>
-                      )}
+                      <p className="text-sm text-gray-700">
+                        {cp.description || `Traffic ${cp.direction} of ${(Math.abs(cp.magnitude) * 100).toFixed(1)}%`}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <div className={`text-2xl font-bold ${
+                        cp.direction === 'drop' ? 'text-red-600' : cp.direction === 'spike' ? 'text-green-600' : 'text-blue-600'
+                      }`}>
+                        {cp.magnitude > 0 ? '+' : ''}{(cp.magnitude * 100).toFixed(1)}%
+                      </div>
                     </div>
                   </div>
-                  <Badge variant="outline">
-                    {Math.abs(anomaly.magnitude * 100).toFixed(0)}% deviation
-                  </Badge>
                 </div>
               ))}
             </div>
           </CardContent>
         </Card>
       )}
+
+      {/* Anomalies */}
+      {data.anomalies && data.anomalies.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5" />
+              Traffic Anomalies
+            </CardTitle>
+            <CardDescription>
+              Unusual patterns and one-off events detected
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {data.anomalies.slice(0, 5).map((anomaly, idx) => (
+                <div
+                  key={idx}
+                  className={`p-4 rounded-lg border ${
+                    anomaly.type === 'discord'
+                      ? 'bg-orange-50 border-orange-200'
+                      : 'bg-purple-50 border-purple-200'
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-semibold text-gray-900">{formatDateLong(anomaly.date)}</span>
+                        <Badge
+                          className={
+                            anomaly.type === 'discord'
+                              ? 'bg-orange-100 text-orange-800 border-orange-200'
+                              : 'bg-purple-100 text-purple-800 border-purple-200'
+                          }
+                        >
+                          {anomaly.type === 'discord' ? 'One-off Event' : 'Recurring Pattern'}
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-gray-700">
+                        {anomaly.description || `Anomaly detected with magnitude ${(Math.abs(anomaly.magnitude) * 100).toFixed(1)}%`}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <div className={`text-xl font-bold ${
+                        anomaly.type === 'discord' ? 'text-orange-600' : 'text-purple-600'
+                      }`}>
+                        {(Math.abs(anomaly.magnitude) * 100).toFixed(1)}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Data Table */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Daily Breakdown</CardTitle>
+          <CardDescription>Detailed metrics by date (most recent 30 days)</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-3 px-4 font-semibold text-gray-700">Date</th>
+                  <th className="text-right py-3 px-4 font-semibold text-gray-700">Clicks</th>
+                  <th className="text-right py-3 px-4 font-semibold text-gray-700">Impressions</th>
+                  <th className="text-right py-3 px-4 font-semibold text-gray-700">CTR</th>
+                  <th className="text-right py-3 px-4 font-semibold text-gray-700">Avg Position</th>
+                  <th className="text-right py-3 px-4 font-semibold text-gray-700">Users</th>
+                  <th className="text-right py-3 px-4 font-semibold text-gray-700">Sessions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.daily_data.slice(-30).reverse().map((day, idx) => (
+                  <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-3 px-4 font-medium text-gray-900">{formatDateLong(day.date)}</td>
+                    <td className="py-3 px-4 text-right text-gray-700">{formatNumber(day.clicks)}</td>
+                    <td className="py-3 px-4 text-right text-gray-700">{formatNumber(day.impressions)}</td>
+                    <td className="py-3 px-4 text-right text-gray-700">{(day.ctr * 100).toFixed(2)}%</td>
+                    <td className="py-3 px-4 text-right text-gray-700">{day.avg_position.toFixed(1)}</td>
+                    <td className="py-3 px-4 text-right text-gray-700">{formatNumber(day.users)}</td>
+                    <td className="py-3 px-4 text-right text-gray-700">{formatNumber(day.sessions)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 };
