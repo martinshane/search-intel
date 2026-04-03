@@ -1,0 +1,17 @@
+# Search Intelligence Report — clankermarketing.com
+# https://clankermarketing.com
+
+User-agent: *
+Allow: /
+Allow: /report/demo
+
+# Block internal/auth pages from indexing
+Disallow: /api/
+Disallow: /progress
+Disallow: /schedules
+
+# Sitemap
+Sitemap: https://clankermarketing.com/sitemap.xml
+
+# Crawl-delay (be nice to crawlers)
+Crawl-delay: 1
