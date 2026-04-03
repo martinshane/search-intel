@@ -89,6 +89,7 @@ interface ReportData {
 export default function ReportPage() {
   const router = useRouter();
   const { id } = router.query;
+  const isDemo = id === 'demo';
 
   const [report, setReport] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -548,8 +549,20 @@ export default function ReportPage() {
         <title>{report.domain} | Search Intelligence Report</title>
         <meta
           name="description"
-          content={`Comprehensive search intelligence analysis for ${report.domain}`}
+          content={`Comprehensive search intelligence analysis for ${report.domain} — 12 modules covering health, triage, SERP landscape, content, algorithm impact, and more.`}
         />
+        <meta property="og:title" content={`${report.domain} — Search Intelligence Report`} />
+        <meta property="og:description" content={`12-module SEO analysis: health trajectory, page triage, SERP landscape, content intelligence, and 8 more sections.`} />
+        <meta property="og:type" content="article" />
+        <meta property="og:url" content={`https://clankermarketing.com/report/${id}`} />
+        <meta property="og:image" content="https://clankermarketing.com/og-image.png" />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content={`${report.domain} — Search Intelligence Report`} />
+        <meta name="twitter:description" content={`12-module SEO analysis for ${report.domain}`} />
+        <meta name="twitter:image" content="https://clankermarketing.com/og-image.png" />
+        <link rel="canonical" href={`https://clankermarketing.com/report/${id}`} />
       </Head>
 
       <NavHeader />
@@ -583,6 +596,7 @@ export default function ReportPage() {
                   <Download className="w-4 h-4" />
                   <span className="text-sm font-medium">Download PDF</span>
                 </button>
+                {!isDemo && (
                 <button
                   onClick={() => setShowEmailModal(true)}
                   className="flex items-center space-x-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm"
@@ -590,6 +604,16 @@ export default function ReportPage() {
                   <Mail className="w-4 h-4" />
                   <span className="text-sm font-medium">Email Report</span>
                 </button>
+                )}
+                {isDemo ? (
+                <button
+                  onClick={() => router.push('/')}
+                  className="flex items-center space-x-2 px-4 py-2 bg-emerald-500/80 hover:bg-emerald-500 rounded-lg transition backdrop-blur-sm font-medium"
+                >
+                  <Zap className="w-4 h-4" />
+                  <span className="text-sm font-medium">Connect Your Site</span>
+                </button>
+                ) : (
                 <button
                   onClick={() => router.push(`/compare?id=${id}`)}
                   className="flex items-center space-x-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm"
@@ -597,6 +621,7 @@ export default function ReportPage() {
                   <GitCompare className="w-4 h-4" />
                   <span className="text-sm font-medium">Compare</span>
                 </button>
+                )}
                 <button
                   onClick={() => window.print()}
                   className="flex items-center space-x-2 px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition backdrop-blur-sm text-sm"
@@ -605,6 +630,24 @@ export default function ReportPage() {
                 </button>
               </div>
             </div>
+
+            {/* Demo Banner */}
+            {isDemo && (
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Search className="w-4 h-4 text-amber-400" />
+                  <span className="text-amber-200 text-sm">
+                    This is a sample report for a fictional site. <strong>Connect your site</strong> to see your own data.
+                  </span>
+                </div>
+                <button
+                  onClick={() => router.push('/')}
+                  className="text-xs px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 rounded transition"
+                >
+                  Get Started
+                </button>
+              </div>
+            )}
 
             {/* Summary Cards */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
