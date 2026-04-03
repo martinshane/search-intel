@@ -11,8 +11,15 @@ import { Html, Head, Main, NextScript } from 'next/document';
  * Also sets:
  * - lang="en" for accessibility / SEO
  * - Proper meta tags for mobile and PWA
+ * - Open Graph / Twitter Card defaults
  * - Favicon link
  */
+
+const SITE_NAME = 'Search Intelligence Report';
+const SITE_URL = 'https://clankermarketing.com';
+const DEFAULT_DESCRIPTION =
+  'Free 12-module SEO analysis tool. Connect Google Search Console and GA4 for health trajectory, page triage, SERP intelligence, competitive radar, revenue attribution, and more.';
+
 export default function Document() {
   return (
     <Html lang="en" className="bg-slate-900">
@@ -26,11 +33,22 @@ export default function Document() {
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
+        {/* Default Open Graph tags — pages override with their own <Head> */}
+        <meta property="og:site_name" content={SITE_NAME} />
+        <meta property="og:type" content="website" />
+        <meta property="og:locale" content="en_US" />
+
+        {/* Default Twitter Card tags */}
+        <meta name="twitter:card" content="summary_large_image" />
+
         {/* Favicon — uses emoji shortcut until a real favicon is designed */}
         <link
           rel="icon"
           href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔍</text></svg>"
         />
+
+        {/* Robots — allow full indexing */}
+        <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
       </Head>
       <body className="bg-slate-900 text-white antialiased">
         <Main />
