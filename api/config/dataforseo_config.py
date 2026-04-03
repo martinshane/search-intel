@@ -52,6 +52,13 @@ class LocationCode:
     AUSTRALIA_NATIONWIDE = 2036
     GERMANY_NATIONWIDE = 2276
     FRANCE_NATIONWIDE = 2250
+    INDIA_NATIONWIDE = 2356
+    JAPAN_NATIONWIDE = 2392
+    BRAZIL_NATIONWIDE = 2076
+    MEXICO_NATIONWIDE = 2484
+    SPAIN_NATIONWIDE = 2724
+    ITALY_NATIONWIDE = 2380
+    NETHERLANDS_NATIONWIDE = 2528
 
 
 class LanguageCode:
@@ -67,6 +74,9 @@ class LanguageCode:
     CHINESE_TRADITIONAL = "zh-TW"
     JAPANESE = "ja"
     KOREAN = "ko"
+    RUSSIAN = "ru"
+    ARABIC = "ar"
+    HINDI = "hi"
 
 
 @dataclass
@@ -83,7 +93,13 @@ class DataForSEOCredentials:
     def __post_init__(self):
         if not self.login or not self.password:
             raise ValueError(
-                "DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD environment variables must be set"
+                "DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD environment variables must be set. "
+                "Please set these in your .env file or environment."
+            )
+        
+        if len(self.login.strip()) == 0 or len(self.password.strip()) == 0:
+            raise ValueError(
+                "DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD cannot be empty strings"
             )
 
     @property
@@ -106,73 +122,81 @@ class DataForSEOEndpoints:
     serp_task_get: str = "/v3/serp/google/organic/task_get/advanced/{task_id}"
     serp_tasks_ready: str = "/v3/serp/google/organic/tasks_ready"
     
-    # Keywords Data endpoints
-    keywords_for_keywords: str = "/v3/keywords_data/google_ads/keywords_for_keywords/live"
-    search_volume: str = "/v3/keywords_data/google_ads/search_volume/live"
-    keyword_suggestions: str = "/v3/keywords_data/google_ads/keyword_suggestions/live"
+    # Keywords data endpoints
+    keywords_for_keywords: str = "/v3/keywords_data/google/keywords_for_keywords/live"
+    keywords_for_site: str = "/v3/keywords_data/google/keywords_for_site/live"
+    search_volume: str = "/v3/keywords_data/google/search_volume/live"
     
-    # Domain Analytics endpoints
-    domain_rank_overview: str = "/v3/domain_analytics/google/overview/live"
-    domain_pages: str = "/v3/domain_analytics/google/pages/live"
-    
-    # Historical SERP data
-    serp_history: str = "/v3/serp/google/organic/history"
+    # Domain analytics endpoints
+    domain_overview: str = "/v3/domain_analytics/google/organic/overview/live"
+    domain_pages: str = "/v3/domain_analytics/google/organic/pages/live"
+    domain_competitors: str = "/v3/domain_analytics/google/organic/competitors/live"
     
     # Account info
     account_info: str = "/v3/appendix/user_data"
-    pricing: str = "/v3/appendix/prices"
-
+    
     def get_full_url(self, endpoint: str) -> str:
-        """Get full URL for an endpoint"""
+        """Construct full URL for an endpoint"""
         return f"{self.base_url}{endpoint}"
 
 
 @dataclass
 class RateLimitConfig:
     """Rate limiting configuration for DataForSEO API"""
-    # DataForSEO rate limits (per minute by default)
+    # API rate limits (requests per minute)
     max_requests_per_minute: int = 2000
-    max_concurrent_requests: int = 200
+    max_concurrent_requests: int = 100
     
-    # Recommended conservative limits for production
-    recommended_requests_per_minute: int = 100
-    recommended_concurrent_requests: int = 10
-    
-    # Backoff settings
-    initial_backoff_seconds: float = 1.0
-    max_backoff_seconds: float = 60.0
-    backoff_multiplier: float = 2.0
+    # Retry configuration
     max_retries: int = 3
+    retry_backoff_factor: float = 2.0  # Exponential backoff: 1s, 2s, 4s
+    retry_on_status_codes: List[int] = field(default_factory=lambda: [429, 500, 502, 503, 504])
     
-    # Batch processing
-    batch_delay_seconds: float = 0.1  # Delay between batch requests
+    # Timeout configuration (seconds)
+    connect_timeout: int = 10
+    read_timeout: int = 60
+    
+    # Throttling
+    min_request_interval: float = 0.03  # 30ms between requests = ~33 req/sec
 
 
 @dataclass
-class TimeoutConfig:
-    """Timeout configuration for API requests"""
-    connect_timeout: int = 10  # Connection timeout in seconds
-    read_timeout: int = 30  # Read timeout in seconds
-    total_timeout: int = 60  # Total request timeout in seconds
+class CacheConfig:
+    """Caching strategy for DataForSEO responses"""
+    # Cache TTL (time to live) in seconds
+    serp_cache_ttl: int = 86400  # 24 hours for SERP data
+    keyword_cache_ttl: int = 604800  # 7 days for keyword data
+    domain_cache_ttl: int = 259200  # 3 days for domain analytics
+    
+    # Cache key prefixes
+    serp_cache_prefix: str = "dataforseo:serp"
+    keyword_cache_prefix: str = "dataforseo:keyword"
+    domain_cache_prefix: str = "dataforseo:domain"
+    
+    # Cache behavior
+    use_cache: bool = True
+    refresh_cache_on_error: bool = False  # If API fails, use stale cache
+    cache_empty_results: bool = False  # Don't cache empty/null results
 
 
 @dataclass
-class SERPRequestDefaults:
-    """Default parameters for SERP requests"""
+class DefaultSERPParameters:
+    """Default parameters for SERP API requests"""
+    # Location and language defaults
     location_code: int = LocationCode.US_NATIONWIDE
     language_code: str = LanguageCode.ENGLISH
+    
+    # Device and search settings
     device: str = DeviceType.DESKTOP.value
     os: Optional[str] = None
-    depth: int = 100  # Number of results to return
+    depth: int = 100  # Number of results to retrieve
     
-    # Additional parameters
-    calculate_rectangles: bool = True  # For SERP feature positioning
-    browser_screen_width: int = 1920
-    browser_screen_height: int = 1080
-    browser_screen_resolution_ratio: float = 1.0
+    # SERP features to include
+    calculate_rectangles: bool = True  # Get position coordinates
+    fetch_html: bool = False  # Usually not needed, saves bandwidth
     
-    # Search parameters
-    search_param: Optional[str] = None  # Additional search parameters
+    # Search type
+    se_type: str = SearchEngineType.GOOGLE.value
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API request"""
@@ -182,342 +206,212 @@ class SERPRequestDefaults:
             "device": self.device,
             "depth": self.depth,
             "calculate_rectangles": self.calculate_rectangles,
-            "browser_screen_width": self.browser_screen_width,
-            "browser_screen_height": self.browser_screen_height,
-            "browser_screen_resolution_ratio": self.browser_screen_resolution_ratio,
         }
         
         if self.os:
             params["os"] = self.os
-        if self.search_param:
-            params["search_param"] = self.search_param
             
         return params
 
 
 @dataclass
-class BatchConfig:
-    """Configuration for batch processing"""
-    # Batch sizes for different operations
-    serp_batch_size: int = 20  # Keywords per SERP batch
-    keyword_data_batch_size: int = 100  # Keywords per keyword data batch
+class SERPFeatureTypes:
+    """SERP feature types to track"""
+    # Organic features
+    ORGANIC = "organic"
     
-    # Processing delays
-    batch_delay_seconds: float = 0.5
-    request_delay_seconds: float = 0.1
+    # Rich features
+    FEATURED_SNIPPET = "featured_snippet"
+    KNOWLEDGE_GRAPH = "knowledge_graph"
+    KNOWLEDGE_PANEL = "knowledge_panel"
+    LOCAL_PACK = "local_pack"
     
-    # Retry configuration for batch processing
-    max_batch_retries: int = 2
-    retry_failed_items: bool = True
+    # Interactive elements
+    PEOPLE_ALSO_ASK = "people_also_ask"
+    RELATED_SEARCHES = "related_searches"
+    
+    # Media
+    VIDEO = "video"
+    VIDEO_CAROUSEL = "video_carousel"
+    IMAGE_PACK = "images_pack"
+    
+    # Shopping
+    SHOPPING = "shopping"
+    SHOPPING_CAROUSEL = "shopping_carousel"
+    
+    # News
+    TOP_STORIES = "top_stories"
+    NEWS = "news"
+    
+    # AI and experimental
+    AI_OVERVIEW = "ai_overview"
+    PERSPECTIVES = "perspectives"
+    
+    # Social
+    TWITTER = "twitter"
+    REDDIT_THREADS = "reddit_threads"
+    
+    # Other
+    PAID = "paid"
+    SITE_LINKS = "sitelinks"
+    RECIPES = "recipes"
+    EVENTS = "events"
+    JOBS = "jobs"
+    
+    @classmethod
+    def get_all_types(cls) -> List[str]:
+        """Get list of all tracked feature types"""
+        return [
+            getattr(cls, attr) for attr in dir(cls)
+            if not attr.startswith('_') and isinstance(getattr(cls, attr), str)
+        ]
 
 
 @dataclass
-class CostConfig:
-    """Cost tracking and budget configuration"""
-    # Approximate costs (in USD) - actual costs may vary
-    serp_live_cost_per_request: float = 0.002
-    serp_task_cost_per_request: float = 0.002
-    keywords_for_keywords_cost: float = 0.0006
-    search_volume_cost: float = 0.0006
+class ErrorCodes:
+    """DataForSEO API error codes and descriptions"""
+    # Authentication errors
+    ERROR_40101: str = "Authentication failed. Verify credentials."
+    ERROR_40102: str = "Low account balance."
+    ERROR_40103: str = "User not found."
     
-    # Budget limits
-    max_cost_per_report: float = 1.0  # Maximum $ to spend per report
-    enable_cost_tracking: bool = True
-    warn_at_cost_threshold: float = 0.8  # Warn at 80% of max cost
+    # Request errors
+    ERROR_40001: str = "Invalid request. Check parameters."
+    ERROR_40002: str = "Missing required parameter."
+    ERROR_40003: str = "Invalid parameter value."
+    ERROR_40004: str = "Unsupported parameter."
     
-    def estimate_serp_cost(self, num_keywords: int) -> float:
-        """Estimate cost for SERP data pull"""
-        return num_keywords * self.serp_live_cost_per_request
+    # Rate limit errors
+    ERROR_42901: str = "Too many requests. Rate limit exceeded."
     
-    def estimate_keyword_data_cost(self, num_keywords: int) -> float:
-        """Estimate cost for keyword data pull"""
-        return num_keywords * self.keywords_for_keywords_cost
+    # Task errors
+    ERROR_50001: str = "Task not found."
+    ERROR_50002: str = "Task processing error."
+    ERROR_50003: str = "Task timeout."
+    
+    # Server errors
+    ERROR_50000: str = "Internal server error."
+    ERROR_50301: str = "Service temporarily unavailable."
+    
+    @classmethod
+    def get_error_message(cls, error_code: int) -> str:
+        """Get human-readable error message for error code"""
+        attr_name = f"ERROR_{error_code}"
+        return getattr(cls, attr_name, f"Unknown error code: {error_code}")
 
 
 @dataclass
-class CacheConfig:
-    """Configuration for caching API responses"""
-    enable_cache: bool = True
-    cache_ttl_hours: int = 24
+class CostEstimates:
+    """Cost estimates for different API operations"""
+    # SERP API costs (USD)
+    serp_live_cost_per_request: float = 0.002  # $0.002 per keyword
+    serp_task_cost_per_request: float = 0.001  # $0.001 per keyword (async)
     
-    # Cache keys configuration
-    cache_key_prefix: str = "dataforseo"
-    serp_cache_key: str = "serp:{keyword}:{location}:{language}:{device}"
-    keyword_data_cache_key: str = "kwdata:{keyword}:{location}"
+    # Keywords data costs
+    keywords_for_keywords_cost: float = 0.0005
+    keywords_for_site_cost: float = 0.005
+    search_volume_cost: float = 0.0002
     
-    # Cache size limits
-    max_cache_size_mb: int = 500
-    enable_compression: bool = True
+    # Domain analytics costs
+    domain_overview_cost: float = 0.001
+    domain_pages_cost: float = 0.002
+    domain_competitors_cost: float = 0.002
+    
+    # Budget per report (for planning)
+    target_keywords_per_report: int = 75
+    estimated_cost_per_report: float = 0.15  # $0.15 for 75 keywords
+    max_cost_per_report: float = 0.30  # Hard limit
 
 
 @dataclass
 class DataForSEOConfig:
-    """Main configuration class for DataForSEO integration"""
+    """Main configuration class combining all settings"""
     credentials: DataForSEOCredentials = field(default_factory=DataForSEOCredentials)
     endpoints: DataForSEOEndpoints = field(default_factory=DataForSEOEndpoints)
     rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
-    timeouts: TimeoutConfig = field(default_factory=TimeoutConfig)
-    serp_defaults: SERPRequestDefaults = field(default_factory=SERPRequestDefaults)
-    batch: BatchConfig = field(default_factory=BatchConfig)
-    cost: CostConfig = field(default_factory=CostConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
+    default_params: DefaultSERPParameters = field(default_factory=DefaultSERPParameters)
+    cost_estimates: CostEstimates = field(default_factory=CostEstimates)
     
     # Feature flags
-    enable_serp_history: bool = False  # Historical SERP data (if available)
-    enable_keyword_suggestions: bool = True
-    enable_domain_analytics: bool = False
+    enable_caching: bool = True
+    enable_rate_limiting: bool = True
+    enable_cost_tracking: bool = True
     
-    # Keyword selection for reports
-    max_keywords_per_report: int = 100
-    min_keyword_impressions: int = 100
-    include_branded_keywords: bool = False
+    # Logging
+    log_api_calls: bool = True
+    log_api_responses: bool = False  # Too verbose for production
     
-    # SERP feature tracking
-    track_serp_features: List[str] = field(default_factory=lambda: [
-        "featured_snippet",
-        "people_also_ask",
-        "video",
-        "local_pack",
-        "knowledge_panel",
-        "ai_overview",
-        "image_pack",
-        "shopping_results",
-        "top_stories",
-        "related_searches",
-        "site_links"
-    ])
-    
-    def validate(self) -> bool:
-        """Validate entire configuration"""
+    def __post_init__(self):
+        """Validate configuration after initialization"""
         if not self.credentials.validate():
-            return False
-        
-        if self.batch.serp_batch_size <= 0:
-            raise ValueError("SERP batch size must be positive")
-        
-        if self.cost.max_cost_per_report <= 0:
-            raise ValueError("Max cost per report must be positive")
-        
-        if self.max_keywords_per_report <= 0:
-            raise ValueError("Max keywords per report must be positive")
-        
-        return True
-    
-    def get_keyword_limit_for_budget(self, cost_per_keyword: Optional[float] = None) -> int:
-        """Calculate maximum keywords that can be processed within budget"""
-        if cost_per_keyword is None:
-            cost_per_keyword = self.cost.serp_live_cost_per_request
-        
-        max_by_budget = int(self.cost.max_cost_per_report / cost_per_keyword)
-        return min(max_by_budget, self.max_keywords_per_report)
-
-
-class DataForSEOErrorCodes:
-    """DataForSEO API error codes and descriptions"""
-    
-    ERROR_CODES = {
-        # Authentication errors (10xxx)
-        10000: "Invalid login or password",
-        10001: "Account is blocked",
-        10002: "Insufficient funds",
-        
-        # Request errors (20xxx)
-        20000: "Invalid request format",
-        20001: "Missing required parameter",
-        20002: "Invalid parameter value",
-        20003: "Request too large",
-        20004: "Too many requests",
-        
-        # Data errors (30xxx)
-        30000: "No data available",
-        30001: "Invalid location code",
-        30002: "Invalid language code",
-        30003: "Invalid keyword",
-        
-        # System errors (40xxx)
-        40000: "Internal server error",
-        40001: "Service temporarily unavailable",
-        40002: "Timeout",
-        
-        # Task errors (50xxx)
-        50000: "Task not found",
-        50001: "Task not ready",
-        50002: "Task failed",
-    }
+            raise ValueError("Invalid DataForSEO credentials")
     
     @classmethod
-    def get_error_message(cls, code: int) -> str:
-        """Get error message for error code"""
-        return cls.ERROR_CODES.get(code, f"Unknown error code: {code}")
+    def from_env(cls) -> "DataForSEOConfig":
+        """Create configuration from environment variables"""
+        return cls()
     
-    @classmethod
-    def is_retriable(cls, code: int) -> bool:
-        """Check if error is retriable"""
-        retriable_codes = {20004, 40001, 40002}  # Rate limit, unavailable, timeout
-        return code in retriable_codes
+    def get_request_headers(self) -> Dict[str, str]:
+        """Get standard headers for API requests"""
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+    
+    def get_auth_tuple(self) -> tuple:
+        """Get authentication tuple for requests library"""
+        return (self.credentials.login, self.credentials.password)
+    
+    def estimate_request_cost(self, endpoint: str, num_requests: int = 1) -> float:
+        """Estimate cost for a given number of requests to an endpoint"""
+        cost_map = {
+            self.endpoints.serp_live: self.cost_estimates.serp_live_cost_per_request,
+            self.endpoints.serp_task_post: self.cost_estimates.serp_task_cost_per_request,
+            self.endpoints.keywords_for_keywords: self.cost_estimates.keywords_for_keywords_cost,
+            self.endpoints.keywords_for_site: self.cost_estimates.keywords_for_site_cost,
+            self.endpoints.search_volume: self.cost_estimates.search_volume_cost,
+            self.endpoints.domain_overview: self.cost_estimates.domain_overview_cost,
+            self.endpoints.domain_pages: self.cost_estimates.domain_pages_cost,
+            self.endpoints.domain_competitors: self.cost_estimates.domain_competitors_cost,
+        }
+        
+        cost_per_request = cost_map.get(endpoint, 0.001)  # Default fallback
+        return cost_per_request * num_requests
 
 
-class ResponseStatusCodes:
-    """DataForSEO API response status codes"""
-    OK = 20000
-    INVALID_REQUEST = 20001
-    INSUFFICIENT_FUNDS = 10002
-    RATE_LIMIT_EXCEEDED = 20004
-    
-    SUCCESS_CODES = {20000}
-    RETRIABLE_CODES = {20004, 40001, 40002}
-
-
-def validate_location_code(location_code: int) -> bool:
-    """
-    Validate location code format.
-    DataForSEO location codes are typically 4-7 digit integers.
-    """
-    return 1000 <= location_code <= 9999999
-
-
-def validate_language_code(language_code: str) -> bool:
-    """
-    Validate language code format.
-    Should be 2-letter ISO 639-1 code or 5-letter code like 'zh-CN'.
-    """
-    if not language_code:
-        return False
-    
-    if len(language_code) == 2:
-        return language_code.isalpha() and language_code.islower()
-    
-    if len(language_code) == 5 and language_code[2] == "-":
-        lang = language_code[:2]
-        country = language_code[3:]
-        return lang.isalpha() and lang.islower() and country.isalpha() and country.isupper()
-    
-    return False
-
-
-def validate_keyword(keyword: str) -> bool:
-    """
-    Validate keyword for SERP request.
-    Keywords should be non-empty strings with reasonable length.
-    """
-    if not keyword or not isinstance(keyword, str):
-        return False
-    
-    # Trim whitespace
-    keyword = keyword.strip()
-    
-    # Check length (DataForSEO typically allows up to 255 chars)
-    if len(keyword) < 1 or len(keyword) > 255:
-        return False
-    
-    return True
-
-
-def sanitize_keyword(keyword: str) -> str:
-    """
-    Sanitize keyword for API request.
-    Removes extra whitespace and special characters that might cause issues.
-    """
-    if not keyword:
-        return ""
-    
-    # Trim and normalize whitespace
-    keyword = " ".join(keyword.split())
-    
-    # Remove null bytes and other problematic characters
-    keyword = keyword.replace("\x00", "").replace("\n", " ").replace("\r", " ")
-    
-    return keyword.strip()
-
-
-def create_serp_request_payload(
-    keyword: str,
-    location_code: Optional[int] = None,
-    language_code: Optional[str] = None,
-    device: Optional[str] = None,
-    depth: Optional[int] = None,
-    additional_params: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """
-    Create a properly formatted SERP request payload.
-    
-    Args:
-        keyword: Search keyword
-        location_code: Location code (uses default if None)
-        language_code: Language code (uses default if None)
-        device: Device type (uses default if None)
-        depth: Number of results (uses default if None)
-        additional_params: Additional parameters to include
-    
-    Returns:
-        Dictionary formatted for DataForSEO API request
-    """
-    defaults = SERPRequestDefaults()
-    
-    payload = {
-        "keyword": sanitize_keyword(keyword),
-        "location_code": location_code or defaults.location_code,
-        "language_code": language_code or defaults.language_code,
-        "device": device or defaults.device,
-        "depth": depth or defaults.depth,
-        "calculate_rectangles": defaults.calculate_rectangles,
-        "browser_screen_width": defaults.browser_screen_width,
-        "browser_screen_height": defaults.browser_screen_height,
-    }
-    
-    # Add additional parameters if provided
-    if additional_params:
-        payload.update(additional_params)
-    
-    return payload
-
-
-def estimate_api_cost(num_keywords: int, include_keyword_data: bool = True) -> Dict[str, float]:
-    """
-    Estimate total API cost for a report.
-    
-    Args:
-        num_keywords: Number of keywords to process
-        include_keyword_data: Whether to include keyword data API calls
-    
-    Returns:
-        Dictionary with cost breakdown
-    """
-    cost_config = CostConfig()
-    
-    serp_cost = cost_config.estimate_serp_cost(num_keywords)
-    keyword_cost = cost_config.estimate_keyword_data_cost(num_keywords) if include_keyword_data else 0.0
-    
-    return {
-        "serp_cost": serp_cost,
-        "keyword_data_cost": keyword_cost,
-        "total_cost": serp_cost + keyword_cost,
-        "num_keywords": num_keywords,
-        "within_budget": (serp_cost + keyword_cost) <= cost_config.max_cost_per_report
-    }
-
-
-# Global config instance
-_global_config: Optional[DataForSEOConfig] = None
+# Global configuration instance
+_config_instance: Optional[DataForSEOConfig] = None
 
 
 def get_config() -> DataForSEOConfig:
-    """Get global DataForSEO configuration instance"""
-    global _global_config
-    if _global_config is None:
-        _global_config = DataForSEOConfig()
-        _global_config.validate()
-    return _global_config
-
-
-def set_config(config: DataForSEOConfig):
-    """Set global DataForSEO configuration instance"""
-    global _global_config
-    config.validate()
-    _global_config = config
+    """Get or create global configuration instance"""
+    global _config_instance
+    if _config_instance is None:
+        _config_instance = DataForSEOConfig.from_env()
+    return _config_instance
 
 
 def reset_config():
-    """Reset global configuration to default"""
-    global _global_config
-    _global_config = None
+    """Reset global configuration (useful for testing)"""
+    global _config_instance
+    _config_instance = None
+
+
+# Validation helper
+def validate_environment():
+    """Validate that all required environment variables are set"""
+    required_vars = ["DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"]
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        raise EnvironmentError(
+            f"Missing required environment variables: {', '.join(missing_vars)}. "
+            f"Please set these in your .env file or environment."
+        )
+    
+    try:
+        config = get_config()
+        return True
+    except Exception as e:
+        raise EnvironmentError(f"Configuration validation failed: {str(e)}")
