@@ -37,6 +37,7 @@ import {
 } from 'recharts';
 import { Menu, X, ChevronDown, ChevronUp, ExternalLink, Download, Calendar, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Target, Zap, RefreshCw, Clock, BarChart2, Shield, Globe, DollarSign, Search, FileText, Activity, Layers, Users, Mail, Loader2, Check } from 'lucide-react';
 import NavHeader from '../../components/NavHeader';
+import ErrorBoundary from '../../components/ErrorBoundary';
 
 // ---------------------------------------------------------------------------
 // Config — API base URL from env, falls back to relative path
@@ -587,7 +588,7 @@ export default function ReportPage() {
                 <button
                   onClick={() => {
                     const a = document.createElement('a');
-                    a.href = `${process.env.NEXT_PUBLIC_API_URL || 'https://search-intel-api-production.up.railway.app'}/api/reports/${id}/pdf`;
+                    a.href = `${process.env.NEXT_PUBLIC_API_URL || ''}/api/reports/${id}/pdf`;
                     a.download = `search_intelligence_${report.domain}.pdf`;
                     a.click();
                   }}
@@ -1062,7 +1063,11 @@ function ModuleSection({ moduleKey, expanded, onToggle, children }: ModuleSectio
       </button>
 
       {expanded && (
-        <div className="border-t border-slate-700/50 p-6 bg-slate-800/30">{children}</div>
+        <div className="border-t border-slate-700/50 p-6 bg-slate-800/30">
+          <ErrorBoundary label={`Module ${meta.number}: ${meta.title}`}>
+            {children}
+          </ErrorBoundary>
+        </div>
       )}
     </div>
   );
