@@ -49,7 +49,8 @@ export default function Document() {
 
         {/* Robots — allow full indexing */}
         <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
-      </Head>
+                <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        </Head>
       <body className="bg-slate-900 text-white antialiased">
         <Main />
         <NextScript />
