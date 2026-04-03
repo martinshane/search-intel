@@ -238,6 +238,64 @@ async def retry_report(
     }
 
 
+
+# ---------------------------------------------------------------------------
+# Demo report endpoints (unauthenticated) — conversion tool for landing page
+# ---------------------------------------------------------------------------
+
+@router.get("/demo")
+async def get_demo_report() -> Dict[str, Any]:
+    """
+    Return a complete demo report with sample data for all 12 modules.
+
+    This endpoint does NOT require authentication.  It serves as the
+    front-door conversion mechanism — visitors can see what the Search
+    Intelligence Report looks like before connecting their own GSC + GA4 data.
+
+    The demo uses a fictional "Acme Widgets" e-commerce site with realistic
+    data that exercises every visualization in the frontend report viewer.
+    """
+    from api.demo_data import get_demo_report
+    return get_demo_report()
+
+
+@router.get("/demo/modules")
+async def get_demo_modules() -> Dict[str, Any]:
+    """
+    Return demo module results in the progressive-rendering format.
+
+    Matches the shape of GET /{report_id}/modules so the frontend
+    report viewer works identically for demo and real reports.
+    """
+    from api.demo_data import get_demo_modules
+    return get_demo_modules()
+
+
+@router.get("/demo/progress")
+async def get_demo_progress() -> Dict[str, Any]:
+    """Return demo progress (always complete)."""
+    return {
+        "report_id": "demo",
+        "status": "complete",
+        "current_module": 12,
+        "progress": {
+            "health_trajectory": "complete",
+            "page_triage": "complete",
+            "serp_landscape": "complete",
+            "content_intelligence": "complete",
+            "gameplan": "complete",
+            "algorithm_impact": "complete",
+            "intent_migration": "complete",
+            "technical_health": "complete",
+            "site_architecture": "complete",
+            "branded_split": "complete",
+            "competitive_threats": "complete",
+            "revenue_attribution": "complete",
+        },
+    }
+
+
+
 @router.get("/{report_id}")
 async def get_report(
     report_id: str,
