@@ -1,0 +1,85 @@
+# ---------------------------------------------------------------
+# .dockerignore — Keep the API container lean.
+#
+# The root Dockerfile builds the Python FastAPI backend (api/).
+# Everything else in the repo is excluded to shrink the Docker
+# build context, speed up builds, and reduce the final image size.
+# ---------------------------------------------------------------
+
+# === Frontend (separate Railway service — not needed in API container) ===
+web/
+web/**
+
+# === Dead/legacy code ===
+backend/
+backend/**
+
+# === Test suites and results (not needed at runtime) ===
+tests/
+tests/**
+test_results/
+test_results/**
+
+# === Cron service (separate Railway service) ===
+cron/
+cron/**
+
+# === Supabase schema/docs (not needed at runtime) ===
+supabase/
+supabase/**
+
+# === Documentation ===
+README.md
+program.md
+*.md
+!requirements.txt
+
+# === Git ===
+.git/
+.git/**
+.gitignore
+
+# === IDE / editor ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# === Python artifacts ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+.coverage.*
+.tox/
+.nox/
+
+# === Node artifacts (should not be in repo but just in case) ===
+node_modules/
+.next/
+out/
+
+# === Environment / secrets ===
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# === OS files ===
+.DS_Store
+Thumbs.db
+
+# === Railway config for other services ===
+railway.algorithm-cron.json
+
+# === Misc ===
+.dockerignore
