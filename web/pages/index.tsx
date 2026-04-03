@@ -6,6 +6,51 @@ import NavHeader from '../components/NavHeader';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
+// ---------------------------------------------------------------------------
+// SEO constants
+// ---------------------------------------------------------------------------
+const SITE_URL = 'https://clankermarketing.com';
+const PAGE_TITLE = 'Search Intelligence Report — Free SEO Analysis Tool';
+const PAGE_DESCRIPTION =
+  'Generate a comprehensive 12-module SEO intelligence report for your website. ' +
+  'Connect Google Search Console and GA4 for deep insights including health trajectory, ' +
+  'page triage, SERP landscape, competitive radar, revenue attribution, and a prioritized action plan.';
+
+// JSON-LD structured data for the landing page (WebApplication schema)
+const JSON_LD = {
+  '@context': 'https://schema.org',
+  '@type': 'WebApplication',
+  name: 'Search Intelligence Report',
+  url: SITE_URL,
+  description: PAGE_DESCRIPTION,
+  applicationCategory: 'SEO Tool',
+  operatingSystem: 'Web',
+  offers: {
+    '@type': 'Offer',
+    price: '0',
+    priceCurrency: 'USD',
+  },
+  featureList: [
+    'Health & Trajectory analysis with MSTL decomposition',
+    'Page-Level Triage with anomaly detection',
+    'SERP Landscape mapping and competitor analysis',
+    'Content Intelligence with cannibalization detection',
+    'Prioritized Gameplan with ROI estimates',
+    'Algorithm Impact correlation',
+    'Intent Migration tracking',
+    'CTR Modeling with gradient boosting',
+    'Site Architecture graph analysis',
+    'Branded vs Non-Branded split',
+    'Competitive Radar scoring',
+    'Revenue Attribution with position-to-revenue modeling',
+  ],
+  provider: {
+    '@type': 'Organization',
+    name: 'Clanker Marketing',
+    url: 'https://clankermarketing.com',
+  },
+};
+
 interface Property {
   id: string;
   name: string;
@@ -170,9 +215,38 @@ export default function HomePage() {
   return (
     <>
       <Head>
-        <title>Search Intelligence Report — Free SEO Analysis Tool</title>
-        <meta name="description" content="Generate a comprehensive SEO intelligence report for your website. Connect Google Search Console and GA4 for deep insights and actionable recommendations." />
+        <title>{PAGE_TITLE}</title>
+        <meta name="description" content={PAGE_DESCRIPTION} />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+        {/* Canonical URL */}
+        <link rel="canonical" href={SITE_URL} />
+
+        {/* Open Graph */}
+        <meta property="og:title" content={PAGE_TITLE} />
+        <meta property="og:description" content={PAGE_DESCRIPTION} />
+        <meta property="og:url" content={SITE_URL} />
+        <meta property="og:type" content="website" />
+        <meta property="og:image" content={`${SITE_URL}/og-image.png`} />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
+        <meta property="og:image:alt" content="Search Intelligence Report — Free 12-module SEO analysis tool" />
+
+        {/* Twitter Card */}
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content={PAGE_TITLE} />
+        <meta name="twitter:description" content={PAGE_DESCRIPTION} />
+        <meta name="twitter:image" content={`${SITE_URL}/og-image.png`} />
+
+        {/* Additional SEO signals */}
+        <meta name="author" content="Clanker Marketing" />
+        <meta name="keywords" content="SEO analysis, search console report, GSC analytics, GA4 report, SERP analysis, competitive SEO, search intelligence, free SEO tool, page triage, revenue attribution" />
+
+        {/* JSON-LD structured data */}
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(JSON_LD) }}
+        />
       </Head>
 
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
@@ -183,13 +257,13 @@ export default function HomePage() {
           {!user ? (
             /* Landing / Hero Section */
             <div className="text-center mb-12 sm:mb-16">
-              <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold text-white mb-4 sm:mb-6 leading-tight px-2">
+              <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold text-white mb-4 sm:mb-6 leading-tight px-2">
                 Unlock Deep SEO Intelligence
                 <br className="hidden sm:block" />
                 <span className="bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
                   {' '}In Minutes, Not Weeks
                 </span>
-              </h2>
+              </h1>
               <p className="text-lg sm:text-xl text-slate-300 mb-8 sm:mb-12 max-w-2xl mx-auto px-4 leading-relaxed">
                 Connect your Google Search Console and GA4 to generate a comprehensive analysis report with algorithmic insights, competitive intelligence, and prioritized action plans.
               </p>
