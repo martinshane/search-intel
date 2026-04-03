@@ -1,12 +1,5 @@
-"""
-Module 3: Competitor Mapping
-
-Identifies top 5-10 competing domains by analyzing GSC queries and SERP data.
-Scores competitors by keyword overlap, position, and estimated visibility.
-"""
-
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set, Tuple
 from datetime import datetime
 import pandas as pd
 import numpy as np
@@ -20,17 +13,24 @@ logger = logging.getLogger(__name__)
 
 class CompetitorMappingModule(ModuleBase):
     """
+    Module 3: Competitor Mapping
+    
     Identifies and scores competing domains based on:
     - Keyword overlap with site's ranking queries
-    - Competitor positions and visibility
-    - Estimated traffic share
+    - Competitor positions and visibility in SERPs
+    - Estimated traffic share and competitive threat
+    
+    Takes top 20 keywords from Module 1, fetches SERP data via DataForSEO,
+    identifies domains ranking in top 10, calculates overlap and metrics,
+    returns top 5-10 competitors with detailed scoring.
     """
 
     def __init__(self, site_id: str):
         super().__init__(site_id, "competitor_mapping")
-        self.min_keywords_for_competitor = 3  # Min shared keywords to be considered
+        self.min_keywords_for_competitor = 2  # Min shared keywords to be considered
         self.top_n_competitors = 10  # Max competitors to return
         self.min_impressions_threshold = 50  # Min monthly impressions to consider query
+        self.top_position = 10  # Only consider top 10 organic results
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -38,526 +38,496 @@ class CompetitorMappingModule(ModuleBase):
 
         Args:
             context: Shared context containing:
-                - gsc_data: GSC query performance data
-                - serp_data: DataForSEO SERP results
+                - top_keywords: List of top keywords from Module 1
+                - gsc_query_data: GSC query performance data
+                - serp_results: DataForSEO SERP results
                 - site_domain: User's domain
 
         Returns:
-            Dictionary with competitor analysis results
+            Dictionary with competitor analysis results matching spec
         """
         try:
             logger.info(f"Starting competitor mapping for site {self.site_id}")
 
             # Extract required data from context
-            gsc_data = context.get("gsc_data", {})
-            serp_data = context.get("serp_data", {})
+            top_keywords = context.get("top_keywords", [])
+            gsc_query_data = context.get("gsc_query_data", [])
+            serp_results = context.get("serp_results", {})
             site_domain = context.get("site_domain", "")
 
-            if not gsc_data or not serp_data:
-                raise ValueError("Missing required GSC or SERP data in context")
+            if not site_domain:
+                raise ValueError("site_domain is required in context")
 
-            # Step 1: Extract and classify queries from GSC
-            queries_df = self._prepare_query_data(gsc_data, site_domain)
-            if queries_df.empty:
-                logger.warning("No valid queries found in GSC data")
+            # Normalize domain for comparison
+            site_domain_normalized = self._normalize_domain(site_domain)
+
+            # If no top_keywords provided, extract from GSC data
+            if not top_keywords and gsc_query_data:
+                top_keywords = self._extract_top_keywords_from_gsc(gsc_query_data, limit=20)
+
+            if not top_keywords:
+                logger.warning("No keywords available for competitor analysis")
                 return self._empty_result()
 
-            # Step 2: Extract competitor domains from SERP data
-            competitor_domains = self._extract_competitor_domains(serp_data, site_domain)
-            if not competitor_domains:
+            logger.info(f"Analyzing {len(top_keywords)} keywords for competitors")
+
+            # Build keyword metadata from GSC data
+            keyword_metadata = self._build_keyword_metadata(gsc_query_data, top_keywords)
+
+            # Extract competitor domains from SERP results
+            competitor_data = self._extract_competitors_from_serps(
+                serp_results, 
+                top_keywords, 
+                site_domain_normalized
+            )
+
+            if not competitor_data:
                 logger.warning("No competitor domains found in SERP data")
                 return self._empty_result()
 
-            # Step 3: Build keyword-domain matrix
-            keyword_domain_matrix = self._build_keyword_domain_matrix(
-                serp_data, queries_df, site_domain
+            # Score and rank competitors
+            scored_competitors = self._score_competitors(
+                competitor_data,
+                keyword_metadata,
+                site_domain_normalized,
+                len(top_keywords)
             )
 
-            # Step 4: Score competitors
-            competitors = self._score_competitors(
-                competitor_domains,
-                keyword_domain_matrix,
-                queries_df,
-                site_domain
+            # Generate final result structure
+            result = self._build_result(
+                scored_competitors,
+                len(top_keywords),
+                site_domain_normalized
             )
 
-            # Step 5: Calculate aggregate metrics
-            summary = self._calculate_summary(competitors, queries_df)
-
-            # Step 6: Generate insights
-            insights = self._generate_insights(competitors, queries_df)
-
-            result = {
-                "competitors": competitors[:self.top_n_competitors],
-                "total_competitors_found": len(competitors),
-                "total_keywords_analyzed": len(queries_df),
-                "summary": summary,
-                "insights": insights,
-                "metadata": {
-                    "site_domain": site_domain,
-                    "analysis_date": datetime.utcnow().isoformat(),
-                    "min_keywords_threshold": self.min_keywords_for_competitor
-                }
-            }
-
-            logger.info(f"Competitor mapping completed: {len(competitors)} competitors found")
+            logger.info(f"Competitor mapping complete. Found {len(result['competitors'])} competitors")
             return result
 
         except Exception as e:
             logger.error(f"Error in competitor mapping execution: {str(e)}", exc_info=True)
             raise
 
-    def _prepare_query_data(
-        self, gsc_data: Dict[str, Any], site_domain: str
-    ) -> pd.DataFrame:
+    def _normalize_domain(self, domain: str) -> str:
+        """Normalize domain for consistent comparison."""
+        domain = domain.lower().strip()
+        # Remove protocol
+        domain = re.sub(r'^https?://', '', domain)
+        # Remove www
+        domain = re.sub(r'^www\.', '', domain)
+        # Remove trailing slash and path
+        domain = domain.split('/')[0]
+        return domain
+
+    def _extract_top_keywords_from_gsc(self, gsc_data: List[Dict], limit: int = 20) -> List[str]:
         """
-        Prepare and filter query data from GSC.
-
-        Args:
-            gsc_data: Raw GSC data
-            site_domain: User's domain for brand detection
-
-        Returns:
-            DataFrame with query, clicks, impressions, position, is_branded
+        Extract top keywords from GSC data if not provided.
+        Sort by impressions descending.
         """
-        # Extract query performance data
-        queries = gsc_data.get("queries", [])
-        if not queries:
-            return pd.DataFrame()
+        if not gsc_data:
+            return []
 
-        df = pd.DataFrame(queries)
+        # Create DataFrame for easier manipulation
+        df = pd.DataFrame(gsc_data)
+        
+        if 'query' not in df.columns or 'impressions' not in df.columns:
+            return []
 
-        # Ensure required columns exist
-        required_cols = ["query", "clicks", "impressions", "position"]
-        for col in required_cols:
-            if col not in df.columns:
-                df[col] = 0 if col != "position" else 100
+        # Sort by impressions and take top N
+        df = df.sort_values('impressions', ascending=False)
+        return df.head(limit)['query'].tolist()
 
-        # Filter by impressions threshold
-        df = df[df["impressions"] >= self.min_impressions_threshold].copy()
-
-        # Classify queries as branded or non-branded
-        df["is_branded"] = df["query"].apply(
-            lambda q: self._is_branded_query(q, site_domain)
-        )
-
-        # Calculate estimated monthly values (GSC usually returns last 16 months)
-        # For simplicity, use the values as-is (assuming they're recent monthly aggregates)
-        df = df.sort_values("impressions", ascending=False).reset_index(drop=True)
-
-        logger.info(f"Prepared {len(df)} queries ({df['is_branded'].sum()} branded)")
-        return df
-
-    def _is_branded_query(self, query: str, site_domain: str) -> bool:
+    def _build_keyword_metadata(self, gsc_data: List[Dict], keywords: List[str]) -> Dict[str, Dict]:
         """
-        Determine if a query contains brand/domain terms.
-
-        Args:
-            query: Search query
-            site_domain: User's domain
-
-        Returns:
-            True if query is branded
+        Build metadata dict for each keyword from GSC data.
+        Returns: {keyword: {impressions, clicks, position, ctr}}
         """
-        query_lower = query.lower()
+        metadata = {}
+        
+        if not gsc_data:
+            # Return empty metadata if no GSC data
+            for kw in keywords:
+                metadata[kw] = {
+                    'impressions': 0,
+                    'clicks': 0,
+                    'position': 0,
+                    'ctr': 0
+                }
+            return metadata
 
-        # Extract brand name from domain
-        # Remove common TLDs and www
-        domain_clean = re.sub(r"^www\.", "", site_domain)
-        brand_parts = domain_clean.split(".")[0]
-
-        # Split brand name by common separators
-        brand_terms = re.split(r"[-_]", brand_parts)
-
-        # Check if any brand term appears in query (min 3 chars to avoid false positives)
-        for term in brand_terms:
-            if len(term) >= 3 and term.lower() in query_lower:
-                return True
-
-        # Also check for full domain
-        if domain_clean.lower() in query_lower:
-            return True
-
-        return False
-
-    def _extract_competitor_domains(
-        self, serp_data: Dict[str, Any], site_domain: str
-    ) -> List[str]:
-        """
-        Extract all unique competitor domains from SERP results.
-
-        Args:
-            serp_data: DataForSEO SERP results
-            site_domain: User's domain to exclude
-
-        Returns:
-            List of competitor domains
-        """
-        domains = set()
-        site_domain_clean = self._normalize_domain(site_domain)
-
-        for keyword, serp_result in serp_data.items():
-            organic_results = serp_result.get("organic_results", [])
-
-            for result in organic_results:
-                url = result.get("url", "")
-                domain = self._extract_domain_from_url(url)
-
-                if domain and self._normalize_domain(domain) != site_domain_clean:
-                    domains.add(domain)
-
-        return list(domains)
-
-    def _build_keyword_domain_matrix(
-        self,
-        serp_data: Dict[str, Any],
-        queries_df: pd.DataFrame,
-        site_domain: str
-    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """
-        Build a matrix mapping keywords to domains with position and metrics.
-
-        Args:
-            serp_data: DataForSEO SERP results
-            queries_df: Prepared query data
-            site_domain: User's domain
-
-        Returns:
-            Nested dict: {keyword: {domain: {position, url, title, ...}}}
-        """
-        matrix = {}
-        site_domain_clean = self._normalize_domain(site_domain)
-
-        for keyword, serp_result in serp_data.items():
-            # Only process keywords that are in our filtered query list
-            if keyword not in queries_df["query"].values:
-                continue
-
-            matrix[keyword] = {}
-            organic_results = serp_result.get("organic_results", [])
-
-            for idx, result in enumerate(organic_results, start=1):
-                url = result.get("url", "")
-                domain = self._extract_domain_from_url(url)
-
-                if not domain:
-                    continue
-
-                domain_clean = self._normalize_domain(domain)
-
-                # Skip user's own domain in competitor matrix
-                if domain_clean == site_domain_clean:
-                    continue
-
-                matrix[keyword][domain] = {
-                    "position": idx,
-                    "url": url,
-                    "title": result.get("title", ""),
-                    "description": result.get("description", "")
+        # Create DataFrame for easier lookup
+        df = pd.DataFrame(gsc_data)
+        
+        for keyword in keywords:
+            # Find matching row
+            row = df[df['query'] == keyword]
+            
+            if not row.empty:
+                row = row.iloc[0]
+                metadata[keyword] = {
+                    'impressions': float(row.get('impressions', 0)),
+                    'clicks': float(row.get('clicks', 0)),
+                    'position': float(row.get('position', 0)),
+                    'ctr': float(row.get('ctr', 0))
+                }
+            else:
+                metadata[keyword] = {
+                    'impressions': 0,
+                    'clicks': 0,
+                    'position': 0,
+                    'ctr': 0
                 }
 
-        return matrix
+        return metadata
+
+    def _extract_competitors_from_serps(
+        self, 
+        serp_results: Dict[str, Any], 
+        keywords: List[str],
+        site_domain: str
+    ) -> Dict[str, Dict]:
+        """
+        Extract competitor domains from SERP results.
+        
+        Returns: {
+            domain: {
+                'keywords': [list of shared keywords],
+                'positions': {keyword: position},
+                'urls': {keyword: url}
+            }
+        }
+        """
+        competitor_data = defaultdict(lambda: {
+            'keywords': [],
+            'positions': {},
+            'urls': {}
+        })
+
+        for keyword in keywords:
+            # SERP results might be keyed by keyword
+            serp_for_keyword = serp_results.get(keyword, {})
+            
+            # Handle different possible SERP data structures
+            organic_results = []
+            
+            if isinstance(serp_for_keyword, dict):
+                # Could be nested under 'items' or 'organic_results'
+                organic_results = serp_for_keyword.get('organic_results', [])
+                if not organic_results:
+                    organic_results = serp_for_keyword.get('items', [])
+                if not organic_results and 'tasks' in serp_for_keyword:
+                    # DataForSEO task structure
+                    tasks = serp_for_keyword.get('tasks', [])
+                    if tasks and len(tasks) > 0:
+                        result = tasks[0].get('result', [])
+                        if result and len(result) > 0:
+                            organic_results = result[0].get('items', [])
+            elif isinstance(serp_for_keyword, list):
+                organic_results = serp_for_keyword
+
+            # Process organic results
+            for item in organic_results[:self.top_position]:
+                try:
+                    url = item.get('url', '')
+                    if not url:
+                        continue
+
+                    # Extract domain from URL
+                    domain = self._extract_domain_from_url(url)
+                    if not domain or domain == site_domain:
+                        continue
+
+                    # Get position (rank_group or rank_absolute)
+                    position = item.get('rank_group', item.get('rank_absolute', 0))
+                    if position > self.top_position:
+                        continue
+
+                    # Add to competitor data
+                    if keyword not in competitor_data[domain]['keywords']:
+                        competitor_data[domain]['keywords'].append(keyword)
+                    competitor_data[domain]['positions'][keyword] = position
+                    competitor_data[domain]['urls'][keyword] = url
+
+                except Exception as e:
+                    logger.warning(f"Error processing SERP item for keyword '{keyword}': {str(e)}")
+                    continue
+
+        # Filter out competitors with too few shared keywords
+        filtered_competitors = {
+            domain: data 
+            for domain, data in competitor_data.items()
+            if len(data['keywords']) >= self.min_keywords_for_competitor
+        }
+
+        return filtered_competitors
+
+    def _extract_domain_from_url(self, url: str) -> str:
+        """Extract and normalize domain from URL."""
+        try:
+            # Remove protocol
+            url = re.sub(r'^https?://', '', url)
+            # Extract domain (before first /)
+            domain = url.split('/')[0]
+            # Remove www
+            domain = re.sub(r'^www\.', '', domain)
+            # Remove port if present
+            domain = domain.split(':')[0]
+            return domain.lower()
+        except:
+            return ""
 
     def _score_competitors(
         self,
-        competitor_domains: List[str],
-        keyword_domain_matrix: Dict[str, Dict[str, Dict[str, Any]]],
-        queries_df: pd.DataFrame,
-        site_domain: str
+        competitor_data: Dict[str, Dict],
+        keyword_metadata: Dict[str, Dict],
+        site_domain: str,
+        total_keywords: int
     ) -> List[Dict[str, Any]]:
         """
-        Score each competitor based on overlap and visibility.
-
-        Args:
-            competitor_domains: List of competitor domains
-            keyword_domain_matrix: Keyword-domain matrix
-            queries_df: Query data with impressions
-            site_domain: User's domain
-
-        Returns:
-            List of competitor dicts with scores, sorted by importance
+        Score and rank competitors based on multiple factors.
+        
+        Scoring considers:
+        - Keyword overlap percentage
+        - Average position
+        - Position advantage (ranking above user)
+        - Weighted by keyword importance (impressions)
         """
-        competitors = []
+        scored_competitors = []
 
-        # Get user's keywords for overlap calculation
-        user_keywords = set(queries_df["query"].values)
-        total_user_impressions = queries_df["impressions"].sum()
+        for domain, data in competitor_data.items():
+            shared_keywords = data['keywords']
+            positions = data['positions']
+            urls = data['urls']
 
-        for domain in competitor_domains:
-            # Find all keywords where this competitor appears
-            competitor_keywords = set()
-            positions = []
-            shared_impressions = 0
+            # Calculate keyword overlap percentage
+            overlap_pct = (len(shared_keywords) / total_keywords) * 100
+
+            # Calculate average position
+            avg_position = np.mean(list(positions.values())) if positions else 0
+
+            # Calculate weighted metrics
+            total_impressions = 0
+            total_weighted_position = 0
+            positions_above_user = 0
+            positions_below_user = 0
+
             keyword_details = []
 
-            for keyword, domains_dict in keyword_domain_matrix.items():
-                if domain in domains_dict:
-                    competitor_keywords.add(keyword)
-                    position = domains_dict[domain]["position"]
-                    positions.append(position)
+            for keyword in shared_keywords:
+                kw_meta = keyword_metadata.get(keyword, {})
+                impressions = kw_meta.get('impressions', 0)
+                user_position = kw_meta.get('position', 0)
+                comp_position = positions.get(keyword, 0)
 
-                    # Get impressions for this keyword
-                    keyword_impressions = queries_df[
-                        queries_df["query"] == keyword
-                    ]["impressions"].iloc[0] if keyword in queries_df["query"].values else 0
+                total_impressions += impressions
+                total_weighted_position += comp_position * impressions
 
-                    shared_impressions += keyword_impressions
+                # Track competitive positioning
+                if comp_position > 0 and user_position > 0:
+                    if comp_position < user_position:
+                        positions_above_user += 1
+                    else:
+                        positions_below_user += 1
 
-                    keyword_details.append({
-                        "keyword": keyword,
-                        "position": position,
-                        "impressions": int(keyword_impressions),
-                        "url": domains_dict[domain].get("url", "")
-                    })
+                keyword_details.append({
+                    'keyword': keyword,
+                    'competitor_position': int(comp_position),
+                    'user_position': int(user_position),
+                    'impressions': int(impressions),
+                    'url': urls.get(keyword, '')
+                })
 
-            # Only include competitors that meet minimum threshold
-            if len(competitor_keywords) < self.min_keywords_for_competitor:
-                continue
-
-            # Calculate metrics
-            overlap_count = len(competitor_keywords)
-            overlap_percentage = (overlap_count / len(user_keywords)) * 100 if user_keywords else 0
-            avg_position = np.mean(positions) if positions else 100
-            median_position = np.median(positions) if positions else 100
-
-            # Estimate traffic share (simplified CTR model)
-            estimated_traffic = sum(
-                self._estimate_clicks(kw["position"], kw["impressions"])
-                for kw in keyword_details
+            # Calculate weighted average position
+            weighted_avg_position = (
+                total_weighted_position / total_impressions 
+                if total_impressions > 0 
+                else avg_position
             )
 
-            # Calculate threat score (higher = more competitive)
-            # Factors: overlap %, average position, estimated traffic
-            threat_score = (
-                (overlap_percentage / 100) * 0.4 +
-                (max(0, 20 - avg_position) / 20) * 0.4 +
-                (min(estimated_traffic / total_user_impressions if total_user_impressions else 0, 1)) * 0.2
-            ) * 100
+            # Calculate threat score (0-100)
+            # Higher overlap + better positions + more high-impression keywords = higher threat
+            threat_score = self._calculate_threat_score(
+                overlap_pct,
+                weighted_avg_position,
+                positions_above_user,
+                len(shared_keywords),
+                total_impressions
+            )
 
-            competitors.append({
-                "domain": domain,
-                "keywords_shared": overlap_count,
-                "overlap_percentage": round(overlap_percentage, 1),
-                "avg_position": round(avg_position, 1),
-                "median_position": round(median_position, 1),
-                "best_position": min(positions) if positions else 100,
-                "worst_position": max(positions) if positions else 100,
-                "total_shared_impressions": int(shared_impressions),
-                "estimated_monthly_traffic": int(estimated_traffic),
-                "threat_score": round(threat_score, 1),
-                "keyword_details": sorted(
-                    keyword_details,
-                    key=lambda x: x["impressions"],
-                    reverse=True
-                )[:20]  # Top 20 keywords only
+            # Determine threat level
+            threat_level = self._categorize_threat(threat_score)
+
+            scored_competitors.append({
+                'domain': domain,
+                'shared_keywords_count': len(shared_keywords),
+                'shared_keywords': sorted(shared_keywords),
+                'overlap_percentage': round(overlap_pct, 2),
+                'avg_position': round(avg_position, 2),
+                'weighted_avg_position': round(weighted_avg_position, 2),
+                'positions_above_user': positions_above_user,
+                'positions_below_user': positions_below_user,
+                'total_impressions_overlap': int(total_impressions),
+                'threat_score': round(threat_score, 2),
+                'threat_level': threat_level,
+                'keyword_details': keyword_details
             })
 
-        # Sort by threat score
-        competitors.sort(key=lambda x: x["threat_score"], reverse=True)
+        # Sort by threat score descending
+        scored_competitors.sort(key=lambda x: x['threat_score'], reverse=True)
 
-        return competitors
+        # Return top N
+        return scored_competitors[:self.top_n_competitors]
 
-    def _estimate_clicks(self, position: int, impressions: int) -> float:
+    def _calculate_threat_score(
+        self,
+        overlap_pct: float,
+        avg_position: float,
+        positions_above: int,
+        shared_keywords: int,
+        total_impressions: float
+    ) -> float:
         """
-        Estimate clicks based on position and impressions using CTR curve.
-
-        Args:
-            position: Organic position
-            impressions: Monthly impressions
-
-        Returns:
-            Estimated monthly clicks
+        Calculate competitive threat score (0-100).
+        
+        Factors:
+        - Overlap percentage (40% weight)
+        - Position quality (30% weight) - lower is better
+        - Positions above user (20% weight)
+        - Total impression volume (10% weight)
         """
-        # Standard organic CTR curve (simplified)
-        ctr_curve = {
-            1: 0.28, 2: 0.15, 3: 0.11, 4: 0.08, 5: 0.06,
-            6: 0.05, 7: 0.04, 8: 0.03, 9: 0.03, 10: 0.02
-        }
+        # Overlap score (0-40)
+        overlap_score = (overlap_pct / 100) * 40
 
-        # Beyond position 10, use decay formula
-        if position <= 10:
-            ctr = ctr_curve.get(position, 0.02)
+        # Position score (0-30) - inverse, so position 1 = 30 points, position 10 = 3 points
+        position_score = max(0, (11 - avg_position) / 10 * 30) if avg_position > 0 else 0
+
+        # Dominance score (0-20) - based on how often they rank above user
+        dominance_ratio = positions_above / shared_keywords if shared_keywords > 0 else 0
+        dominance_score = dominance_ratio * 20
+
+        # Volume score (0-10) - logarithmic scale for impressions
+        volume_score = min(10, np.log10(total_impressions + 1)) if total_impressions > 0 else 0
+
+        threat_score = overlap_score + position_score + dominance_score + volume_score
+
+        return min(100, max(0, threat_score))
+
+    def _categorize_threat(self, threat_score: float) -> str:
+        """Categorize threat level based on score."""
+        if threat_score >= 70:
+            return "critical"
+        elif threat_score >= 50:
+            return "high"
+        elif threat_score >= 30:
+            return "medium"
         else:
-            ctr = 0.02 * (0.8 ** (position - 10))
+            return "low"
 
-        return impressions * ctr
-
-    def _calculate_summary(
-        self, competitors: List[Dict[str, Any]], queries_df: pd.DataFrame
+    def _build_result(
+        self,
+        scored_competitors: List[Dict],
+        total_keywords_analyzed: int,
+        site_domain: str
     ) -> Dict[str, Any]:
         """
-        Calculate aggregate summary metrics.
-
-        Args:
-            competitors: Scored competitor list
-            queries_df: Query data
-
-        Returns:
-            Summary statistics
+        Build final result structure matching spec.
+        
+        Returns top 5-10 competitors with:
+        - overlap %
+        - shared keywords list
+        - avg position
+        - threat metrics
         """
-        if not competitors:
-            return {
-                "total_competitors": 0,
-                "avg_overlap_percentage": 0,
-                "highest_overlap_percentage": 0,
-                "most_threatened_keywords": 0,
-                "primary_competitors": []
+        result = {
+            'module': 'competitor_mapping',
+            'generated_at': datetime.utcnow().isoformat(),
+            'site_domain': site_domain,
+            'total_keywords_analyzed': total_keywords_analyzed,
+            'total_competitors_found': len(scored_competitors),
+            'competitors': [],
+            'summary': {
+                'critical_threats': 0,
+                'high_threats': 0,
+                'medium_threats': 0,
+                'low_threats': 0,
+                'avg_overlap_percentage': 0,
+                'avg_competitor_position': 0,
+                'most_contested_keywords': []
             }
-
-        overlaps = [c["overlap_percentage"] for c in competitors]
-        threat_scores = [c["threat_score"] for c in competitors]
-
-        # Primary competitors = top 20% by threat score or top 3, whichever is more
-        threshold_count = max(3, len(competitors) // 5)
-        primary_competitors = [
-            {
-                "domain": c["domain"],
-                "threat_score": c["threat_score"],
-                "keywords_shared": c["keywords_shared"]
-            }
-            for c in competitors[:threshold_count]
-        ]
-
-        # Keywords where multiple competitors rank highly (competitive keywords)
-        keyword_competition = defaultdict(int)
-        for comp in competitors:
-            for kw_detail in comp["keyword_details"]:
-                if kw_detail["position"] <= 10:
-                    keyword_competition[kw_detail["keyword"]] += 1
-
-        most_competitive_keywords = sorted(
-            keyword_competition.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:10]
-
-        return {
-            "total_competitors": len(competitors),
-            "avg_overlap_percentage": round(np.mean(overlaps), 1),
-            "median_overlap_percentage": round(np.median(overlaps), 1),
-            "highest_overlap_percentage": round(max(overlaps), 1),
-            "avg_threat_score": round(np.mean(threat_scores), 1),
-            "primary_competitors": primary_competitors,
-            "most_competitive_keywords": [
-                {"keyword": kw, "competitor_count": count}
-                for kw, count in most_competitive_keywords
-            ]
         }
 
-    def _generate_insights(
-        self, competitors: List[Dict[str, Any]], queries_df: pd.DataFrame
-    ) -> List[str]:
-        """
-        Generate human-readable insights about the competitive landscape.
+        if not scored_competitors:
+            return result
 
-        Args:
-            competitors: Scored competitor list
-            queries_df: Query data
+        # Process competitors
+        threat_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+        total_overlap = 0
+        total_position = 0
+        keyword_contest_count = Counter()
 
-        Returns:
-            List of insight strings
-        """
-        insights = []
+        for comp in scored_competitors:
+            # Add to result
+            result['competitors'].append({
+                'domain': comp['domain'],
+                'overlap_percentage': comp['overlap_percentage'],
+                'shared_keywords_count': comp['shared_keywords_count'],
+                'shared_keywords': comp['shared_keywords'],
+                'avg_position': comp['avg_position'],
+                'weighted_avg_position': comp['weighted_avg_position'],
+                'positions_above_user': comp['positions_above_user'],
+                'positions_below_user': comp['positions_below_user'],
+                'threat_score': comp['threat_score'],
+                'threat_level': comp['threat_level'],
+                'total_impressions_overlap': comp['total_impressions_overlap'],
+                'top_competing_keywords': sorted(
+                    comp['keyword_details'],
+                    key=lambda x: x['impressions'],
+                    reverse=True
+                )[:10]  # Top 10 most valuable competing keywords
+            })
 
-        if not competitors:
-            insights.append("No significant competitors detected in the analyzed keyword set.")
-            return insights
+            # Update summary stats
+            threat_counts[comp['threat_level']] += 1
+            total_overlap += comp['overlap_percentage']
+            total_position += comp['avg_position']
 
-        # Insight 1: Competitive intensity
-        avg_overlap = np.mean([c["overlap_percentage"] for c in competitors])
-        if avg_overlap > 30:
-            insights.append(
-                f"High competitive overlap detected: competitors share {avg_overlap:.0f}% "
-                f"of your keywords on average, indicating a crowded market."
-            )
-        elif avg_overlap > 15:
-            insights.append(
-                f"Moderate competition: {avg_overlap:.0f}% average keyword overlap "
-                f"with {len(competitors)} competing domains."
-            )
-        else:
-            insights.append(
-                f"Low direct competition: only {avg_overlap:.0f}% average keyword overlap, "
-                f"suggesting opportunity to capture more market share."
-            )
+            # Count keyword contests
+            for keyword in comp['shared_keywords']:
+                keyword_contest_count[keyword] += 1
 
-        # Insight 2: Primary threat
-        if competitors:
-            top_competitor = competitors[0]
-            insights.append(
-                f"Primary competitor '{top_competitor['domain']}' ranks for "
-                f"{top_competitor['keywords_shared']} of your keywords "
-                f"(avg position {top_competitor['avg_position']:.1f})."
-            )
+        # Calculate summary metrics
+        result['summary']['critical_threats'] = threat_counts['critical']
+        result['summary']['high_threats'] = threat_counts['high']
+        result['summary']['medium_threats'] = threat_counts['medium']
+        result['summary']['low_threats'] = threat_counts['low']
+        result['summary']['avg_overlap_percentage'] = round(
+            total_overlap / len(scored_competitors), 2
+        )
+        result['summary']['avg_competitor_position'] = round(
+            total_position / len(scored_competitors), 2
+        )
+        result['summary']['most_contested_keywords'] = [
+            {'keyword': kw, 'competitor_count': count}
+            for kw, count in keyword_contest_count.most_common(10)
+        ]
 
-        # Insight 3: Position comparison
-        top_3_competitors = competitors[:3]
-        user_avg_position = queries_df["position"].mean()
-        competitor_positions = [c["avg_position"] for c in top_3_competitors]
-
-        if competitor_positions and user_avg_position < np.mean(competitor_positions):
-            insights.append(
-                f"You currently outrank your top competitors on average "
-                f"(your avg: {user_avg_position:.1f} vs their avg: {np.mean(competitor_positions):.1f})."
-            )
-        elif competitor_positions:
-            position_gap = np.mean(competitor_positions) - user_avg_position
-            insights.append(
-                f"Your top competitors rank {abs(position_gap):.1f} positions higher on average. "
-                f"This represents an opportunity to study their content strategies."
-            )
-
-        # Insight 4: Traffic opportunity
-        total_competitor_traffic = sum(c["estimated_monthly_traffic"] for c in competitors[:5])
-        if total_competitor_traffic > 1000:
-            insights.append(
-                f"Your top 5 competitors capture an estimated {total_competitor_traffic:,} "
-                f"monthly clicks from shared keywords, representing significant traffic opportunity."
-            )
-
-        return insights
-
-    def _extract_domain_from_url(self, url: str) -> Optional[str]:
-        """Extract clean domain from URL."""
-        if not url:
-            return None
-
-        try:
-            # Remove protocol
-            url = re.sub(r"^https?://", "", url)
-            # Get domain part (before first /)
-            domain = url.split("/")[0]
-            # Remove port if present
-            domain = domain.split(":")[0]
-            return domain.lower()
-        except Exception:
-            return None
-
-    def _normalize_domain(self, domain: str) -> str:
-        """Normalize domain for comparison (remove www, lowercase)."""
-        if not domain:
-            return ""
-        domain = domain.lower()
-        domain = re.sub(r"^www\.", "", domain)
-        return domain
+        return result
 
     def _empty_result(self) -> Dict[str, Any]:
-        """Return empty result structure."""
+        """Return empty result structure when no data available."""
         return {
-            "competitors": [],
-            "total_competitors_found": 0,
-            "total_keywords_analyzed": 0,
-            "summary": {
-                "total_competitors": 0,
-                "avg_overlap_percentage": 0,
-                "highest_overlap_percentage": 0,
-                "most_threatened_keywords": 0,
-                "primary_competitors": []
-            },
-            "insights": ["Insufficient data to identify competitors."],
-            "metadata": {
-                "site_domain": "",
-                "analysis_date": datetime.utcnow().isoformat(),
-                "min_keywords_threshold": self.min_keywords_for_competitor
+            'module': 'competitor_mapping',
+            'generated_at': datetime.utcnow().isoformat(),
+            'site_domain': '',
+            'total_keywords_analyzed': 0,
+            'total_competitors_found': 0,
+            'competitors': [],
+            'summary': {
+                'critical_threats': 0,
+                'high_threats': 0,
+                'medium_threats': 0,
+                'low_threats': 0,
+                'avg_overlap_percentage': 0,
+                'avg_competitor_position': 0,
+                'most_contested_keywords': []
             }
         }
