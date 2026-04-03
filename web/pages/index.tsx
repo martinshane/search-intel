@@ -222,6 +222,14 @@ export default function HomePage() {
               <p className="text-xs sm:text-sm text-slate-400 mt-3 sm:mt-4 px-4">
                 No credit card required • Report generated in 2-5 minutes
               </p>
+              <div className="mt-4 sm:mt-5 text-center">
+                <a
+                  href="/report/demo"
+                  className="text-sm sm:text-base text-blue-400 hover:text-blue-300 underline underline-offset-4 transition-colors"
+                >
+                  View a sample report first →
+                </a>
+              </div>
             </div>
           ) : (
             /* Connected User — Property Selection */
