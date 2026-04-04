@@ -26,18 +26,18 @@ from dataclasses import dataclass, field, asdict
 
 import pandas as pd
 
-from ..analysis.module_1_health_trajectory import analyze_health_trajectory
-from ..analysis.module_2_page_triage import analyze_page_triage
-from ..analysis.module_3_serp_landscape import analyze_serp_landscape
-from ..analysis.module_4_content_intelligence import analyze_content_intelligence
-from ..analysis.module_5_gameplan import generate_gameplan
-from ..analysis.module_6_algorithm_updates import analyze_algorithm_impacts
-from ..analysis.module_7_intent_migration import analyze_intent_migration
-from ..analysis.module_8_technical_health import analyze_technical_health
-from ..analysis.module_9_site_architecture import analyze_site_architecture
-from ..analysis.module_10_branded_split import analyze_branded_split
-from ..analysis.module_11_competitive_threats import analyze_competitive_threats
-from ..analysis.module_12_revenue_attribution import estimate_revenue_attribution
+from api.analysis.module_1_health_trajectory import analyze_health_trajectory
+from api.analysis.module_2_page_triage import analyze_page_triage
+from api.analysis.module_3_serp_landscape import analyze_serp_landscape
+from api.analysis.module_4_content_intelligence import analyze_content_intelligence
+from api.analysis.module_5_gameplan import generate_gameplan
+from api.analysis.module_6_algorithm_updates import analyze_algorithm_impacts
+from api.analysis.module_7_intent_migration import analyze_intent_migration
+from api.analysis.module_8_technical_health import analyze_technical_health
+from api.analysis.module_9_site_architecture import analyze_site_architecture
+from api.analysis.module_10_branded_split import analyze_branded_split
+from api.analysis.module_11_competitive_threats import analyze_competitive_threats
+from api.analysis.module_12_revenue_attribution import estimate_revenue_attribution
 
 logger = logging.getLogger(__name__)
 
