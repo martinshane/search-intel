@@ -76,7 +76,7 @@ def _update_report_status(
     """Update report row in Supabase."""
     update: Dict[str, Any] = {
         "status": status,
-        "updated_at": datetime.utcnow().isoformat(),
+        # updated_at not in schema — removed
     }
     if current_module is not None:
         update["current_module"] = current_module
@@ -775,9 +775,9 @@ def recover_stale_reports(stale_threshold_minutes: int = 30) -> Dict[str, Any]:
         # to created_at for reports that never got a status update.
         stale_reports = (
             supabase.table("reports")
-            .select("id, status, updated_at, created_at, domain")
+            .select("id, status, created_at, domain")
             .in_("status", list(running_statuses))
-            .lt("updated_at", cutoff)
+            .lt("created_at", cutoff)
             .execute()
         )
 
@@ -802,7 +802,7 @@ def recover_stale_reports(stale_threshold_minutes: int = 30) -> Dict[str, Any]:
                         f"(likely due to a server restart or timeout). "
                         f"Click 'Retry' to regenerate this report."
                     ),
-                    "updated_at": datetime.utcnow().isoformat(),
+                    # updated_at not in schema — removed
                 }).eq("id", report_id).execute()
 
                 result["recovered"] += 1
@@ -810,7 +810,7 @@ def recover_stale_reports(stale_threshold_minutes: int = 30) -> Dict[str, Any]:
                 logger.info(
                     "Recovered stale report %s (domain=%s, was=%s, stuck since %s)",
                     report_id, domain, old_status,
-                    report.get("updated_at") or report.get("created_at"),
+                    report.get("created_at"),
                 )
             except Exception as exc:
                 logger.error("Failed to recover report %s: %s", report_id, exc)
