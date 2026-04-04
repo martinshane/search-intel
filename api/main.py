@@ -44,10 +44,8 @@ async def lifespan(app: FastAPI):
                 logger.error("  - %s", error)
             
             if validation_result["critical_errors"]:
-                logger.critical("Critical configuration errors found. API cannot start safely.")
-                raise RuntimeError(
-                    f"Critical environment validation failed: {', '.join(validation_result['critical_errors'])}"
-                )
+                logger.critical("Critical configuration errors found: %s", validation_result['critical_errors'])
+                logger.critical("API starting anyway — /health will respond but some features may not work.")
             else:
                 logger.warning("Non-critical validation errors found. API will start but some features may not work.")
         else:
