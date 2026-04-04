@@ -1,11 +1,8 @@
 [build]
-builder = "DOCKERFILE"
-dockerfilePath = "web/Dockerfile"
-
-# Build context is repo root so COPY web/ works in the Dockerfile
+builder = "NIXPACKS"
 
 [deploy]
-startCommand = "npx next start -p $PORT"
+startCommand = "npx next start -p 3000"
 healthcheckPath = "/"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
