@@ -775,7 +775,7 @@ def recover_stale_reports(stale_threshold_minutes: int = 30) -> Dict[str, Any]:
         # to created_at for reports that never got a status update.
         stale_reports = (
             supabase.table("reports")
-            .select("id, status, created_at, domain")
+            .select("id, status, created_at")
             .in_("status", list(running_statuses))
             .lt("created_at", cutoff)
             .execute()
