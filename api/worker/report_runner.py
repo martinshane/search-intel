@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 
 from supabase import Client
 
-from api.database import get_service_role_client
+from ..database import get_service_role_client
 
 logger = logging.getLogger(__name__)
 
@@ -179,12 +179,12 @@ def _decrypt_token(raw_token: Any) -> Dict[str, Any]:
     # Must be an encrypted string — decrypt it
     if isinstance(raw_token, str):
         try:
-            from api.auth.oauth import encryptor
+            from ..auth.oauth import encryptor
             decrypted = encryptor.decrypt(raw_token)
             logger.info("Successfully decrypted OAuth token (%d fields)", len(decrypted))
             return decrypted
         except ImportError:
-            logger.error("Cannot import encryptor from api.auth.oauth — token decryption unavailable")
+            logger.error("Cannot import encryptor from ..auth.oauth — token decryption unavailable")
             return {}
         except ValueError as exc:
             logger.error("Failed to decrypt OAuth token: %s", exc)
@@ -213,7 +213,7 @@ def _ingest_gsc_data(credentials: Dict[str, Any], gsc_property: str) -> Dict[str
     """
     gsc_data: Dict[str, Any] = {}
     try:
-        from api.ingestion.gsc import GSCClient
+        from ..ingestion.gsc import GSCClient
 
         client = GSCClient(credentials)
 
@@ -322,7 +322,7 @@ def _ingest_ga4_data(credentials: Dict[str, Any], ga4_property: str) -> Dict[str
     ga4_data: Dict[str, Any] = {}
     try:
         from google.oauth2.credentials import Credentials as GoogleCredentials
-        from api.ingestion.ga4 import ingest_ga4_data
+        from ..ingestion.ga4 import ingest_ga4_data
 
         # Convert the decrypted token dict into a Google Credentials object.
         # The GA4 client needs a real Credentials instance (not a plain dict)
@@ -454,7 +454,7 @@ def _ingest_serp_data(
         return {}
 
     try:
-        from api.ingestion.dataforseo import fetch_serps_for_top_keywords
+        from ..ingestion.dataforseo import fetch_serps_for_top_keywords
 
         # Run the async function in a new event loop (we are in a sync
         # background-task context, so there is no running loop).
@@ -521,7 +521,7 @@ def _ingest_crawl_data(domain: str, max_pages: int = 200) -> Dict[str, Any]:
       - sitemap_urls: list of URLs found in sitemap
     """
     try:
-        from api.ingestion.crawler import crawl_site
+        from ..ingestion.crawler import crawl_site
 
         logger.info("Starting site crawl for %s (max %d pages)", domain, max_pages)
 
@@ -683,7 +683,7 @@ def run_report_pipeline(report_id: str, user_id: str, gsc_property: str, ga4_pro
         # ----- Phase 2: Pipeline execution with real-time progress -----
         _update_report_status(supabase, report_id, "analyzing", current_module=1)
 
-        from api.worker.pipeline import AnalysisPipeline
+        from .pipeline import AnalysisPipeline
         pipeline = AnalysisPipeline()
 
         # Run all 12 modules — _on_module_complete fires after EACH one,

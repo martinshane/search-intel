@@ -107,7 +107,7 @@ class EnvValidator:
             'min_length': 32,
             'example': 'your-secret-key-min-32-chars-long'
         },
-        'SUPABASE_SERVICE_ROLE_KEY': {
+        'SUPABASE_SERVICE_KEY': {
             'description': 'Supabase service role key for background tasks (bypasses RLS)',
             'validator': 'non_empty',
             'min_length': 20,
